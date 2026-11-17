@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, SharedString};
 
 use crate::anim::segment;
+use crate::theme::SmallText;
+use gpui_m3::theme::type_scale;
 use crate::paste::Target;
 use crate::Pill;
 
@@ -998,10 +1000,12 @@ impl Pill {
         let live = self.dictation.live_text();
         let live_on = matches!(phase, Phase::Listening | Phase::Transcribing)
             && !(live.confirmed.trim().is_empty() && live.volatile.trim().is_empty());
+        // Expressive: 12 px de la escala de M3; Atic, 12,5.
+        let live_size = crate::theme::pill_type(type_scale::LABEL_MEDIUM).map_or(12.5, |role| f32::from(role.size));
         let live_line = live_on.then(|| {
             // Lo que cabe: el ancho sin el margen ni el punto, a ~0,52 em por letra.
             let room = (area.w - 18.0 * 2.0 - 18.0 - 10.0).max(40.0);
-            let chars = (room / (12.5 * 0.52)) as usize;
+            let chars = (room / (live_size * 0.52)) as usize;
             let (confirmed, volatile) = live_tail(&live.confirmed, &live.volatile, chars);
             let split = confirmed.len();
             let text = SharedString::from(format!("{confirmed}{volatile}"));
@@ -1023,6 +1027,7 @@ impl Pill {
                         .text_size(px(12.5))
                         .line_height(px(16.))
                         .font_weight(FontWeight::MEDIUM)
+                        .pill_text(12.5, type_scale::LABEL_MEDIUM)
                         .text_color(palette.text)
                         .child(styled),
                 )
@@ -1075,6 +1080,8 @@ impl Pill {
                         .text_size(px(12.5))
                         .line_height(px(16.))
                         .font_weight(if muted { FontWeight::NORMAL } else { FontWeight::SEMIBOLD })
+                        // Expressive: el estado enfatizado; el aviso apagado, BODY_SMALL.
+                        .map(|el| if muted { el.pill_text(12.5, type_scale::BODY_SMALL) } else { el.pill_text_em(12.5, type_scale::LABEL_MEDIUM) })
                         .text_color(if muted { palette.muted } else { palette.text })
                         .child(SharedString::from(label))
                 }))

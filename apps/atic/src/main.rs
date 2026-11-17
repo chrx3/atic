@@ -61,6 +61,7 @@ mod history;
 mod housekeeping;
 mod hover;
 mod i18n;
+mod icons;
 mod liquid;
 mod live_loupe;
 mod peeks;
@@ -538,6 +539,9 @@ impl AssetSource for Assets {
                 let svg = String::from_utf8_lossy(&svg).replace("stroke-width=\"1.6\"", "stroke-width=\"2.2\"");
                 Cow::Owned(svg.into_bytes())
             }));
+        }
+        if let Some(bytes) = icons::load(path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
         let bytes: &'static [u8] = match path {
             "icons/circle-dot.svg" => include_bytes!("../assets/icons/circle-dot.svg"),
@@ -1251,7 +1255,7 @@ struct IconDraw {
 
 /// Los íconos de lucide con el trazo más grueso: `icons/bold/x.svg` es
 /// `icons/x.svg` con 2,2 en vez de 1,6. Marcan la herramienta abierta en la
-/// tira y la rueda, como el relleno de Material Symbols.
+/// tira y la rueda cuando el ícono no tiene Material Symbol (`icons::styled`).
 const BOLD_ICONS: &str = "icons/bold/";
 
 /// El cambio de paso de la tira («Más», «Atrás»), con el ritmo de los paneles
@@ -2830,7 +2834,7 @@ impl Pill {
                     .rounded(gpui_m3::corner::XS)
                     .bg(bg)
                     .text_color(ink)
-                    .type_style(type_scale::LABEL_MEDIUM)
+                    .type_style(type_scale::BODY_SMALL)
                     .child(text)
             }
             None => div()
@@ -4128,7 +4132,7 @@ impl Pill {
                 .border_1()
                 .border_color(text.opacity(0.18))
                 .shadow_md()
-                .text_size(px(11.5))
+                .pill_text(11.5, gpui_m3::theme::type_scale::BODY_SMALL)
                 .text_color(text)
                 .truncate()
                 .child(label)
@@ -6530,6 +6534,7 @@ impl Frame {
                 bottom_left,
             }));
         }
+        let expressive = icons::expressive();
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
             if let Some(art) = icon.art.clone() {
                 // La carátula un poco más grande que un ícono (se lee como
@@ -6545,9 +6550,12 @@ impl Frame {
                 }
                 continue;
             }
+            // Expressive: Material Symbols, relleno el de la herramienta
+            // abierta; lo que no tiene símbolo sigue en Lucide, más grueso.
+            let themed = icons::styled(icon.path, expressive, icon.bold);
             let path: SharedString = match icon.path.strip_prefix("icons/") {
-                Some(name) if icon.bold => format!("{BOLD_ICONS}{name}").into(),
-                _ => icon.path.into(),
+                Some(name) if icon.bold && themed == icon.path => format!("{BOLD_ICONS}{name}").into(),
+                _ => themed.into(),
             };
             let _ = window.paint_svg(
                 bounds_of(&Rect::centered(icon.center, icon.size, icon.size)),
@@ -6598,7 +6606,7 @@ impl Frame {
             let icon = side * 0.6;
             let _ = window.paint_svg(
                 bounds_of(&Rect::centered(center, icon, icon)),
-                "icons/play.svg".into(),
+                icons::themed("icons/play.svg").into(),
                 TransformationMatrix::unit(),
                 self.palette.text.opacity(self.live),
                 cx,
@@ -6675,6 +6683,11 @@ impl Frame {
                 gpui::fill(bounds_of(&Rect::centered(center, 8.0 * k, 8.0 * k)), red).corner_radii(Corners::all(px(4. * k))),
             );
         };
+        // Expressive: LABEL_MEDIUM con cifras tabulares (el reloj no baila);
+        // Atic, mono de 11.
+        let m3_clock = theme::pill_type(gpui_m3::theme::type_scale::LABEL_MEDIUM);
+        let clock_size = m3_clock.map_or(11.0, |role| f32::from(role.size));
+        let clock_font = m3_clock.map_or_else(|| gpui::font(crate::fonts::MONO), |role| crate::fonts::tabular(role.weight));
         // En el orden elegido: el punto y el reloj en su lugar, a escala.
         if let Some(places) = self.places.as_ref().filter(|places| places.vertical) {
             // En un costado no cabe el reloj: solo el punto.
@@ -6689,10 +6702,10 @@ impl Frame {
             .as_ref()
             .and_then(|places| places.start_of(tab_size::RestItem::Clock).map(|x| (x, places.cross)))
         {
-            let size = 11.0 * k;
+            let size = clock_size * k;
             let run = gpui::TextRun {
                 len: clock.len(),
-                font: gpui::font(crate::fonts::MONO),
+                font: clock_font.clone(),
                 color: ink,
                 background_color: None,
                 underline: None,
@@ -6708,10 +6721,10 @@ impl Frame {
         match self.pill {
             PillShape::Tab { edge, rect, .. } if !edge.is_vertical() => {
                 let y = self.mark.1;
-                let size = 11.0;
+                let size = clock_size;
                 let run = gpui::TextRun {
                     len: clock.len(),
-                    font: gpui::font(crate::fonts::MONO),
+                    font: clock_font,
                     color: ink,
                     background_color: None,
                     underline: None,
@@ -7445,6 +7458,7 @@ fn render_peek(
     intro: f32,
     palette: &Palette,
 ) -> gpui::AnyElement {
+    use gpui_m3::theme::type_scale;
     let now = chrono::Local::now();
     let text = palette.text;
     let rows = entries.iter().enumerate().map(|(index, entry)| {
@@ -7478,7 +7492,7 @@ fn render_peek(
                     .justify_center()
                     .child(
                         svg()
-                            .path("icons/type.svg")
+                            .path(icons::themed("icons/type.svg"))
                             .size(px(13.))
                             .text_color(palette.muted.opacity(0.7)),
                     )
@@ -7510,7 +7524,7 @@ fn render_peek(
             .when(entry.secret, |el| {
                 el.child(
                     svg()
-                        .path("icons/lock.svg")
+                        .path(icons::themed("icons/lock.svg"))
                         .size(px(11.))
                         .flex_none()
                         .text_color(palette.muted),
@@ -7521,7 +7535,7 @@ fn render_peek(
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.))
+                    .pill_text(12., type_scale::BODY_SMALL)
                     .when(entry.looks_like_code(), |el| {
                         el.font_family(crate::fonts::MONO).text_size(px(11.))
                     })
@@ -7551,7 +7565,7 @@ fn render_peek(
         .gap(px(7.))
         .child(
             svg()
-                .path("icons/clipboard.svg")
+                .path(icons::themed("icons/clipboard.svg"))
                 .size(px(13.))
                 .text_color(palette.muted)
                 .opacity(anim::ease_smooth_out(segment(intro, 0.10, 0.42))),
@@ -7560,6 +7574,8 @@ fn render_peek(
             div()
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
+                // Como el título de los otros vistazos (`peeks.rs`).
+                .pill_text_em(12., type_scale::TITLE_MEDIUM)
                 .child(peeks::falling("Portapapeles", intro)),
         )
         .child(div().flex_1())
@@ -7580,7 +7596,7 @@ fn render_peek(
         .flex()
         .items_center()
         .rounded(px(10.))
-        .text_size(px(11.))
+        .pill_text(11., type_scale::LABEL_LARGE)
         .opacity(anim::ease_smooth_out(segment(intro, 0.30, 0.3)))
         .fx("clip-peek-footer-fx", move |el, h| {
             let fg = h.mix(faint, text);
@@ -7588,7 +7604,7 @@ fn render_peek(
                 .child("Ver todo el portapapeles")
                 .child(
                     svg()
-                        .path("icons/arrow-up-right.svg")
+                        .path(icons::themed("icons/arrow-up-right.svg"))
                         .size(px(11.))
                         .text_color(fg)
                         .ml(px(5. + 2.0 * h.t)),
@@ -7615,7 +7631,7 @@ fn render_peek(
                     .px(px(16.))
                     .flex()
                     .items_center()
-                    .text_size(px(11.))
+                    .pill_text(11., type_scale::BODY_SMALL)
                     .text_color(palette.muted)
                     .child("Todavía no has copiado nada"),
             )
@@ -7632,6 +7648,7 @@ fn render_preview(
     shape: &PreviewShape,
     palette: &Palette,
 ) -> gpui::AnyElement {
+    use gpui_m3::theme::type_scale;
     let rect = shape.rect;
     let frame = div()
         .absolute()
@@ -7665,14 +7682,14 @@ fn render_preview(
             .child(caption(entry.preview.to_string())),
         Content::Color(label, color) => frame
             .child(div().flex_1().rounded(px(10.)).bg(*color))
-            .child(div().text_size(px(14.)).child(label.clone())),
+            .child(div().pill_text(14., type_scale::BODY_MEDIUM).child(label.clone())),
         Content::Text(_) => frame
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .text_size(px(12.))
+                    .pill_text(12., type_scale::BODY_SMALL)
                     .line_height(px(17.))
                     .when(entry.looks_like_code(), |el| {
                         el.font_family(crate::fonts::MONO).text_size(px(11.))

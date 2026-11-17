@@ -913,7 +913,7 @@ impl SnippetsPanel {
             .when(!self.mark_gap, |el| {
                 el.pl(px(14.)).child(
                     svg()
-                        .path("icons/search.svg")
+                        .path(crate::icons::themed("icons/search.svg"))
                         .size(px(13.))
                         .flex_none()
                         .mr(px(6.))
@@ -1015,7 +1015,7 @@ impl SnippetsPanel {
                 .rounded(px(14.))
                 .text_size(px(11.5))
                 .cursor_pointer()
-                .child(svg().path(icon).size(px(12.)).text_color(if primary { ink } else { muted }))
+                .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(if primary { ink } else { muted }))
                 .child(label)
                 .text_color(if primary { ink } else { muted })
                 .bg(if primary { text.opacity(0.9) } else { text.opacity(0.07) })
@@ -1123,7 +1123,7 @@ impl SnippetsPanel {
             .border_color(edge)
             .cursor_text()
             .on_click(cx.listener(|panel, _: &ClickEvent, window, cx| window.focus(&panel.new_task.focus_handle(cx))))
-            .child(svg().path("icons/plus.svg").size(px(14.)).flex_none().text_color(muted))
+            .child(svg().path(crate::icons::themed("icons/plus.svg")).size(px(14.)).flex_none().text_color(muted))
             .child(div().flex_1().min_w_0().text_size(px(12.5)).child(self.new_task.clone()))
             .child(
                 div()
@@ -1195,7 +1195,7 @@ impl SnippetsPanel {
                     panel.tasks.toggle(id);
                     cx.notify();
                 }))
-                .when(done, |el| el.child(svg().path("icons/check.svg").size(px(11.)).text_color(check_ink)));
+                .when(done, |el| el.child(svg().path(crate::icons::themed("icons/check.svg")).size(px(11.)).text_color(check_ink)));
             let remove = div()
                 .id(SharedString::from(format!("task-remove-{id}")))
                 .size(px(22.))
@@ -1293,7 +1293,7 @@ impl SnippetsPanel {
                 cx.stop_propagation();
                 panel.remove(row, cx)
             }))
-            .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
+            .child(svg().path(crate::icons::themed("icons/x.svg")).size(px(12.)).text_color(muted))
             .hover_bg(("snip-remove-fx", row), text.opacity(0.0), text.opacity(0.1));
 
         let row_el = div()
@@ -1333,7 +1333,7 @@ impl SnippetsPanel {
             .when(snippet.secret, |el| {
                 el.child(
                     svg()
-                        .path("icons/lock.svg")
+                        .path(crate::icons::themed("icons/lock.svg"))
                         .size(px(11.))
                         .flex_none()
                         .text_color(muted),
@@ -1402,7 +1402,7 @@ impl SnippetsPanel {
                 cx.stop_propagation();
                 panel.remove(row, cx)
             }))
-            .child(svg().path("icons/x.svg").size(px(13.)).text_color(s.on_surface_variant))
+            .child(svg().path(crate::icons::themed("icons/x.svg")).size(px(13.)).text_color(s.on_surface_variant))
             .fx(("snip-remove-fx", row), move |el, h| el.bg(s.on_surface_variant.opacity(crate::pill_look::PillTokens::layer_alpha(h.t, h.press))));
         // A la cabeza, el atajo (Ctrl+1–9) en un círculo tonal; después, el ícono.
         let leading = match (row < 9).then(|| (row + 1).to_string()) {
@@ -1413,7 +1413,7 @@ impl SnippetsPanel {
                 .child(n)
                 .into_any_element(),
             None => svg()
-                .path("icons/text-align-start.svg")
+                .path(crate::icons::themed("icons/text-align-start.svg"))
                 .size(px(13.))
                 .text_color(s.on_surface_variant)
                 .into_any_element(),
@@ -1446,7 +1446,7 @@ impl SnippetsPanel {
                     .child(snippet.stored.name.clone()),
             )
             .when(snippet.secret, |el| {
-                el.child(svg().path("icons/lock.svg").size(px(11.)).flex_none().text_color(s.on_surface_variant))
+                el.child(svg().path(crate::icons::themed("icons/lock.svg")).size(px(11.)).flex_none().text_color(s.on_surface_variant))
             })
             .child(
                 div()

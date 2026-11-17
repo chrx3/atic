@@ -271,8 +271,12 @@ impl Pill {
             Some(s) => s.on_surface,
             None => crate::Palette::dark().text,
         };
+        // Expressive: el verso que suena en TITLE_SMALL enfatizado (14, en
+        // negrita) y el siguiente en BODY_SMALL (12); los altos de línea
+        // quedan los de la caja para no recortar dos renglones.
+        let now_rest = if crate::theme::pill_type(gpui_m3::theme::type_scale::TITLE_SMALL).is_some() { 14. } else { 14.5 };
         let look = VerseLook {
-            now_size: lerp(14.5, 17.),
+            now_size: lerp(now_rest, 17.),
             now_line: lerp(18., 21.),
             now_h: if side { CURRENT_H_SIDE } else { current_h(grow) },
             now_color: text,

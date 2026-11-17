@@ -4,11 +4,13 @@
 //! baja una franja con lo último de esa herramienta, usable ahí mismo:
 //! - **Color**: los últimos colores; pasar por uno muestra su código y un
 //!   clic lo copia.
-//! - **Capturas**: las tres últimas; un clic copia la imagen y arrastrarla
-//!   la suelta como archivo en otra app (un chat, una carpeta, un correo).
+//! - **Capturas**: las últimas (en Expressive, un carrusel héroe que se
+//!   recorre de lado); un clic copia la imagen y arrastrarla (hacia abajo,
+//!   en el carrusel) la suelta como archivo en otra app.
 //! - **Textos**: los tres guardados más recientes; un clic los pega donde
 //!   estabas.
-//! - **Flip**: las páginas del tablero en miniatura; un clic abre esa.
+//! - **Flip**: las páginas del tablero en miniatura (en Expressive, un
+//!   carrusel multi-browse); un clic abre esa.
 //! - **Sistema**: CPU, memoria y lo que más consume.
 //! - **Reuniones**: grabar (o la llamada detectada), lo que se graba y las
 //!   últimas reuniones con su estado (ver `meetings/pill.rs`).
@@ -32,7 +34,7 @@ use gpui::{
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
 use gpui_m3::{corner, Morph, Scheme, ShapeName, Spring};
 
-use crate::anim::{ease_island, ease_smooth_out, segment, Anim, SpringKind, Tween};
+use crate::anim::{ease_island, ease_smooth_out, segment, Anim, SpringKind, SpringTrack, Tween};
 use crate::geometry::Rect;
 use crate::hover::{hover_fx_cx, m3_layer, m3_press_radii, m3_press_radius, HoverExt, M3_GROUP_RADII};
 use crate::i18n::t;
@@ -173,9 +175,30 @@ const QUICK_GAP: f32 = 8.0;
 /// Color: la tarjeta del color que se ve, sobre la fila de muestras.
 const COLOR_HERO_H: f32 = 64.0;
 const COLOR_M3_GAP: f32 = 12.0;
-/// Capturas: la última grande a la izquierda y las otras dos apiladas.
-const SHOTS_M3_H: f32 = 124.0;
-const SHOTS_M3_GAP: f32 = 8.0;
+/// Capturas: el carrusel héroe (la grande y la siguiente asomando).
+const SHOTS_M3_H: f32 = 160.0;
+/// Flip: el carrusel multi-browse de páginas, con su resumen encima.
+const PAGES_M3_H: f32 = 140.0;
+/// Los carruseles de M3 de Capturas (héroe) y Flip (multi-browse): las
+/// medidas y la física del `Carousel` de gpui-m3, hechos a mano porque aquí
+/// apretar una captura también la arrastra a otra app.
+const REEL_RADIUS: f32 = 28.0;
+const REEL_GAP: f32 = 8.0;
+const REEL_SMALL: f32 = 56.0;
+/// La rueda quieta este rato (s): se acomoda en un ítem.
+const REEL_WHEEL_IDLE: f32 = 0.12;
+/// Más allá de los extremos, el arrastre sigue a esta fracción del cursor
+/// (hasta tantos ítems).
+const REEL_RUBBER: f32 = 0.35;
+const REEL_OVERSCROLL: f32 = 4.0;
+/// Sin eventos del trackpad este rato (s), el gesto terminó: el que sigue es otro.
+const REEL_GESTURE_GAP: f32 = 0.15;
+/// Arrastrando el carrusel de capturas, alejarse esto en vertical suelta la
+/// captura apretada como archivo.
+const SHOT_DRAG_OUT: f32 = 36.0;
+/// Cuántas capturas y páginas se recorren.
+const REEL_SHOTS: usize = 8;
+const REEL_PAGES: usize = 12;
 /// Tareas: la tarjeta del contador y la lista agrupada, del mismo alto.
 const TASKS_M3_H: f32 = 118.0;
 const TASK_M3_ROW_H: f32 = 36.0;
@@ -308,6 +331,180 @@ struct Shot {
     video: bool,
 }
 
+/// Los carruseles de M3 de los vistazos.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReelKind {
+    /// Capturas: héroe.
+    Shots,
+    /// Flip: multi-browse.
+    Pages,
+}
+
+/// Un carrusel de M3 de un vistazo. Es dueño de los gestos que empiezan
+/// sobre él (rueda, trackpad de lado, arrastre); el resto del vistazo es del
+/// carrusel de vistazos (`peek_swipe`).
+struct Reel {
+    /// El desplazamiento en ítems (1.0: el segundo en el lugar del foco). Al
+    /// soltar se acomoda con `Spatial`; arrastrando salta al cursor.
+    pos: SpringTrack,
+    /// Arrastrando: la x del cursor y `pos` al empezar, y las últimas
+    /// posiciones (el impulso al soltar).
+    drag: Option<ReelDrag>,
+    /// Rueda o trackpad de lado: `pos` al empezar y el último evento. Quieta
+    /// `REEL_WHEEL_IDLE`, se acomoda.
+    wheel: Option<(f32, Instant)>,
+    /// Un gesto del trackpad que empezó sobre el carrusel.
+    touch: Option<ReelTouch>,
+    /// El largo de la tira del último cuadro (mide el paso en px).
+    container: std::cell::Cell<f32>,
+}
+
+struct ReelDrag {
+    x0: f32,
+    pos0: f32,
+    samples: Vec<(Instant, f32)>,
+}
+
+#[derive(Clone, Copy)]
+struct ReelTouch {
+    /// Lo recorrido de lado y vertical hasta decidir el eje, y el eje (`true`
+    /// de lado).
+    travel: (f32, f32),
+    axis: Option<bool>,
+    at: Instant,
+}
+
+/// Un ítem de un carrusel apretado: soltar sin moverse es clic; moverse de
+/// lado arrastra el carrusel y (en Capturas) en vertical suelta la captura
+/// como archivo.
+#[derive(Clone)]
+struct ReelPress {
+    kind: ReelKind,
+    index: usize,
+    origin: (f32, f32),
+    path: Option<PathBuf>,
+    /// Estaba en el foco (o, en Flip, se lee): el clic actúa. Si asomaba, el
+    /// clic lo trae al foco.
+    act: bool,
+}
+
+impl Reel {
+    fn new() -> Self {
+        Self {
+            pos: SpringTrack::new(0.0, SpringKind::Spatial),
+            drag: None,
+            wheel: None,
+            touch: None,
+            container: std::cell::Cell::new(crate::PANEL_W - SIDE * 2.0),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.pos.snap(0.0);
+        self.drag = None;
+        self.wheel = None;
+        self.touch = None;
+    }
+
+    /// Algo se mueve o espera acomodarse: hay que pedir cuadros.
+    fn busy(&self, now: Instant) -> bool {
+        self.drag.is_some() || self.wheel.is_some() || self.pos.is_running(now)
+    }
+
+    /// Px que corre un ítem.
+    fn step(&self, hero: bool) -> f32 {
+        (reel_keylines(hero, self.container.get())[0] + REEL_GAP).max(1.0)
+    }
+}
+
+/// El ancho de cada ítem según su distancia al foco (como `keylines` del
+/// `Carousel` de gpui-m3): héroe, el grande y uno chico asomando;
+/// multi-browse, grande, mediano y chico.
+fn reel_keylines(hero: bool, container: f32) -> Vec<f32> {
+    let small = REEL_SMALL.min(container / 8.0);
+    if hero {
+        vec![(container - REEL_GAP - small).max(0.0), small]
+    } else {
+        let large = (container - 2.0 * REEL_GAP - small).max(0.0) / 1.6;
+        vec![large, large * 0.6, small]
+    }
+}
+
+/// El ancho de un ítem `distance` ítems después del foco (negativo: antes).
+fn reel_extent(widths: &[f32], distance: f32) -> f32 {
+    let last = widths.len() - 1;
+    if distance <= -1.0 {
+        0.0
+    } else if distance < 0.0 {
+        widths[0] * (distance + 1.0)
+    } else if distance >= last as f32 {
+        widths[last]
+    } else {
+        let i = distance.floor() as usize;
+        let f = distance - i as f32;
+        widths[i] + (widths[i + 1] - widths[i]) * f
+    }
+}
+
+/// Los ítems a la vista: (índice, inicio, ancho) desde el borde de la tira.
+fn reel_slots(hero: bool, container: f32, count: usize, offset: f32) -> Vec<(usize, f32, f32)> {
+    let mut slots = Vec::new();
+    if count == 0 || container <= 0.0 {
+        return slots;
+    }
+    let widths = reel_keylines(hero, container);
+    let mut i = offset.floor() as isize - 1;
+    let mut x = 0.0;
+    while i < count as isize && x < container {
+        let extent = reel_extent(&widths, i as f32 - offset);
+        if i >= 0 && extent > 0.5 {
+            slots.push((i as usize, x, extent));
+        }
+        // El hueco crece con el ítem: uno que aparece no empuja a los demás.
+        x += extent + REEL_GAP * (extent / REEL_GAP).min(1.0);
+        i += 1;
+    }
+    slots
+}
+
+/// Hasta dónde se corre: héroe, el último en el foco; multi-browse, el
+/// último en el lugar mediano (en el chico no se leería).
+fn reel_max(hero: bool, count: usize) -> f32 {
+    if hero { count.saturating_sub(1) as f32 } else { count.saturating_sub(2) as f32 }
+}
+
+/// Al soltar: el ítem más cercano, lanzado a lo más 1,5 ítems por la
+/// velocidad (ítems por segundo).
+fn reel_snap_target(offset: f32, velocity: f32, max: f32) -> f32 {
+    let thrown = (velocity * 0.12).clamp(-1.5, 1.5);
+    (offset + thrown).round().clamp(0.0, max.max(0.0))
+}
+
+/// La rueda se acomoda en el ítem hacia donde giró, aunque sea poco.
+fn reel_wheel_target(from: f32, offset: f32, max: f32) -> f32 {
+    let net = offset - from;
+    let target = if net > 1e-3 {
+        (offset - 1e-3).ceil()
+    } else if net < -1e-3 {
+        (offset + 1e-3).floor()
+    } else {
+        offset.round()
+    };
+    target.clamp(0.0, max.max(0.0))
+}
+
+/// Más allá de un extremo, el arrastre sigue a una fracción del cursor.
+fn reel_rubber(raw: f32, max: f32) -> f32 {
+    let max = max.max(0.0);
+    if raw < 0.0 {
+        raw * REEL_RUBBER
+    } else if raw > max {
+        max + (raw - max) * REEL_RUBBER
+    } else {
+        raw
+    }
+}
+
 /// Una fila del vistazo de Celular.
 #[derive(Clone)]
 struct PhoneGlance {
@@ -371,6 +568,10 @@ pub(crate) struct ToolPeek {
     /// Una captura apretada: dónde empezó. Soltar sin moverse la copia;
     /// moverse la arrastra.
     press: Option<(PathBuf, (f32, f32))>,
+    /// En Expressive, los carruseles de Capturas y Flip, y el ítem apretado.
+    shots_reel: Reel,
+    pages_reel: Reel,
+    reel_press: Option<ReelPress>,
     /// CPU y memoria de Sistema (0 a 1): entre lecturas se deslizan al
     /// valor nuevo en vez de saltar.
     cpu: Tween,
@@ -492,6 +693,9 @@ impl ToolPeek {
             snack: None,
             hovered_color: None,
             press: None,
+            shots_reel: Reel::new(),
+            pages_reel: Reel::new(),
+            reel_press: None,
             cpu: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             ram: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             meetings_h: 0.0,
@@ -538,18 +742,23 @@ impl ToolPeek {
         match tool {
             t if t == crate::color::TOOL => self.data.colors = recent_colors(),
             t if t == crate::capture::TOOL => {
-                // Capturas y grabaciones juntas: las 3 más nuevas.
+                // Capturas y grabaciones juntas: las más nuevas (las que
+                // recorre el carrusel de Expressive; las listas muestran 3).
                 let modified = |path: &PathBuf| std::fs::metadata(path).and_then(|m| m.modified()).ok();
                 let mut all: Vec<(Option<std::time::SystemTime>, PathBuf, bool)> = crate::flip_board::recent_captures()
                     .into_iter()
-                    .take(6)
+                    .take(REEL_SHOTS)
                     .map(|path| (modified(&path), path, false))
-                    .chain(crate::screen_recording::recent_recordings(6).into_iter().map(|path| (modified(&path), path, true)))
+                    .chain(crate::screen_recording::recent_recordings(REEL_SHOTS).into_iter().map(|path| (modified(&path), path, true)))
                     .collect();
                 all.sort_by(|a, b| b.0.cmp(&a.0));
+                // Al bajar de nuevo, el carrusel parte por la más nueva.
+                if self.amount.value(Instant::now()) <= 0.01 {
+                    self.shots_reel.reset();
+                }
                 self.data.shots = all
                     .into_iter()
-                    .take(3)
+                    .take(REEL_SHOTS)
                     .map(|(_, path, video)| Shot {
                         label: shot_label(&path),
                         path,
@@ -563,7 +772,12 @@ impl ToolPeek {
                 self.data.tasks = tasks.ordered().into_iter().filter(|t| !t.done).take(3).cloned().collect();
                 self.data.tasks_today = tasks.today();
             }
-            t if t == crate::flip::TOOL => self.data.pages = crate::flip_board::board_glance(),
+            t if t == crate::flip::TOOL => {
+                if self.amount.value(Instant::now()) <= 0.01 {
+                    self.pages_reel.reset();
+                }
+                self.data.pages = crate::flip_board::board_glance();
+            }
             t if t == crate::board::TOOL => {
                 self.data.board = crate::board::Prefs::load();
                 self.data.last_shot = crate::flip_board::recent_captures()
@@ -650,7 +864,7 @@ impl ToolPeek {
                 if self.data.shots.is_empty() {
                     if self.m3 { EMPTY_M3_H } else { EMPTY_H }
                 } else if narrow {
-                    self.data.shots.len() as f32 * SHOT_ROW_H
+                    self.data.shots.len().min(3) as f32 * SHOT_ROW_H
                 } else if self.m3 {
                     SHOTS_M3_H
                 } else {
@@ -664,6 +878,7 @@ impl ToolPeek {
             t if t == crate::TEXTOS_TOOL && narrow => TASKS_COUNTER_H + 8.0 + TASKS_BODY_H,
             t if t == crate::TEXTOS_TOOL => TASKS_BODY_H,
             t if t == crate::flip::TOOL && narrow => self.data.pages.len().clamp(1, MAX_PAGES) as f32 * PAGE_ROW_H,
+            t if t == crate::flip::TOOL && self.m3 => PAGES_M3_H,
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL && self.m3 => SYS_CARD_H + SYS_CARD_GAP + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
@@ -720,6 +935,87 @@ fn shot_height(width: f32) -> f32 {
 fn page_size(width: f32) -> (f32, f32) {
     let w = (width - SIDE * 2.0 - PAGE_GAP * (MAX_PAGES as f32 - 1.0)) / MAX_PAGES as f32;
     (w, w * 0.75)
+}
+
+/// La primera línea de una página de Flip, o qué tiene si no hay texto.
+fn page_summary(page: &crate::flip_board::PageGlance) -> String {
+    if page.summary.is_empty() {
+        if !page.ink.is_empty() {
+            t("pill.peeks.pageDrawing").to_string()
+        } else if page.shapes.is_empty() {
+            t("pill.peeks.pageEmpty").to_string()
+        } else {
+            t("pill.peeks.pageNoText").to_string()
+        }
+    } else {
+        page.summary.clone()
+    }
+}
+
+/// Una hoja de Flip en miniatura de `w`×`h`: sus bloques donde están y sus
+/// trazos, dibujados hasta `drawn` (0 a 1).
+fn page_marks(page: &crate::flip_board::PageGlance, (w, h): (f32, f32), text: Hsla, drawn: f32) -> Vec<AnyElement> {
+    let shapes = page.shapes.iter().map(|&(x, y, bw, bh, kind)| {
+        let fill: Hsla = match kind {
+            1 => text.opacity(0.28),
+            2 => Hsla::from(rgb(0x6fa3e0)).opacity(0.7),
+            _ => text.opacity(0.5),
+        };
+        div()
+            .absolute()
+            .left(px(x * w))
+            .top(px(y * h))
+            .w(px((bw * w).max(3.0)))
+            .h(px((bh * h).max(2.0)))
+            .rounded(px(1.5))
+            .bg(fill)
+    });
+    let ink: Vec<_> = page
+        .ink
+        .iter()
+        .map(|(points, color)| {
+            let n = ((points.len() as f32 * drawn).ceil() as usize).min(points.len());
+            (points[..n].to_vec(), *color)
+        })
+        .filter(|(points, _)| points.len() >= 2)
+        .collect();
+    let strokes = gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            for (points, (r, g, b, a)) in &ink {
+                let screen: Vec<gpui::Point<gpui::Pixels>> = points
+                    .iter()
+                    .map(|&(x, y)| {
+                        gpui::point(
+                            bounds.origin.x + bounds.size.width * x,
+                            bounds.origin.y + bounds.size.height * y,
+                        )
+                    })
+                    .collect();
+                let options = lyon::tessellation::StrokeOptions::default()
+                    .with_line_width(1.3)
+                    .with_line_cap(lyon::tessellation::LineCap::Round)
+                    .with_line_join(lyon::tessellation::LineJoin::Round);
+                let mut builder = gpui::PathBuilder::stroke(px(1.3))
+                    .with_style(gpui::PathStyle::Stroke(options));
+                builder.add_polygon(&screen, false);
+                if let Ok(path) = builder.build() {
+                    let color = gpui::Rgba {
+                        r: *r as f32 / 255.0,
+                        g: *g as f32 / 255.0,
+                        b: *b as f32 / 255.0,
+                        a: *a as f32 / 255.0,
+                    };
+                    window.paint_path(path, color);
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+    let mut marks: Vec<AnyElement> = shapes.map(|shape| shape.into_any_element()).collect();
+    marks.push(strokes.into_any_element());
+    marks
 }
 
 /// Si el archivo es una grabación de pantalla.
@@ -932,6 +1228,8 @@ impl Pill {
                 }
             }
         }
+        // Los carruseles de Capturas y Flip (Expressive).
+        self.update_reels(now, cursor, cx);
 
         // En Expressive, lo copiado se va con su snackbar.
         let snack_done = self.advance_snack(now, cx);
@@ -951,7 +1249,7 @@ impl Pill {
                         .is_some_and(|(_, at)| now.duration_since(*at) >= COPIED_FOR));
             if !usable || copied_done {
                 self.close_tool_peek(now, cx);
-            } else if morphing || on_tool.is_some() || on_peek || relay_to || self.tool_peek.press.is_some() {
+            } else if morphing || on_tool.is_some() || on_peek || relay_to || self.tool_peek.press.is_some() || self.tool_peek.reel_press.is_some() {
                 self.tool_peek.leave_at = None;
             } else {
                 let since = *self.tool_peek.leave_at.get_or_insert(now);
@@ -1242,7 +1540,7 @@ impl Pill {
                     // En Expressive, la capa de estado de M3 sobre el relleno.
                     let bg = if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) };
                     let glyph = svg()
-                        .path("icons/chevron-right.svg")
+                        .path(crate::icons::themed("icons/chevron-right.svg"))
                         .size(px(14.))
                         .text_color(fg)
                         .when(dir < 0, |el| {
@@ -1449,6 +1747,8 @@ impl Pill {
             || self.tool_peek.cpu.is_running(now)
             || self.tool_peek.ram.is_running(now)
             || self.snack_animating(now)
+            || self.tool_peek.shots_reel.busy(now)
+            || self.tool_peek.pages_reel.busy(now)
     }
 
     pub(crate) fn tool_peek_rect(&self, now: Instant) -> Option<Rect> {
@@ -1816,14 +2116,14 @@ impl Pill {
                                         .justify_center()
                                         .rounded_full()
                                         .bg(m3_layer(text.opacity(0.07), text, h))
-                                        .child(svg().path(icon).size(px(14.)).text_color(fg)),
+                                        .child(svg().path(crate::icons::themed(icon)).size(px(14.)).text_color(fg)),
                                 );
                             }
                             el.text_color(fg)
                                 .when(compact, |el| {
                                     el.bg(if m3 { m3_layer(text.opacity(0.07), text, h) } else { text.opacity(0.07 + 0.09 * h.t) })
                                 })
-                                .child(svg().path(icon).size(px(if compact { 14. } else { 11. })).text_color(fg))
+                                .child(svg().path(crate::icons::themed(icon)).size(px(if compact { 14. } else { 11. })).text_color(fg))
                                 .when(!compact, |el| el.child(label))
                         })
                         .into_any_element(),
@@ -1851,7 +2151,7 @@ impl Pill {
                 .fx(("peek-kvm-settings", 1usize), move |el, h| {
                     let fg = h.mix(faint, text);
                     el.text_color(fg)
-                        .child(svg().path("icons/settings-2.svg").size(px(11.)).text_color(fg))
+                        .child(svg().path(crate::icons::themed("icons/settings-2.svg")).size(px(11.)).text_color(fg))
                         .child(t("pill.kvm.inSettings"))
                 })
                 .into_any_element()]
@@ -1877,7 +2177,7 @@ impl Pill {
                                 } else {
                                     // En Expressive el ícono lleva el acento.
                                     svg()
-                                        .path(icon)
+                                        .path(crate::icons::themed(icon))
                                         .size(px(if c.m3.is_some() { 16. } else { 13. }))
                                         .text_color(c.m3.map_or(c.muted, |s| s.primary))
                                         .opacity(m.enter(0))
@@ -1954,7 +2254,7 @@ impl Pill {
                                                     .bg(bg)
                                                     .when_some(m3, |el, s| el.border_1().border_color(s.outline_variant))
                                                     .child(label.clone())
-                                                    .child(svg().path("icons/arrow-up-right.svg").size(px(10.)).text_color(fg))
+                                                    .child(svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(10.)).text_color(fg))
                                             }),
                                     )
                                 }),
@@ -2006,7 +2306,7 @@ impl Pill {
                                                 .child(footer)
                                                 .child(
                                                     svg()
-                                                        .path("icons/arrow-up-right.svg")
+                                                        .path(crate::icons::themed("icons/arrow-up-right.svg"))
                                                         .size(px(11.))
                                                         .text_color(fg)
                                                         .ml(px(2.0 * h.t)),
@@ -2418,7 +2718,8 @@ impl Pill {
         // Angosto: una captura por fila, con la miniatura a la izquierda.
         let h = if narrow { SHOT_THUMB.1 } else { shot_height(width) };
         let (text, faint, ok) = (c.text, c.faint, c.ok);
-        let cells = shots.into_iter().enumerate().map(|(i, shot)| {
+        // Las listas muestran 3; el resto es del carrusel de Expressive.
+        let cells = shots.into_iter().take(3).enumerate().map(|(i, shot)| {
             let key = shot.path.to_string_lossy().to_string();
             let copied = self.is_copied(&key);
             let path = shot.path.clone();
@@ -2481,7 +2782,7 @@ impl Pill {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(svg().path("icons/video.svg").size(px(20.)).text_color(faint)),
+                                        .child(svg().path(crate::icons::themed("icons/video.svg")).size(px(20.)).text_color(faint)),
                                 )
                             })
                             .when(shot.video, |el| {
@@ -2496,7 +2797,7 @@ impl Pill {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
+                                        .child(svg().path(crate::icons::themed("icons/play.svg")).size(px(11.)).text_color(gpui::white())),
                                 )
                             })
                             .child(
@@ -2635,7 +2936,7 @@ impl Pill {
                         h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.12 + 0.06 * h.press))
                     };
                     let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
-                    el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
+                    el.bg(bg).child(svg().path(crate::icons::themed(icon)).size(px(icon_size)).text_color(fg))
                 })
         };
         let header = div()
@@ -2752,7 +3053,7 @@ impl Pill {
                     el.bg(text.opacity(0.08 * h.t))
                         .text_size(px(12.))
                         .text_color(fg)
-                        .child(svg().path("icons/plus.svg").size(px(13.)).text_color(fg))
+                        .child(svg().path(crate::icons::themed("icons/plus.svg")).size(px(13.)).text_color(fg))
                         .child(t("pill.peeks.phoneUnpaired"))
                 })
                 .into_any_element();
@@ -2773,7 +3074,7 @@ impl Pill {
                     .justify_center()
                     .rounded_full()
                     .bg(text.opacity(0.10))
-                    .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(text))
+                    .child(svg().path(crate::icons::themed("icons/smartphone.svg")).size(px(12.)).text_color(text))
                     .into_any_element(),
             };
             let detail: String = row.detail.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2863,17 +3164,17 @@ impl Pill {
                         } else {
                             (s.primary, s.primary.opacity(0.08 * h.t + 0.02 * h.press))
                         };
-                        return el.text_color(fg).bg(bg).child(svg().path(icon).size(px(12.)).text_color(fg)).child(label);
+                        return el.text_color(fg).bg(bg).child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(fg)).child(label);
                     }
                     if primary {
                         el.text_color(ink)
                             .bg(text.opacity(0.88 + 0.12 * h.t))
-                            .child(svg().path(icon).size(px(12.)).text_color(ink))
+                            .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(ink))
                             .child(label)
                     } else {
                         el.text_color(h.mix(muted, text))
                             .bg(text.opacity(0.07 * h.t))
-                            .child(svg().path(icon).size(px(12.)).text_color(h.mix(muted, text)))
+                            .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(h.mix(muted, text)))
                             .child(label)
                     }
                 })
@@ -2917,7 +3218,7 @@ impl Pill {
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
-                .child(svg().path("icons/check.svg").size(px(18.)).text_color(faint))
+                .child(svg().path(crate::icons::themed("icons/check.svg")).size(px(18.)).text_color(faint))
                 .child(div().text_size(px(11.5)).text_color(muted).child(t("pill.tasks.none")))
                 .into_any_element()
         } else {
@@ -3121,7 +3422,7 @@ impl Pill {
                         )
                         .child(div().truncate().text_size(px(11.)).text_color(faint).child(shot.label)),
                 )
-                .child(svg().path("icons/pencil.svg").size(px(14.)).text_color(muted))
+                .child(svg().path(crate::icons::themed("icons/pencil.svg")).size(px(14.)).text_color(muted))
                 .hover_bg("peek-board-shot-fx", text.opacity(0.0), text.opacity(0.08))
                 .into_any_element()
         });
@@ -3236,7 +3537,7 @@ impl Pill {
                                 .border_color(s.outline)
                                 .into_any_element()
                         } else {
-                            svg().path(icon).size(px(24.)).text_color(fg).into_any_element()
+                            svg().path(crate::icons::themed(icon)).size(px(24.)).text_color(fg).into_any_element()
                         };
                         return div()
                             .id(("peek-quick", i))
@@ -3306,7 +3607,7 @@ impl Pill {
                             .border_color(m3.map_or(gpui::white().opacity(0.28), |s| s.outline))
                             .into_any_element()
                     } else {
-                        svg().path(icon).size(px(18.)).text_color(fg).into_any_element()
+                        svg().path(crate::icons::themed(icon)).size(px(18.)).text_color(fg).into_any_element()
                     };
                     div()
                         .id(("peek-quick", i))
@@ -3457,21 +3758,14 @@ impl Pill {
 
     fn pages_body(&self, width: f32, narrow: bool, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let pages = self.tool_peek.data.pages.clone();
+        if let (Some(s), false) = (c.m3, narrow) {
+            return self.pages_body_m3(pages, width, c.text, s, m, cx);
+        }
         // Angosto: una página por fila, la miniatura a la izquierda.
         let (w, h) = if narrow { PAGE_THUMB } else { page_size(width) };
         let (text, muted, faint, m3) = (c.text, c.muted, c.faint, c.m3);
         let cells = pages.into_iter().take(MAX_PAGES).enumerate().map(|(i, page)| {
-            let summary = if page.summary.is_empty() {
-                if !page.ink.is_empty() {
-                    t("pill.peeks.pageDrawing").to_string()
-                } else if page.shapes.is_empty() {
-                    t("pill.peeks.pageEmpty").to_string()
-                } else {
-                    t("pill.peeks.pageNoText").to_string()
-                }
-            } else {
-                page.summary.clone()
-            };
+            let summary = page_summary(&page);
             div()
                 .id(("peek-page", i))
                 .w(px(w))
@@ -3502,64 +3796,6 @@ impl Pill {
                     let e = m.enter(i);
                     let drawn = ease_smooth_out(segment(m.t, 0.18 + i as f32 * 0.08, 0.9));
                     let el = el.relative().top(px(-8.0 * (1.0 - e))).opacity(e);
-                    let shapes = page.shapes.iter().map(|&(x, y, bw, bh, kind)| {
-                        let fill: Hsla = match kind {
-                            1 => text.opacity(0.28),
-                            2 => Hsla::from(rgb(0x6fa3e0)).opacity(0.7),
-                            _ => text.opacity(0.5),
-                        };
-                        div()
-                            .absolute()
-                            .left(px(x * w))
-                            .top(px(y * h))
-                            .w(px((bw * w).max(3.0)))
-                            .h(px((bh * h).max(2.0)))
-                            .rounded(px(1.5))
-                            .bg(fill)
-                    });
-                    let ink: Vec<_> = page
-                        .ink
-                        .iter()
-                        .map(|(points, color)| {
-                            let n = ((points.len() as f32 * drawn).ceil() as usize).min(points.len());
-                            (points[..n].to_vec(), *color)
-                        })
-                        .filter(|(points, _)| points.len() >= 2)
-                        .collect();
-                    let strokes = gpui::canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, _| {
-                            for (points, (r, g, b, a)) in &ink {
-                                let screen: Vec<gpui::Point<gpui::Pixels>> = points
-                                    .iter()
-                                    .map(|&(x, y)| {
-                                        gpui::point(
-                                            bounds.origin.x + bounds.size.width * x,
-                                            bounds.origin.y + bounds.size.height * y,
-                                        )
-                                    })
-                                    .collect();
-                                let options = lyon::tessellation::StrokeOptions::default()
-                                    .with_line_width(1.3)
-                                    .with_line_cap(lyon::tessellation::LineCap::Round)
-                                    .with_line_join(lyon::tessellation::LineJoin::Round);
-                                let mut builder = gpui::PathBuilder::stroke(px(1.3))
-                                    .with_style(gpui::PathStyle::Stroke(options));
-                                builder.add_polygon(&screen, false);
-                                if let Ok(path) = builder.build() {
-                                    let color = gpui::Rgba {
-                                        r: *r as f32 / 255.0,
-                                        g: *g as f32 / 255.0,
-                                        b: *b as f32 / 255.0,
-                                        a: *a as f32 / 255.0,
-                                    };
-                                    window.paint_path(path, color);
-                                }
-                            }
-                        },
-                    )
-                    .absolute()
-                    .size_full();
                     el.child(
                         div()
                             .w(px(w))
@@ -3575,8 +3811,7 @@ impl Pill {
                                     .border_1()
                                     .border_color(text.opacity(0.10 + 0.3 * hv.t)),
                             })
-                            .children(shapes)
-                            .child(strokes)
+                            .children(page_marks(&page, (w, h), text, drawn))
                             .child(match m3 {
                                 Some(s) => {
                                     let (bg, fg) = if i == 0 { (s.primary_container, s.on_primary_container) } else { (s.secondary_container, s.on_secondary_container) };
@@ -3634,6 +3869,104 @@ impl Pill {
             .when(narrow, |el| el.flex_col().gap(px(8.)))
             .children(cells)
             .into_any_element()
+    }
+
+    /// Flip en Expressive: las páginas en un carrusel multi-browse de M3 (una
+    /// grande, una mediana y una chica que asoma). Cada una es la hoja en
+    /// miniatura con su número y, encima, su primera línea en un chip que se
+    /// apaga al achicarse. Se recorre con la rueda, el trackpad de lado o
+    /// arrastrando; un clic abre la página (la chica, la trae).
+    fn pages_body_m3(&self, pages: Vec<crate::flip_board::PageGlance>, width: f32, text: Hsla, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let container = width - SIDE * 2.0;
+        let reel = &self.tool_peek.pages_reel;
+        reel.container.set(container);
+        let natural = reel_keylines(false, container)[0];
+        let pos = reel.pos.value(Instant::now());
+        let h = PAGES_M3_H;
+        let cells: Vec<AnyElement> = reel_slots(false, container, pages.len().min(REEL_PAGES), pos)
+            .into_iter()
+            .filter_map(|(i, start, extent)| {
+                let page = pages.get(i)?.clone();
+                let summary = page_summary(&page);
+                // La grande y la mediana se leen y abren; la chica asoma.
+                let act = extent >= natural * 0.5;
+                let label = ((extent / natural.max(1.0) - 0.6) / 0.4).clamp(0.0, 1.0);
+                let press = cx.listener(move |pill, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    let origin = (f32::from(event.position.x), f32::from(event.position.y));
+                    pill.tool_peek.reel_press = Some(ReelPress { kind: ReelKind::Pages, index: i, origin, path: None, act });
+                });
+                Some(
+                    hover_fx_cx(("peek-page-fx", i), move |hv, window, cx| {
+                        let radius = m3_press_radius(hv, REEL_RADIUS, 12.0, window, cx).min(extent / 2.0);
+                        let e = m.enter(i);
+                        let drawn = ease_smooth_out(segment(m.t, 0.18 + i as f32 * 0.08, 0.9));
+                        let (badge_bg, badge_fg) = if i == 0 { (s.primary_container, s.on_primary_container) } else { (s.secondary_container, s.on_secondary_container) };
+                        div()
+                            .id(("peek-page", i))
+                            .absolute()
+                            .left(px(start))
+                            .top(px(-8.0 * (1.0 - e)))
+                            .w(px(extent))
+                            .h(px(h))
+                            .opacity(e)
+                            .rounded(px(radius))
+                            .overflow_hidden()
+                            .bg(m3_layer(s.surface_container_high, s.on_surface, hv))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, press)
+                            // La hoja va al tamaño del foco, desde el borde del
+                            // ítem: al achicarse se recorta, no se deforma.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .w(px(natural))
+                                    .h(px(h))
+                                    .children(page_marks(&page, (natural, h), text, drawn)),
+                            )
+                            .child(tabular(
+                                div()
+                                    .absolute()
+                                    .top(px(10.))
+                                    .left(px(10.))
+                                    .size(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(badge_bg)
+                                    .text_color(badge_fg)
+                                    .type_style(type_scale::LABEL_MEDIUM)
+                                    .child(format!("{}", i + 1)),
+                            ))
+                            .when(label > 0.01, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(10.))
+                                        .bottom(px(10.))
+                                        .max_w(px((extent - 20.0).max(0.0)))
+                                        .h(px(24.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded_full()
+                                        .opacity(label)
+                                        .bg(s.surface_container_highest)
+                                        .text_color(s.on_surface)
+                                        .type_style(type_scale::LABEL_MEDIUM)
+                                        .child(div().truncate().child(summary)),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .into_any_element(),
+                )
+            })
+            .collect();
+        self.reel_strip(ReelKind::Pages, container, h, cells, cx)
     }
 
     // --- Computadores --------------------------------------------------------
@@ -3777,7 +4110,7 @@ impl Pill {
                     el.bg(text.opacity(0.08 * h.t))
                         .text_size(px(12.))
                         .text_color(fg)
-                        .child(svg().path("icons/plus.svg").size(px(13.)).text_color(fg))
+                        .child(svg().path(crate::icons::themed("icons/plus.svg")).size(px(13.)).text_color(fg))
                         .child(t("pill.kvm.peekPair"))
                 })
         });
@@ -3815,7 +4148,7 @@ impl Pill {
                         .justify_center()
                         .rounded_full()
                         .bg(text.opacity(0.10))
-                        .child(svg().path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }).size(px(12.)).text_color(text))
+                        .child(svg().path(crate::icons::themed(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" })).size(px(12.)).text_color(text))
                         // El punto de conectado, en la esquina.
                         .child(
                             div()
@@ -3862,7 +4195,7 @@ impl Pill {
                         cx.notify();
                     }),
                 )
-                .child(svg().path("icons/mouse-pointer-2.svg").size(px(14.)).flex_none().text_color(if sharing { text } else { muted }))
+                .child(svg().path(crate::icons::themed("icons/mouse-pointer-2.svg")).size(px(14.)).flex_none().text_color(if sharing { text } else { muted }))
                 .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(t("pill.kvm.share")))
                 .child(switch(sharing, ink))
                 .hover_bg(("peek-kvm-share-fx", i), text.opacity(0.0), text.opacity(0.06));
@@ -3982,12 +4315,12 @@ impl Pill {
                         } else {
                             (state_layer(s.secondary_container, s.on_secondary_container, h), s.on_secondary_container, 14.)
                         };
-                        return el.bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
+                        return el.bg(bg).child(svg().path(crate::icons::themed(icon)).size(px(side)).text_color(fg));
                     }
                     if big {
-                        el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(17.)).text_color(ink))
+                        el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(crate::icons::themed(icon)).size(px(17.)).text_color(ink))
                     } else {
-                        el.bg(text.opacity(0.06 + 0.08 * h.t)).child(svg().path(icon).size(px(14.)).text_color(h.mix(muted, text)))
+                        el.bg(text.opacity(0.06 + 0.08 * h.t)).child(svg().path(crate::icons::themed(icon)).size(px(14.)).text_color(h.mix(muted, text)))
                     }
                 })
         };
@@ -4228,7 +4561,7 @@ impl Pill {
                 gpui_m3::Shape::new(shape)
                     .size(px(40.))
                     .color(s.secondary_container)
-                    .child(svg().path(icon).size(px(18.)).text_color(s.on_secondary_container)),
+                    .child(svg().path(crate::icons::themed(icon)).size(px(18.)).text_color(s.on_secondary_container)),
             )
             .child(
                 div()
@@ -4300,12 +4633,12 @@ impl Pill {
                         .bg(s.primary_container)
                         .text_color(s.on_primary_container)
                         .type_style(type_scale::LABEL_LARGE)
-                        .child(svg().path("icons/check.svg").size(px(16.)).text_color(s.on_primary_container))
+                        .child(svg().path(crate::icons::themed("icons/check.svg")).size(px(16.)).text_color(s.on_primary_container))
                         .child(t("pill.peek.copied"))
                         .into_any_element()
                 } else {
                     svg()
-                        .path("icons/copy.svg")
+                        .path(crate::icons::themed("icons/copy.svg"))
                         .size(px(18.))
                         .flex_none()
                         .text_color(h.mix(s.on_surface_variant, s.on_surface))
@@ -4363,39 +4696,57 @@ impl Pill {
             .into_any_element()
     }
 
-    /// Capturas: la última, grande y destacada, a la izquierda; las otras dos
-    /// apiladas a su lado. Tarjetas con esquinas L (la grande, XL) y la hora en
-    /// un chip encima. Un clic copia y arrastrar la suelta como archivo.
+    /// Capturas: un carrusel héroe de M3 (la más nueva grande y la siguiente
+    /// asomando), con la hora en un chip que se apaga al achicarse. Se recorre
+    /// con la rueda, el trackpad de lado o arrastrando, y se acomoda al
+    /// soltar. Un clic copia (o, si asomaba, la trae); arrastrarla hacia
+    /// abajo la suelta como archivo.
     fn shots_body_m3(&self, shots: Vec<Shot>, width: f32, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
-        let inner = width - SIDE * 2.0;
-        let n = shots.len();
-        let hero_w = if n == 1 { inner } else { ((inner - SHOTS_M3_GAP) * 0.62).round() };
-        let side_w = inner - SHOTS_M3_GAP - hero_w;
-        let side_h = if n >= 3 { (SHOTS_M3_H - SHOTS_M3_GAP) / 2.0 } else { SHOTS_M3_H };
-        let mut cards: Vec<AnyElement> = shots
+        let container = width - SIDE * 2.0;
+        let reel = &self.tool_peek.shots_reel;
+        reel.container.set(container);
+        let natural = reel_keylines(true, container)[0];
+        let pos = reel.pos.value(Instant::now());
+        let cards: Vec<AnyElement> = reel_slots(true, container, shots.len().min(REEL_SHOTS), pos)
             .into_iter()
-            .enumerate()
-            .map(|(i, shot)| {
-                let (w, h) = if i == 0 { (hero_w, SHOTS_M3_H) } else { (side_w, side_h) };
-                self.shot_card_m3(i, shot, (w, h), s, m, cx)
+            .filter_map(|(i, start, extent)| {
+                let shot = shots.get(i)?.clone();
+                Some(self.shot_card_m3(i, shot, (start, extent), natural, s, m, cx))
             })
             .collect();
-        let hero = cards.remove(0);
+        self.reel_strip(ReelKind::Shots, container, SHOTS_M3_H, cards, cx)
+    }
+
+    /// La tira de un carrusel: recorta lo que sale por los lados y es dueña
+    /// de la rueda y del trackpad que empiezan sobre ella.
+    fn reel_strip(&self, kind: ReelKind, container: f32, h: f32, items: Vec<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .px(px(SIDE))
-            .h(px(SHOTS_M3_H))
-            .flex()
-            .gap(px(SHOTS_M3_GAP))
-            .child(hero)
-            .when(!cards.is_empty(), |el| el.child(div().flex().flex_col().gap(px(SHOTS_M3_GAP)).children(cards)))
+            .mx(px(SIDE))
+            .w(px(container))
+            .h(px(h))
+            .relative()
+            .overflow_hidden()
+            .on_scroll_wheel(cx.listener(move |pill, event: &gpui::ScrollWheelEvent, _, cx| {
+                if pill.reel_wheel(kind, event) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .children(items)
             .into_any_element()
     }
 
-    fn shot_card_m3(&self, i: usize, shot: Shot, (w, h): (f32, f32), s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+    #[allow(clippy::too_many_arguments)]
+    fn shot_card_m3(&self, i: usize, shot: Shot, (start, extent): (f32, f32), natural: f32, s: Scheme, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let key = shot.path.to_string_lossy().to_string();
         let copied = self.is_copied(&key);
         let path = shot.path.clone();
-        let hero = i == 0;
+        let h = SHOTS_M3_H;
+        // En el foco actúa; la que asoma, con un clic, pasa al foco.
+        let act = extent >= natural * 0.75;
+        // El chip de la hora se apaga mientras se achica (como el pie de
+        // foto del `Carousel` de gpui-m3).
+        let label = ((extent / natural.max(1.0) - 0.6) / 0.4).clamp(0.0, 1.0);
         let thumb = if shot.video {
             crate::screen_cursor::thumb_path(&shot.path).filter(|p| p.exists())
         } else {
@@ -4404,20 +4755,20 @@ impl Pill {
         let has_thumb = thumb.is_some();
         let press = cx.listener(move |pill, event: &MouseDownEvent, _, cx| {
             cx.stop_propagation();
-            let at = (f32::from(event.position.x), f32::from(event.position.y));
-            pill.tool_peek.press = Some((path.clone(), at));
+            let origin = (f32::from(event.position.x), f32::from(event.position.y));
+            pill.tool_peek.reel_press = Some(ReelPress { kind: ReelKind::Shots, index: i, origin, path: Some(path.clone()), act });
         });
         hover_fx_cx(("peek-shot-fx", i), move |hv, window, cx| {
-            let radius = m3_press_radius(hv, if hero { 28.0 } else { 16.0 }, 8.0, window, cx);
+            let radius = m3_press_radius(hv, REEL_RADIUS, 12.0, window, cx).min(extent / 2.0);
             let e = m.enter(i);
             let (chip_bg, chip_fg) = if copied { (s.primary, s.on_primary) } else { (s.surface_container_highest, s.on_surface) };
             div()
                 .id(("peek-shot", i))
-                .w(px(w))
-                .h(px(h))
-                .flex_none()
-                .relative()
+                .absolute()
+                .left(px(start))
                 .top(px(-8.0 * (1.0 - e)))
+                .w(px(extent))
+                .h(px(h))
                 .opacity(e)
                 .rounded(px(radius))
                 .overflow_hidden()
@@ -4427,10 +4778,12 @@ impl Pill {
                 // La imagen lleva las esquinas de la tarjeta (el recorte de
                 // GPUI es rectangular) y sus medidas fijas: dentro del caché de
                 // imágenes `size_full` no la limitaba y se salía de la tarjeta.
+                // Cubre lo que mide la tarjeta: al achicarse se recorta al
+                // centro, sin cambiar de tamaño (va a lo alto).
                 .children(thumb.map(|p| {
-                    div().absolute().left_0().top_0().w(px(w)).h(px(h)).child(crate::release::scoped(
+                    div().absolute().left_0().top_0().w(px(extent)).h(px(h)).child(crate::release::scoped(
                         gpui::SharedString::from(format!("shot-{}", p.display())),
-                        img(p).w(px(w)).h(px(h)).object_fit(ObjectFit::Cover).rounded(px(radius)),
+                        img(p).w(px(extent)).h(px(h)).object_fit(ObjectFit::Cover).rounded(px(radius)),
                     ))
                 }))
                 .when(shot.video && !has_thumb, |el| {
@@ -4441,33 +4794,255 @@ impl Pill {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(svg().path("icons/video.svg").size(px(24.)).text_color(s.on_surface_variant)),
+                            .child(svg().path(crate::icons::themed("icons/video.svg")).size(px(24.)).text_color(s.on_surface_variant)),
                     )
                 })
                 // La capa de estado, encima de la imagen.
                 .child(div().absolute().inset_0().rounded(px(radius)).bg(s.on_surface.opacity(0.08 * hv.t + 0.02 * hv.press)))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(if hero { 10. } else { 6. }))
-                        .bottom(px(if hero { 10. } else { 6. }))
-                        .max_w(px(w - 12.0))
-                        .h(px(if hero { 24. } else { 20. }))
-                        .px(px(if hero { 8. } else { 6. }))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .rounded_full()
-                        .bg(chip_bg)
-                        .text_color(chip_fg)
-                        .type_style(if hero { type_scale::LABEL_MEDIUM } else { type_scale::LABEL_SMALL })
-                        .when(shot.video && !copied, |el| el.child(svg().path("icons/play.svg").size(px(10.)).flex_none().text_color(chip_fg)))
-                        .when(copied, |el| el.child(svg().path("icons/check.svg").size(px(12.)).flex_none().text_color(chip_fg)))
-                        .child(tabular(div().truncate().child(if copied { t("pill.peeks.copiedShot").to_string() } else { shot.label.clone() }))),
-                )
+                .when(label > 0.01, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .left(px(10.))
+                            .bottom(px(10.))
+                            .max_w(px((extent - 20.0).max(0.0)))
+                            .h(px(24.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .rounded_full()
+                            .opacity(label)
+                            .bg(chip_bg)
+                            .text_color(chip_fg)
+                            .type_style(type_scale::LABEL_MEDIUM)
+                            .when(shot.video && !copied, |el| el.child(svg().path(crate::icons::themed("icons/play.svg")).size(px(10.)).flex_none().text_color(chip_fg)))
+                            .when(copied, |el| el.child(svg().path(crate::icons::themed("icons/check.svg")).size(px(12.)).flex_none().text_color(chip_fg)))
+                            .child(tabular(div().truncate().child(if copied { t("pill.peeks.copiedShot").to_string() } else { shot.label.clone() }))),
+                    )
+                })
                 .into_any_element()
         })
         .into_any_element()
+    }
+
+    /// Cuántos ítems recorre el carrusel `kind` y si es el héroe.
+    fn reel_count(&self, kind: ReelKind) -> (usize, bool) {
+        match kind {
+            ReelKind::Shots => (self.tool_peek.data.shots.len().min(REEL_SHOTS), true),
+            ReelKind::Pages => (self.tool_peek.data.pages.len().min(REEL_PAGES), false),
+        }
+    }
+
+    fn reel_mut(&mut self, kind: ReelKind) -> &mut Reel {
+        match kind {
+            ReelKind::Shots => &mut self.tool_peek.shots_reel,
+            ReelKind::Pages => &mut self.tool_peek.pages_reel,
+        }
+    }
+
+    /// La rueda o el trackpad sobre un carrusel. `true` si el gesto es suyo
+    /// (no sigue al carrusel de vistazos ni al despliegue): la rueda del mouse
+    /// siempre; el trackpad, si empezó sobre él y va de lado (uno vertical, o
+    /// la inercia de uno que empezó afuera, sigue de largo).
+    fn reel_wheel(&mut self, kind: ReelKind, event: &gpui::ScrollWheelEvent) -> bool {
+        let now = Instant::now();
+        let (count, hero) = self.reel_count(kind);
+        let max = reel_max(hero, count);
+        if max <= 0.0 {
+            return false;
+        }
+        let reel = self.reel_mut(kind);
+        if reel.drag.is_some() {
+            return true;
+        }
+        let delta = match event.delta {
+            gpui::ScrollDelta::Pixels(d) => {
+                let (dx, dy) = (f32::from(d.x), f32::from(d.y));
+                let fresh = |at: Instant| now.duration_since(at).as_secs_f32() < REEL_GESTURE_GAP;
+                if matches!(event.touch_phase, gpui::TouchPhase::Started) {
+                    reel.touch = Some(ReelTouch { travel: (0.0, 0.0), axis: None, at: now });
+                }
+                // El fin del gesto sigue de largo: la pill anota que se soltó
+                // (su inercia no despliega nada).
+                if matches!(event.touch_phase, gpui::TouchPhase::Ended) {
+                    reel.touch = None;
+                    return false;
+                }
+                match reel.touch.as_mut().filter(|touch| fresh(touch.at)) {
+                    Some(touch) => {
+                        touch.at = now;
+                        if touch.axis.is_none() {
+                            touch.travel.0 += dx.abs();
+                            touch.travel.1 += dy.abs();
+                            let (h, v) = touch.travel;
+                            if h + v >= AXIS_LOCK {
+                                touch.axis = Some(h > v * 1.5);
+                            }
+                        }
+                        if touch.axis != Some(true) {
+                            return false;
+                        }
+                    }
+                    // Sin gesto propio: la inercia del que se soltó aquí
+                    // sigue; la de uno que empezó afuera, no.
+                    None => {
+                        reel.touch = None;
+                        if !reel.wheel.is_some_and(|(_, at)| fresh(at)) {
+                            return false;
+                        }
+                    }
+                }
+                dx
+            }
+            // La rueda del mouse: la vertical también corre el carrusel.
+            gpui::ScrollDelta::Lines(d) => 40.0 * if d.x.abs() >= d.y.abs() { d.x } else { d.y },
+        };
+        let step = reel.step(hero);
+        let now_pos = reel.pos.value(now);
+        let from = reel.wheel.map_or(now_pos, |(from, _)| from);
+        reel.pos.snap((now_pos - delta / step).clamp(0.0, max));
+        reel.wheel = Some((from, now));
+        // Lo que quede del gesto, aunque salga del carrusel, no pasa de página
+        // en el carrusel de vistazos.
+        self.swipe.fired = true;
+        self.swipe.axis = Some(true);
+        true
+    }
+
+    /// Cada sondeo: la rueda quieta se acomoda, el arrastre sigue al cursor y
+    /// el ítem apretado se resuelve en clic, arrastre del carrusel o, en
+    /// Capturas, arrastre del archivo a otra app.
+    fn update_reels(&mut self, now: Instant, cursor: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        for kind in [ReelKind::Shots, ReelKind::Pages] {
+            let (count, hero) = self.reel_count(kind);
+            let max = reel_max(hero, count);
+            let reel = self.reel_mut(kind);
+            if let Some((from, at)) = reel.wheel {
+                if now.duration_since(at).as_secs_f32() >= REEL_WHEEL_IDLE {
+                    reel.wheel = None;
+                    let target = reel_wheel_target(from, reel.pos.value(now), max);
+                    reel.pos.set(target, now);
+                    cx.notify();
+                }
+            }
+            // Llegó o se fue algo y quedó fuera de rango: vuelve.
+            if reel.drag.is_none() && reel.wheel.is_none() {
+                let target = reel.pos.target();
+                let clamped = target.clamp(0.0, max.max(0.0));
+                if (clamped - target).abs() > 1e-3 {
+                    reel.pos.set(clamped, now);
+                    cx.notify();
+                }
+            }
+        }
+
+        let Some(press) = self.tool_peek.reel_press.clone() else {
+            return;
+        };
+        let kind = press.kind;
+        let (count, hero) = self.reel_count(kind);
+        let max = reel_max(hero, count);
+        let held = crate::win::left_button_down();
+        let (dx, dy) = cursor.map_or((0.0, 0.0), |c| (c.0 - press.origin.0, c.1 - press.origin.1));
+        if self.reel_mut(kind).drag.is_none() {
+            let moved = dx.hypot(dy) >= DRAG_START;
+            if moved && kind == ReelKind::Shots && (dy.abs() > dx.abs() || max <= 0.0) {
+                // Hacia abajo (o sin nada que recorrer): la captura sale como
+                // archivo, como antes.
+                self.tool_peek.reel_press = None;
+                self.close_tool_peek(now, cx);
+                if let Some(path) = press.path {
+                    self.drag_shot(path, cx);
+                }
+                return;
+            }
+            if moved && max > 0.0 {
+                let reel = self.reel_mut(kind);
+                reel.wheel = None;
+                let pos0 = reel.pos.value(now);
+                reel.drag = Some(ReelDrag { x0: press.origin.0, pos0, samples: vec![(now, pos0)] });
+            } else if !held {
+                self.tool_peek.reel_press = None;
+                self.reel_click(press, max, now, cx);
+                return;
+            } else {
+                return;
+            }
+        }
+
+        let reel = self.reel_mut(kind);
+        let step = reel.step(hero);
+        if let (Some(drag), Some(c)) = (reel.drag.as_mut(), cursor) {
+            let raw = (drag.pos0 + (drag.x0 - c.0) / step).clamp(-REEL_OVERSCROLL, max + REEL_OVERSCROLL);
+            let pos = reel_rubber(raw, max);
+            drag.samples.push((now, pos));
+            if drag.samples.len() > 8 {
+                drag.samples.remove(0);
+            }
+            reel.pos.snap(pos);
+            cx.notify();
+        }
+        let out = kind == ReelKind::Shots && dy.abs() >= SHOT_DRAG_OUT;
+        if !held || out {
+            let Some(drag) = reel.drag.take() else {
+                return;
+            };
+            let pos = reel.pos.value(now);
+            let velocity = drag
+                .samples
+                .iter()
+                .find(|(at, _)| now.duration_since(*at).as_secs_f32() < 0.1)
+                .filter(|(at, _)| *at < now)
+                .map_or(0.0, |(at, p)| (pos - p) / now.duration_since(*at).as_secs_f32());
+            // Saliendo hacia abajo no se lanza: queda en la más cercana.
+            let target = reel_snap_target(pos, if out { 0.0 } else { velocity }, max);
+            reel.pos.set(target, now);
+            self.tool_peek.reel_press = None;
+            if out {
+                self.close_tool_peek(now, cx);
+                if let Some(path) = press.path {
+                    self.drag_shot(path, cx);
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    /// Un ítem de un carrusel soltado sin moverse: si asomaba pasa al foco;
+    /// si no, copia la captura (o abre la grabación) o abre la página.
+    fn reel_click(&mut self, press: ReelPress, max: f32, now: Instant, cx: &mut Context<Self>) {
+        if self.tool_peek.amount.target() != 1.0 {
+            return;
+        }
+        if !press.act {
+            self.reel_mut(press.kind).pos.set((press.index as f32).min(max), now);
+            cx.notify();
+            return;
+        }
+        match press.kind {
+            ReelKind::Shots => {
+                let Some(path) = press.path else {
+                    return;
+                };
+                if is_video_path(&path) {
+                    self.close_tool_peek(now, cx);
+                    crate::screen_recording::open_recording(path, cx);
+                } else {
+                    let key = path.to_string_lossy().to_string();
+                    self.copy_shot(path, key, cx);
+                }
+            }
+            ReelKind::Pages => {
+                crate::flip_board::OPEN_PAGE.store(press.index, std::sync::atomic::Ordering::Relaxed);
+                // Abrir pide la ventana: después del sondeo.
+                cx.defer(|cx| {
+                    if let Some(pill) = cx.windows().into_iter().find_map(|w| w.downcast::<crate::Pill>()) {
+                        let _ = pill.update(cx, |pill, window, cx| pill.open_from_peek(crate::flip::TOOL, window, cx));
+                    }
+                });
+            }
+        }
     }
 
     /// Tareas: el héroe a la izquierda, las hechas hoy del total en grande sobre
@@ -4504,7 +5079,7 @@ impl Pill {
                 .type_style(type_scale::LABEL_LARGE)
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, add)
-                .child(svg().path("icons/plus.svg").size(px(16.)).flex_none().text_color(s.on_primary))
+                .child(svg().path(crate::icons::themed("icons/plus.svg")).size(px(16.)).flex_none().text_color(s.on_primary))
                 .child(div().truncate().child(t("pill.tasks.add")))
                 .into_any_element()
         });
@@ -4522,7 +5097,7 @@ impl Pill {
                 .cursor_pointer()
                 .tooltip(crate::hover::tip(t("pill.tasks.seeAll")))
                 .on_mouse_down(MouseButton::Left, all)
-                .child(svg().path("icons/arrow-up-right.svg").size(px(16.)).text_color(s.on_primary_container))
+                .child(svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(16.)).text_color(s.on_primary_container))
                 .into_any_element()
         });
         let e0 = m.enter(0);
@@ -4581,7 +5156,7 @@ impl Pill {
                     gpui_m3::Shape::new(ShapeName::Cookie9)
                         .size(px(40.))
                         .color(s.secondary_container)
-                        .child(svg().path("icons/check.svg").size(px(18.)).text_color(s.on_secondary_container)),
+                        .child(svg().path(crate::icons::themed("icons/check.svg")).size(px(18.)).text_color(s.on_secondary_container)),
                 )
                 .child(
                     div()
@@ -4652,7 +5227,7 @@ impl Pill {
                                             .justify_center()
                                             .rounded(px(2.))
                                             .when(pressed, |el| {
-                                                el.bg(s.primary).child(svg().path("icons/check.svg").size(px(12.)).text_color(s.on_primary))
+                                                el.bg(s.primary).child(svg().path(crate::icons::themed("icons/check.svg")).size(px(12.)).text_color(s.on_primary))
                                             })
                                             .when(!pressed, |el| el.border_2().border_color(h.mix(s.on_surface_variant, s.primary))),
                                     ),
@@ -4821,7 +5396,7 @@ impl Pill {
                     .opacity(e)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, click)
-                    .child(svg().path(icon).size(px(if big { 24. } else { 18. })).text_color(fg))
+                    .child(svg().path(crate::icons::themed(icon)).size(px(if big { 24. } else { 18. })).text_color(fg))
                     .into_any_element()
             })
         };
@@ -5143,7 +5718,7 @@ impl Pill {
                             .justify_center()
                             .rounded_full()
                             .bg(s.secondary_container)
-                            .child(svg().path("icons/pencil.svg").size(px(16.)).text_color(s.on_secondary_container)),
+                            .child(svg().path(crate::icons::themed("icons/pencil.svg")).size(px(16.)).text_color(s.on_secondary_container)),
                     )
                     .into_any_element()
             })
@@ -5196,7 +5771,7 @@ impl Pill {
                         .justify_center()
                         .rounded_full()
                         .bg(s.secondary_container)
-                        .child(svg().path("icons/smartphone.svg").size(px(14.)).text_color(s.on_secondary_container))
+                        .child(svg().path(crate::icons::themed("icons/smartphone.svg")).size(px(14.)).text_color(s.on_secondary_container))
                         .into_any_element(),
                 };
                 div()
@@ -5356,7 +5931,7 @@ impl Pill {
                     .opacity(e)
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, open)
-                    .child(svg().path("icons/plus.svg").size(px(16.)).text_color(s.on_secondary_container))
+                    .child(svg().path(crate::icons::themed("icons/plus.svg")).size(px(16.)).text_color(s.on_secondary_container))
                     .child(t("pill.kvm.peekPair"))
                     .into_any_element()
             }))
@@ -5394,7 +5969,7 @@ impl Pill {
                         .color(shape_bg)
                         .breathe_on_hover(("peek-kvm-shape", i), ShapeName::Cookie4)
                         .hovered(connected)
-                        .child(svg().path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }).size(px(14.)).text_color(shape_fg)),
+                        .child(svg().path(crate::icons::themed(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" })).size(px(14.)).text_color(shape_fg)),
                 )
                 .child(
                     div()
@@ -5431,7 +6006,7 @@ impl Pill {
                     .cursor_pointer()
                     .tooltip(crate::hover::tip_text(hint))
                     .on_mouse_down(MouseButton::Left, toggle)
-                    .child(svg().path("icons/mouse-pointer-2.svg").size(px(16.)).flex_none().text_color(if sharing { s.primary } else { s.on_surface_variant }))
+                    .child(svg().path(crate::icons::themed("icons/mouse-pointer-2.svg")).size(px(16.)).flex_none().text_color(if sharing { s.primary } else { s.on_surface_variant }))
                     .child(div().flex_1().min_w_0().truncate().type_style(type_scale::BODY_SMALL).text_color(s.on_surface).child(t("pill.kvm.share")))
                     .child(m3_switch(sharing, s))
                     .into_any_element()
@@ -5768,6 +6343,58 @@ mod tests {
             .map(|i| PhoneGlance { app: format!("{i}"), icon: None, title: String::new(), detail: String::new() })
             .collect();
         assert_eq!(peek.content_height(crate::CELULAR_TOOL, 400.0, false), frame + 3.0 * PHONE_M3_ROW_H + 2.0 * LIST_M3_GAP);
+    }
+
+    #[test]
+    fn en_expressive_capturas_y_flip_son_carruseles() {
+        let mut peek = ToolPeek::new();
+        peek.m3 = true;
+        let frame = TITLE_H + FOOTER_H + BOTTOM;
+        // Ocho capturas: arriba, el alto del carrusel; al costado, tres filas.
+        peek.data.shots = (0..REEL_SHOTS)
+            .map(|i| Shot { path: PathBuf::from(format!("{i}.png")), label: String::new(), video: false })
+            .collect();
+        assert_eq!(peek.content_height(crate::capture::TOOL, 400.0, false), frame + SHOTS_M3_H);
+        assert_eq!(peek.content_height(crate::capture::TOOL, 300.0, true), frame + 3.0 * SHOT_ROW_H);
+        peek.data.pages = vec![crate::flip_board::PageGlance { summary: String::new(), shapes: Vec::new(), ink: Vec::new() }; 6];
+        assert_eq!(peek.content_height(crate::flip::TOOL, 400.0, false), frame + PAGES_M3_H);
+        assert_eq!(peek.content_height(crate::flip::TOOL, 300.0, true), frame + MAX_PAGES as f32 * PAGE_ROW_H);
+    }
+
+    #[test]
+    fn el_carrusel_mide_como_el_de_gpui_m3() {
+        let container = crate::PANEL_W - SIDE * 2.0;
+        // Héroe: la grande y una chica asomando llenan la tira con su hueco.
+        let hero = reel_slots(true, container, 8, 0.0);
+        assert_eq!(hero.len(), 2);
+        assert_eq!((hero[0].0, hero[0].1), (0, 0.0));
+        assert!((hero[0].2 + REEL_GAP + hero[1].2 - container).abs() < 0.01);
+        assert!(hero[1].2 <= REEL_SMALL);
+        // A medio camino ninguna se monta en la siguiente.
+        for offset in [0.3, 0.5, 2.7] {
+            for pair in reel_slots(true, container, 8, offset).windows(2) {
+                assert!(pair[0].1 + pair[0].2 <= pair[1].1 + 0.01);
+            }
+        }
+        // Multi-browse: grande, mediana y chica.
+        let browse = reel_slots(false, container, 5, 0.0);
+        assert_eq!(browse.len(), 3);
+        assert!(browse[0].2 > browse[1].2 && browse[1].2 > browse[2].2);
+        // Héroe hasta la última en el foco; multi-browse, hasta la mediana.
+        assert_eq!(reel_max(true, 8), 7.0);
+        assert_eq!(reel_max(false, 5), 3.0);
+        assert_eq!(reel_max(false, 1), 0.0);
+        // Al soltar, la más cercana o hacia donde se lanzó.
+        assert_eq!(reel_snap_target(1.4, 0.0, 7.0), 1.0);
+        assert_eq!(reel_snap_target(1.4, 8.0, 7.0), 2.0);
+        assert_eq!(reel_snap_target(6.8, 30.0, 7.0), 7.0);
+        // La rueda avanza una aunque se gire poco.
+        assert_eq!(reel_wheel_target(1.0, 1.1, 7.0), 2.0);
+        assert_eq!(reel_wheel_target(1.0, 0.9, 7.0), 0.0);
+        // Más allá de los extremos, a una fracción.
+        assert_eq!(reel_rubber(-1.0, 3.0), -REEL_RUBBER);
+        assert_eq!(reel_rubber(4.0, 3.0), 3.0 + REEL_RUBBER);
+        assert_eq!(reel_rubber(2.0, 3.0), 2.0);
     }
 
     #[test]

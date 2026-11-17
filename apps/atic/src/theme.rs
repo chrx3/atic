@@ -316,9 +316,37 @@ pub(crate) trait SmallText: gpui::Styled + Sized {
             None => self.text_size(gpui::px(atic)),
         }
     }
+
+    /// Un texto de la pill con su rol de la escala de M3: en Expressive, el
+    /// tamaño, el alto de línea y el peso de `role`; en Atic, `atic` px. Va
+    /// después de los `font_weight`/`line_height` de Atic para mandar en
+    /// Expressive.
+    fn pill_text(self, atic: f32, role: gpui_m3::theme::type_scale::TypeStyle) -> Self {
+        use gpui_m3::theme::type_scale::TypeScaleExt;
+        match pill_type(role) {
+            Some(role) => self.type_style(role),
+            None => self.text_size(gpui::px(atic)),
+        }
+    }
+
+    /// Como `pill_text`, con la variante enfatizada del rol (títulos y cifras
+    /// importantes).
+    fn pill_text_em(self, atic: f32, role: gpui_m3::theme::type_scale::TypeStyle) -> Self {
+        use gpui_m3::theme::type_scale::TypeScaleExt;
+        match pill_type(role) {
+            Some(role) => self.type_emphasized(role),
+            None => self.text_size(gpui::px(atic)),
+        }
+    }
 }
 
 impl<E: gpui::Styled> SmallText for E {}
+
+/// El rol de la escala de M3 de un texto de la pill: `Some` solo en Expressive.
+/// Para lo que se pinta a mano (`shape_line`) y no pasa por `pill_text`.
+pub(crate) fn pill_type(role: gpui_m3::theme::type_scale::TypeStyle) -> Option<gpui_m3::theme::type_scale::TypeStyle> {
+    crate::pill_look::content_scheme().map(|_| role)
+}
 
 /// El fondo de toda la ventana (su raíz).
 pub fn window_bg() -> Hsla {

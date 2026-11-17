@@ -34,6 +34,8 @@ use crate::agents::{self, Session, Status, AGENTS};
 use crate::anim::{ease_smooth_out, segment, Anim, SpringKind, SpringTrack, Tween};
 use crate::geometry::{Edge, Rect};
 use crate::i18n::{t, tf};
+use crate::theme::SmallText;
+use gpui_m3::theme::type_scale;
 
 // --- Colores: los del panel de Agentes ------------------------------------------------
 
@@ -892,7 +894,8 @@ fn m3_chip_element(glyph: Glyph, n: usize, rect: Rect, hovered: bool, alpha: f32
 pub fn badge_element(center: (f32, f32), glyph: Glyph, n: usize, alpha: f32) -> AnyElement {
     let color = if glyph == Glyph::Decision { DECISION } else { READY };
     let text = count_text(n);
-    let w = (text.chars().count() as f32 * 6.0 + 8.0).max(14.0);
+    let m3 = crate::theme::pill_type(type_scale::LABEL_SMALL).is_some();
+    let w = (text.chars().count() as f32 * if m3 { 7.0 } else { 6.0 } + 8.0).max(14.0);
     div()
         .absolute()
         .left(px(center.0 - w / 2.0))
@@ -908,6 +911,13 @@ pub fn badge_element(center: (f32, f32), glyph: Glyph, n: usize, alpha: f32) -> 
         .font_family(crate::fonts::UI)
         .text_size(px(9.))
         .font_weight(FontWeight::BOLD)
+        // Expressive: la insignia grande de M3 (LABEL_SMALL), con cifras
+        // tabulares y el alto de línea de la caja de 14.
+        .when(m3, |el| {
+            el.font(crate::fonts::tabular(type_scale::LABEL_SMALL.emphasized))
+                .text_size(type_scale::LABEL_SMALL.size)
+                .line_height(px(14.))
+        })
         .text_color(hsla(INK))
         .opacity(alpha)
         .child(SharedString::from(text))
@@ -1111,7 +1121,7 @@ pub fn button(label: &'static str, w: f32, primary: bool, hovered: bool) -> Div 
         .items_center()
         .justify_center()
         .rounded(px(BTN_H / 2.0))
-        .text_size(px(12.))
+        .pill_text(12., type_scale::LABEL_MEDIUM)
         .bg(bg)
         .text_color(fg)
         .child(label)
@@ -1159,11 +1169,17 @@ pub fn row_body(item: &Item, now: i64) -> Div {
         .flex_1()
         .min_w_0()
         .truncate()
-        .text_size(px(11.))
+        .pill_text(11., type_scale::BODY_SMALL)
         .text_color(hsla(MUTED))
         .when(item.mono, |el| el.font_family(crate::fonts::MONO).text_size(px(10.5)))
         // El contador de la llamada se lee de lejos.
-        .when(item.kind == Kind::OnCall, |el| el.text_size(px(12.)).text_color(hsla(READY)))
+        .when(item.kind == Kind::OnCall, |el| {
+            el.pill_text_em(12., type_scale::LABEL_MEDIUM)
+                .when(crate::theme::pill_type(type_scale::LABEL_MEDIUM).is_some(), |el| {
+                    el.font(crate::fonts::tabular(type_scale::LABEL_MEDIUM.emphasized))
+                })
+                .text_color(hsla(READY))
+        })
         .child(SharedString::from(item.detail.clone()));
     div()
         .flex_1()
@@ -1193,6 +1209,7 @@ pub fn row_body(item: &Item, now: i64) -> Div {
                                 .truncate()
                                 .text_size(px(12.))
                                 .when(from_phone, |el| el.font_weight(FontWeight::MEDIUM))
+                                .pill_text(12., type_scale::LABEL_MEDIUM)
                                 .child(SharedString::from(item.title.clone())),
                         )
                         .child(div().flex_1())
@@ -1203,13 +1220,13 @@ pub fn row_body(item: &Item, now: i64) -> Div {
                                     .flex()
                                     .items_center()
                                     .gap(px(3.))
-                                    .text_size(px(10.))
+                                    .pill_text(10., type_scale::LABEL_SMALL)
                                     .text_color(hsla(FAINT))
                                     .child(svg().path("icons/smartphone.svg").size(px(10.)).text_color(hsla(FAINT)))
                                     .child(SharedString::from(item.phone.as_ref().map(|p| p.app.clone()).unwrap_or_default())),
                             )
                         })
-                        .child(div().flex_none().text_size(px(10.)).text_color(hsla(FAINT)).child(SharedString::from(ago))),
+                        .child(div().flex_none().pill_text(10., type_scale::LABEL_SMALL).text_color(hsla(FAINT)).child(SharedString::from(ago))),
                 )
                 .child(div().w_full().flex().items_center().gap(px(6.)).child(detail)),
         )
@@ -1389,7 +1406,7 @@ pub fn banner_element(
                 .items_center()
                 .justify_between()
                 .rounded(px(10.))
-                .text_size(px(11.))
+                .pill_text(11., type_scale::LABEL_LARGE)
                 .text_color(hsla(MUTED))
                 .when(hovered == Some(Hit::Footer), |el| el.bg(hsla(TEXT).opacity(0.08)))
                 .child(t("pill.tray.openTray"))

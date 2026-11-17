@@ -253,12 +253,12 @@ impl Pill {
                         };
                         let rest = if big && running { 16.0 } else { size / 2.0 };
                         let radius = crate::hover::m3_press_radius(h, rest, if big { 12.0 } else { 8.0 }, window, cx);
-                        return el.rounded(px(radius)).bg(bg).child(svg().path(icon).size(px(side)).text_color(fg));
+                        return el.rounded(px(radius)).bg(bg).child(svg().path(crate::icons::themed(icon)).size(px(side)).text_color(fg));
                     }
                     if big {
-                        el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(icon).size(px(18.)).text_color(ink))
+                        el.bg(text.opacity(0.88 + 0.12 * h.t)).child(svg().path(crate::icons::themed(icon)).size(px(18.)).text_color(ink))
                     } else {
-                        el.bg(text.opacity(0.06 + 0.08 * h.t)).child(svg().path(icon).size(px(15.)).text_color(h.mix(muted, text)))
+                        el.bg(text.opacity(0.06 + 0.08 * h.t)).child(svg().path(crate::icons::themed(icon)).size(px(15.)).text_color(h.mix(muted, text)))
                     }
                 })
         };

@@ -260,7 +260,7 @@ impl Render for MeetingsNotch {
                         let fg = h.mix(ink.faint, ink.text);
                         el.text_color(fg)
                             .child(t("pill.meetings.notch.open"))
-                            .child(gpui::svg().path("icons/arrow-up-right.svg").size(px(11.)).text_color(fg))
+                            .child(gpui::svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(11.)).text_color(fg))
                     }),
             );
 
@@ -519,7 +519,7 @@ fn row_m3(
             gpui_m3::Shape::new(shape)
                 .size(px(36.))
                 .color(shape_bg)
-                .child(svg().path("icons/audio-lines.svg").size(px(16.)).text_color(shape_fg)),
+                .child(svg().path(crate::icons::themed("icons/audio-lines.svg")).size(px(16.)).text_color(shape_fg)),
         )
         .child(
             div()
@@ -786,7 +786,7 @@ fn body_m3(studio: &Entity<Studio>, scheme: Scheme, open: super::pill::OpenMeeti
                                     .overflow_hidden()
                                     .child(SharedString::from(text.to_string())),
                             )
-                            .child(svg().path("icons/x.svg").size(px(14.)).flex_none().text_color(fg)),
+                            .child(svg().path(crate::icons::themed("icons/x.svg")).size(px(14.)).flex_none().text_color(fg)),
                     ),
                 );
             }
@@ -924,7 +924,7 @@ impl MeetingsNotch {
                     cx.emit(MeetingsNotchEvent::Close);
                 }))
                 .child(t("pill.meetings.notch.open"))
-                .child(svg().path("icons/arrow-up-right.svg").size(px(14.)).text_color(s.primary))
+                .child(svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(14.)).text_color(s.primary))
                 .fx_cx("meet-notch-open-fx", move |el, h, window, cx| {
                     let radius = crate::hover::m3_press_radius(h, 16.0, 8.0, window, cx);
                     el.rounded(px(radius)).bg(crate::hover::m3_layer(s.primary.opacity(0.0), s.primary, h))

@@ -2800,11 +2800,11 @@ impl MediaPanel {
                         .object_fit(ObjectFit::Cover)
                         .into_any_element(),
                     None => svg()
-                        .path(if track.position.is_some_and(|(_, end)| end > 600.0) {
+                        .path(crate::icons::themed(if track.position.is_some_and(|(_, end)| end > 600.0) {
                             "icons/video.svg"
                         } else {
                             "icons/audio-lines.svg"
-                        })
+                        }))
                         .size(px(16.))
                         .text_color(white(0.45))
                         .into_any_element(),
@@ -2865,7 +2865,7 @@ impl MediaPanel {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(svg().path(icon).size(px(12.)).text_color(ink)),
+                            .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(ink)),
                     )
                     .child(
                         div()
@@ -2911,7 +2911,7 @@ impl MediaPanel {
                     }))
                     .fx(SharedString::from(format!("media-src-{name}-{i}-fx")), move |el, h| {
                         el.bg(h.mix(white(0.0), white(0.14 + 0.06 * h.press)))
-                            .child(svg().path(icon).size(px(size * (0.5 - 0.04 * h.press))).text_color(text))
+                            .child(svg().path(crate::icons::themed(icon)).size(px(size * (0.5 - 0.04 * h.press))).text_color(text))
                     })
             };
             let toggle = small_button(
@@ -3049,7 +3049,7 @@ impl MediaPanel {
                 let fg = if on { fg } else { h.mix(fg, rgb(0xf0f0ea).into()) };
                 el.bg(h.mix(white(if on { 0.16 } else { 0.06 }), white(0.22)))
                     .text_color(fg)
-                    .child(svg().path("icons/mic-vocal.svg").size(px(13.)).text_color(fg))
+                    .child(svg().path(crate::icons::themed("icons/mic-vocal.svg")).size(px(13.)).text_color(fg))
                     .child(if on { "Letra" } else { "Sin letra" })
             })
     }
@@ -3097,7 +3097,7 @@ impl MediaPanel {
             .rounded(px(12.))
             .cursor_pointer()
             .child(label)
-            .child(svg().path("icons/arrow-up-right.svg").size(px(12.)).flex_none().text_color(muted))
+            .child(svg().path(crate::icons::themed("icons/arrow-up-right.svg")).size(px(12.)).flex_none().text_color(muted))
             .tooltip(crate::hover::tip_text(tip.into()))
             .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
                 if panel.media.track().is_some_and(|track| focus_source(&track)) {
@@ -3164,7 +3164,7 @@ impl MediaPanel {
                     h.mix(white(0.0), white(0.12 + 0.06 * h.press))
                 };
                 let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
-                el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
+                el.bg(bg).child(svg().path(crate::icons::themed(icon)).size(px(icon_size)).text_color(fg))
             })
     }
 
@@ -3322,7 +3322,7 @@ impl MediaPanel {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(svg().path(icon).size(px(15.)).text_color(ink)),
+                            .child(svg().path(crate::icons::themed(icon)).size(px(15.)).text_color(ink)),
                     )
                     .child(
                         div()
@@ -3364,14 +3364,14 @@ impl MediaPanel {
                     }))
                     .child(
                         svg()
-                            .path(if headphones { "icons/headphones.svg" } else { "icons/speaker.svg" })
+                            .path(crate::icons::themed(if headphones { "icons/headphones.svg" } else { "icons/speaker.svg" }))
                             .size(px(14.))
                             .text_color(rgb(0xf0f0ea)),
                     )
                     .child(output)
                     .child(
                         svg()
-                            .path(if self.outputs_open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" })
+                            .path(crate::icons::themed(if self.outputs_open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" }))
                             .size(px(12.))
                             .text_color(muted),
                     )
@@ -3430,7 +3430,7 @@ impl MediaPanel {
                             panel.refresh(cx);
                             cx.notify();
                         }))
-                        .child(svg().path("icons/speaker.svg").size(px(14.)).text_color(muted))
+                        .child(svg().path(crate::icons::themed("icons/speaker.svg")).size(px(14.)).text_color(muted))
                         .child(div().text_size(px(12.)).child(short))
                         .child(
                             div()
@@ -3444,7 +3444,7 @@ impl MediaPanel {
                         .when(output.default, |el| {
                             el.child(
                                 svg()
-                                    .path("icons/circle-check.svg")
+                                    .path(crate::icons::themed("icons/circle-check.svg"))
                                     .size(px(14.))
                                     .text_color(check),
                             )
@@ -3494,7 +3494,7 @@ impl MediaPanel {
                 let layer = crate::pill_look::PillTokens::layer_alpha(h.t, h.press);
                 el.bg(if on { gpui_m3::theme::mix(fg, bg, layer) } else { fg.opacity(layer) })
                     .text_color(fg)
-                    .child(svg().path("icons/mic-vocal.svg").size(px(16.)).text_color(fg))
+                    .child(svg().path(crate::icons::themed("icons/mic-vocal.svg")).size(px(16.)).text_color(fg))
                     .child(crate::i18n::t("pill.media.lyrics"))
             })
     }
@@ -3678,7 +3678,7 @@ impl MediaPanel {
                             .h_full()
                             .flex()
                             .items_center()
-                            .child(svg().path(icon).size(px(16.)).text_color(icon_ink)),
+                            .child(svg().path(crate::icons::themed(icon)).size(px(16.)).text_color(icon_ink)),
                     )
                     .child(
                         div()
@@ -3723,14 +3723,14 @@ impl MediaPanel {
                             .text_color(fg)
                             .child(
                                 svg()
-                                    .path(if headphones { "icons/headphones.svg" } else { "icons/speaker.svg" })
+                                    .path(crate::icons::themed(if headphones { "icons/headphones.svg" } else { "icons/speaker.svg" }))
                                     .size(px(16.))
                                     .text_color(fg),
                             )
                             .child(output)
                             .child(
                                 svg()
-                                    .path(if open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" })
+                                    .path(crate::icons::themed(if open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" }))
                                     .size(px(14.))
                                     .text_color(fg),
                             )
@@ -3857,7 +3857,7 @@ impl Render for MediaPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(svg().path("icons/audio-lines.svg").size(px(48.)).text_color(white(0.25)))
+                .child(svg().path(crate::icons::themed("icons/audio-lines.svg")).size(px(48.)).text_color(white(0.25)))
         });
         let header = div()
             .h(px(TITLE_H))
@@ -4249,7 +4249,7 @@ fn play_icon(shape: f32, color: Hsla) -> impl IntoElement {
     let icon = move |path: &'static str, scale: f32, turn: f32| {
         (scale > 0.01).then(|| {
             svg()
-                .path(path)
+                .path(crate::icons::themed(path))
                 .absolute()
                 .top_0()
                 .left_0()
@@ -4291,7 +4291,7 @@ fn jump_button(id: ElementId, icon: &'static str, s: &gpui_m3::Scheme, window: &
         .justify_center()
         .rounded(px(r))
         .child(layer)
-        .child(svg().path(icon).size(px(20.)).text_color(ink))
+        .child(svg().path(crate::icons::themed(icon)).size(px(20.)).text_color(ink))
         .child(
             div()
                 .absolute()
@@ -4397,7 +4397,7 @@ impl RenderOnce for MediaControls {
             let content = if index == 1 {
                 play_icon(shape, fg).into_any_element()
             } else {
-                svg().path(icon).size(px(22.)).text_color(fg).into_any_element()
+                svg().path(crate::icons::themed(icon)).size(px(22.)).text_color(fg).into_any_element()
             };
             let el = interactive(div().id(id), &states[index], true, true)
                 .relative()

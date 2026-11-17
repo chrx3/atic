@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::anim::lerp;
 use crate::geometry::{Edge, Rect};
 use crate::i18n::t;
+use crate::theme::SmallText;
+use gpui_m3::theme::type_scale;
 use crate::{distance, Home, Pill, PillShape};
 
 /// Lo más angosto y lo más ancho, lo más bajo y lo más alto (respecto del
@@ -1060,6 +1062,7 @@ impl Pill {
                         .items_center()
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::MEDIUM)
+                        .pill_text(12., type_scale::LABEL_MEDIUM)
                         .text_color(ink.opacity(0.72))
                         .child(t("pill.closed.out")),
                 )
@@ -1077,7 +1080,7 @@ impl Pill {
                             .rounded(px(INNER_RADIUS))
                             .border_1()
                             .border_color(ink.opacity(0.16))
-                            .text_size(px(11.))
+                            .pill_text(11., type_scale::BODY_SMALL)
                             .text_color(ink.opacity(0.5))
                             .truncate()
                             .child(t("pill.closed.dropHere")),
@@ -1098,6 +1101,7 @@ impl Pill {
                         .bg(ink.opacity(if done_hot { 1.0 } else { 0.9 }))
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .pill_text(12., type_scale::LABEL_LARGE)
                         .text_color(on_ink)
                         .child(t("pill.settings.tabSizeDone")),
                 )
@@ -1109,7 +1113,7 @@ impl Pill {
                         .top(px(CARD_PAD + CARD_ROW + CARD_ROW_GAP))
                         .w(px(CARD_W - CARD_PAD * 2.0))
                         .h(px(CARD_HINT))
-                        .text_size(px(11.))
+                        .pill_text(11., type_scale::BODY_SMALL)
                         .line_height(px(16.))
                         .text_color(ink.opacity(0.6))
                         .child(t("pill.tabSize.hint")),

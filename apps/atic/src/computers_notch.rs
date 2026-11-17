@@ -225,7 +225,7 @@ impl ComputersNotch {
                     .when_some(m3, |el, s| el.rounded(px(10.)).bg(s.primary_container))
                     .child(
                         svg()
-                            .path(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" })
+                            .path(crate::icons::themed(if peer.mac { "icons/laptop.svg" } else { "icons/monitor.svg" }))
                             .size(px(13.))
                             .text_color(m3.map_or(c.text, |s| s.on_primary_container)),
                     )
@@ -264,7 +264,7 @@ impl ComputersNotch {
                 computers::set_sharing(&share_id, !sharing);
                 view.refresh(cx);
             }))
-            .child(svg().path("icons/mouse-pointer-2.svg").size(px(14.)).flex_none().text_color(if sharing { c.text } else { c.muted }))
+            .child(svg().path(crate::icons::themed("icons/mouse-pointer-2.svg")).size(px(14.)).flex_none().text_color(if sharing { c.text } else { c.muted }))
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).child(t("pill.kvm.share")))
             .child(switch(sharing, c))
             .hover_bg(("kvm-notch-share-fx", index), c.text.opacity(0.0), c.text.opacity(0.06));
@@ -362,7 +362,7 @@ pub(crate) fn side_picker(key: &str, peer: &PeerRow, compact: bool, c: Ink, afte
         .bg(here_bg)
         .text_color(c.text)
         .text_size(px(text))
-        .child(svg().path("icons/monitor.svg").size(px(10.)).flex_none().text_color(c.text))
+        .child(svg().path(crate::icons::themed("icons/monitor.svg")).size(px(10.)).flex_none().text_color(c.text))
         .child(t("pill.kvm.thisOne"));
     div()
         .flex_none()

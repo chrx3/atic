@@ -1142,7 +1142,7 @@ impl ClipboardPanel {
             .when(!self.mark_gap, |el| {
                 el.pl(px(14.)).child(
                     svg()
-                        .path("icons/search.svg")
+                        .path(crate::icons::themed("icons/search.svg"))
                         .size(px(13.))
                         .flex_none()
                         .mr(px(6.))
@@ -1329,7 +1329,7 @@ impl ClipboardPanel {
                                     .items_center()
                                     .justify_center()
                                     .child(
-                                        svg().path("icons/image.svg").size(px(14.)).text_color(faint),
+                                        svg().path(crate::icons::themed("icons/image.svg")).size(px(14.)).text_color(faint),
                                     )
                                     .into_any_element()
                             }),
@@ -1357,7 +1357,7 @@ impl ClipboardPanel {
                             cx.stop_propagation();
                             action(panel, index, cx)
                         }))
-                        .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
+                        .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(gpui::white()))
                 };
                 let corner = if crate::phone::can_send_files() {
                     button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)
@@ -1479,7 +1479,7 @@ impl ClipboardPanel {
                     }))
                     .child(
                         svg()
-                            .path("icons/star.svg")
+                            .path(crate::icons::themed("icons/star.svg"))
                             .size(px(12.))
                             .text_color(if pinned { text } else { muted }),
                     )
@@ -1497,7 +1497,7 @@ impl ClipboardPanel {
                         cx.stop_propagation();
                         panel.remove(index, cx)
                     }))
-                    .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
+                    .child(svg().path(crate::icons::themed("icons/x.svg")).size(px(12.)).text_color(muted))
                     .hover_bg(("clip-remove-fx", entry.id), text.opacity(0.0), text.opacity(0.1)),
             );
 
@@ -1529,7 +1529,7 @@ impl ClipboardPanel {
             .child(match entry.source_icon.clone() {
                 Some(icon) => img(icon).size(px(14.)).flex_none().into_any_element(),
                 None => svg()
-                    .path("icons/type.svg")
+                    .path(crate::icons::themed("icons/type.svg"))
                     .size(px(12.))
                     .mx(px(1.))
                     .flex_none()
@@ -1539,7 +1539,7 @@ impl ClipboardPanel {
             .when(secret, |el| {
                 el.child(
                     svg()
-                        .path("icons/lock.svg")
+                        .path(crate::icons::themed("icons/lock.svg"))
                         .size(px(11.))
                         .flex_none()
                         .text_color(muted),
@@ -1562,7 +1562,7 @@ impl ClipboardPanel {
             .gap(px(4.))
             .text_size(px(10.))
             .text_color(faint)
-            .when(pinned, |el| el.child(svg().path("icons/star.svg").size(px(10.)).text_color(muted)))
+            .when(pinned, |el| el.child(svg().path(crate::icons::themed("icons/star.svg")).size(px(10.)).text_color(muted)))
             .child(history::short_when(entry.created_ms, now));
         // `list` mide cada fila por su contenido: sin `w_full` la fila queda
         // del ancho de su texto y la hora flota al medio.
@@ -1624,7 +1624,7 @@ impl ClipboardPanel {
                 .items_center()
                 .justify_center()
                 .rounded_full()
-                .child(svg().path(icon).size(px(13.)).text_color(color))
+                .child(svg().path(crate::icons::themed(icon)).size(px(13.)).text_color(color))
                 .fx((id, entry.id), move |el, h| el.bg(color.opacity(crate::pill_look::PillTokens::layer_alpha(h.t, h.press))))
         };
         let star_color = if pinned { s.primary } else { s.on_surface_variant };
@@ -1659,11 +1659,11 @@ impl ClipboardPanel {
             .gap(px(4.))
             .text_size(px(11.))
             .text_color(s.on_surface_variant)
-            .when(pinned, |el| el.child(svg().path("icons/star.svg").size(px(11.)).text_color(s.primary)))
+            .when(pinned, |el| el.child(svg().path(crate::icons::themed("icons/star.svg")).size(px(11.)).text_color(s.primary)))
             .child(history::short_when(entry.created_ms, now));
         let leading = match entry.source_icon.clone() {
             Some(icon) => img(icon).size(px(16.)).into_any_element(),
-            None => svg().path("icons/type.svg").size(px(13.)).text_color(s.on_surface_variant).into_any_element(),
+            None => svg().path(crate::icons::themed("icons/type.svg")).size(px(13.)).text_color(s.on_surface_variant).into_any_element(),
         };
         let row_el = div()
             .id(("clip-row", entry.id))
@@ -1682,7 +1682,7 @@ impl ClipboardPanel {
             }))
             .child(crate::hover::m3_leading(&s, 26., 13., leading))
             .when(entry.secret, |el| {
-                el.child(svg().path("icons/lock.svg").size(px(11.)).flex_none().text_color(s.on_surface_variant))
+                el.child(svg().path(crate::icons::themed("icons/lock.svg")).size(px(11.)).flex_none().text_color(s.on_surface_variant))
             })
             .child(
                 div()

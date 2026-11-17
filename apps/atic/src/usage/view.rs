@@ -14,6 +14,8 @@ use gpui::{
 
 use super::*;
 use crate::hover::HoverExt;
+use crate::theme::SmallText;
+use gpui_m3::theme::type_scale;
 
 /// Mantener presionado un agente abre el personalizador.
 const HOLD: Duration = Duration::from_millis(450);
@@ -373,6 +375,15 @@ impl Usage {
     }
 }
 
+/// El porcentaje de un agente: en Expressive, LABEL_MEDIUM enfatizado con
+/// cifras tabulares (cuenta hacia arriba sin bailar).
+fn percent_text(el: gpui::Div) -> gpui::Div {
+    match crate::theme::pill_type(type_scale::LABEL_MEDIUM) {
+        Some(role) => el.font(crate::fonts::tabular(role.emphasized)).text_size(role.size).line_height(role.line_height),
+        None => el,
+    }
+}
+
 /// Un botón chico del encabezado.
 fn pill_button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
     div()
@@ -382,7 +393,7 @@ fn pill_button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
         .flex()
         .items_center()
         .rounded(px(11.))
-        .text_size(px(11.))
+        .pill_text(11., type_scale::LABEL_MEDIUM)
         .cursor_pointer()
         .child(SharedString::from(label.to_string()))
 }
@@ -510,6 +521,8 @@ fn header(
                 .flex_none()
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
+                // Como el título de los otros vistazos (`peeks.rs`).
+                .pill_text_em(12., type_scale::TITLE_MEDIUM)
                 .text_color(palette.text)
                 .child(title),
         )
@@ -517,7 +530,7 @@ fn header(
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(px(10.5))
+                .pill_text(10.5, type_scale::LABEL_SMALL)
                 .text_color(palette.muted)
                 .child(SharedString::from(note)),
         )
@@ -689,12 +702,13 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
             div()
                 .text_size(px(11.5))
                 .font_weight(FontWeight::SEMIBOLD)
+                .map(percent_text)
                 .text_color(worst.map(tone).unwrap_or(palette.muted))
                 // El porcentaje cuenta hacia arriba mientras el anillo se llena.
                 .child(SharedString::from(worst.map_or("—".into(), |p| format!("{:.0} %", p * progress as f64)))),
         )
         // El nombre, chico: algunos logos se parecen (Antigravity y Grok).
-        .child(div().max_w_full().truncate().text_size(px(9.5)).text_color(palette.muted).child(row.family.name))
+        .child(div().max_w_full().truncate().pill_text(9.5, type_scale::LABEL_SMALL).text_color(palette.muted).child(row.family.name))
         .fx(SharedString::from(format!("{group}-fx")), move |el, h| {
             el.bg(h.mix(text.opacity(0.0), text.opacity(0.08))).child(reveal_hide(hide, h.over))
         })
@@ -725,7 +739,8 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
             .px(px(6.))
             .rounded(px(6.))
             .bg(palette.text.opacity(0.07))
-            .text_size(px(9.5))
+            .pill_text(9.5, type_scale::LABEL_SMALL)
+            .line_height(px(TAGS_H))
             .text_color(palette.text.opacity(0.7))
             .child(SharedString::from(text))
     };
@@ -747,20 +762,23 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
         Some(q) if q.spend.is_some() => {
             let spend = q.spend.as_ref().map(|s| s.cents / 100.0).unwrap_or_default();
             div()
-                .text_size(px(11.))
+                .pill_text(11., type_scale::BODY_SMALL)
                 .text_color(palette.text.opacity(0.8))
                 .child(SharedString::from(crate::i18n::tf("pill.quota.spend", &[("amount", &format!("{spend:.2}"))])))
                 .into_any_element()
         }
+        // Expressive: 11 px con el peso del cuerpo; las tres líneas de 13
+        // llenan `NOTE_LINES_H` y con 12 px se cortarían.
         Some(q) => div()
-            .text_size(px(10.5))
+            .pill_text(10.5, type_scale::LABEL_SMALL)
+            .font_weight(FontWeight::NORMAL)
             .line_height(px(13.))
             .line_clamp(3)
             .text_color(gpui::Hsla::from(gpui::rgb(WARN)).opacity(0.85))
             .child(SharedString::from(q.error.clone().unwrap_or_else(|| crate::i18n::t("pill.usage.noQuota").into())))
             .into_any_element(),
         None => div()
-            .text_size(px(10.5))
+            .pill_text(10.5, type_scale::BODY_SMALL)
             .text_color(palette.muted)
             .child(crate::i18n::t("settings.agents.mcpSignedOut"))
             .into_any_element(),
@@ -795,6 +813,7 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::SEMIBOLD)
+                        .map(percent_text)
                         .text_color(worst.map(tone).unwrap_or(palette.muted))
                         .child(SharedString::from(worst.map_or("—".into(), |p| format!("{:.0} %", p * progress as f64)))),
                 ),
@@ -809,9 +828,10 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                 .child(
                     div()
                         .h(px(NAME_H))
-                        .line_height(px(NAME_H))
                         .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
+                        .pill_text_em(12.5, type_scale::TITLE_SMALL)
+                        .line_height(px(NAME_H))
                         .text_color(palette.text)
                         .child(row.family.name),
                 )
@@ -827,7 +847,8 @@ fn card(row: &Row, height: f32, progress: f32, palette: &crate::Palette, cx: &mu
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(10.))
+                                .pill_text(10., type_scale::LABEL_SMALL)
+                                .line_height(px(TAGS_H))
                                 .text_color(palette.muted)
                                 .child(SharedString::from(side)),
                         ),
@@ -853,11 +874,11 @@ fn bar(window: &quota::QuotaWindow, progress: f32, palette: &crate::Palette) -> 
         .child(
             div()
                 .h(px(WIN_LINE))
-                .line_height(px(WIN_LINE))
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .text_size(px(10.))
+                .pill_text(10., type_scale::LABEL_SMALL)
+                .line_height(px(WIN_LINE))
                 .child(
                     div()
                         .flex_1()
@@ -911,7 +932,7 @@ fn chip_face(row: &Row, shown: bool, width: f32, palette: &crate::Palette) -> gp
             div()
                 .flex_1()
                 .truncate()
-                .text_size(px(12.))
+                .pill_text(12., type_scale::LABEL_LARGE)
                 .text_color(if shown { palette.text } else { palette.muted })
                 .child(row.family.name),
         )
@@ -952,7 +973,7 @@ fn editor(
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .text_size(px(10.5))
+                    .pill_text(10.5, type_scale::LABEL_MEDIUM)
                     .text_color(palette.muted)
                     .child(title)
                     .child(div().text_color(palette.text.opacity(0.4)).child(SharedString::from(count.to_string()))),
@@ -1020,7 +1041,7 @@ fn editor(
                                 .h(px(CHIP_H))
                                 .flex()
                                 .items_center()
-                                .text_size(px(11.))
+                                .pill_text(11., type_scale::BODY_SMALL)
                                 .text_color(palette.text.opacity(0.35))
                                 .child(crate::i18n::t("pill.usage.dropHere")),
                         )
@@ -1038,7 +1059,7 @@ fn editor(
             el.child(
                 div()
                     .h(px(NOTE_H - LANE_GAP).max(px(10.)))
-                    .text_size(px(10.5))
+                    .pill_text(10.5, type_scale::BODY_SMALL)
                     .text_color(gpui::Hsla::from(gpui::rgb(WARN)))
                     .child(crate::i18n::t("pill.usage.keepOne")),
             )

@@ -1642,7 +1642,7 @@ impl LauncherPanel {
         let leading = match icon {
             Some(icon) => img(icon).size(px(24.)).into_any_element(),
             None => svg()
-                .path(glyph)
+                .path(crate::icons::themed(glyph))
                 .size(px(16.))
                 .text_color(muted)
                 .into_any_element(),
@@ -1699,7 +1699,7 @@ impl LauncherPanel {
                             .text_size(px(10.))
                             .text_color(faint)
                             .when(favorite, |el| {
-                                el.child(svg().path("icons/star.svg").size(px(11.)).text_color(muted))
+                                el.child(svg().path(crate::icons::themed("icons/star.svg")).size(px(11.)).text_color(muted))
                             })
                             .child(note)
                             .when(index < 9 && !selected, |el| el.child(crate::keymap::hint_owned(format!("Ctrl+{}", index + 1))))
@@ -1767,7 +1767,7 @@ impl LauncherPanel {
                 &s,
                 32.,
                 12.,
-                svg().path(row_glyph(&hit.item.target)).size(px(16.)).text_color(s.on_surface_variant),
+                svg().path(crate::icons::themed(row_glyph(&hit.item.target))).size(px(16.)).text_color(s.on_surface_variant),
             ),
         };
         let row = div()
@@ -1805,7 +1805,7 @@ impl LauncherPanel {
                     .gap(px(6.))
                     .type_style(type_scale::LABEL_SMALL)
                     .text_color(s.on_surface_variant)
-                    .when(favorite, |el| el.child(svg().path("icons/star.svg").size(px(12.)).text_color(s.tertiary)))
+                    .when(favorite, |el| el.child(svg().path(crate::icons::themed("icons/star.svg")).size(px(12.)).text_color(s.tertiary)))
                     .child(note)
                     .when(index < 9 && !selected, |el| el.child(crate::keymap::hint_owned(format!("Ctrl+{}", index + 1))))
                     .when(selected, |el| el.child(div().text_color(s.on_secondary_container).child("↵"))),
@@ -1858,7 +1858,7 @@ impl Render for LauncherPanel {
                 el.pl(px(14.)).when(m3.is_none(), |el| {
                     el.child(
                         svg()
-                            .path("icons/search.svg")
+                            .path(crate::icons::themed("icons/search.svg"))
                             .size(px(13.))
                             .mr(px(6.))
                             .text_color(faint),

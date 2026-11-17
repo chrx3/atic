@@ -715,7 +715,7 @@ impl NotchChat {
                     .rounded(px(9.))
                     .bg(text.opacity(0.08))
                     .text_size(px(11.))
-                    .child(svg().path("icons/file.svg").size(px(13.)).flex_none().text_color(muted))
+                    .child(svg().path(crate::icons::themed("icons/file.svg")).size(px(13.)).flex_none().text_color(muted))
                     .child(div().min_w_0().truncate().child(
                         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     ))
@@ -733,7 +733,7 @@ impl NotchChat {
                     .rounded(px(9.))
                     .bg(text.opacity(0.08))
                     .text_size(px(11.))
-                    .child(svg().path("icons/file.svg").size(px(13.)).flex_none().text_color(muted))
+                    .child(svg().path(crate::icons::themed("icons/file.svg")).size(px(13.)).flex_none().text_color(muted))
                     .child(div().min_w_0().truncate().child(crate::i18n::tf("pill.code.view.pastedChip", &[("lines", lines)])))
                     .child(remove)
                     .into_any_element(),
@@ -830,7 +830,7 @@ impl NotchChat {
                         .child(if busy {
                             div().size(px(10.)).rounded(px(2.)).bg(fg).into_any_element()
                         } else {
-                            svg().path("icons/arrow-up.svg").size(px(16.)).text_color(fg).into_any_element()
+                            svg().path(crate::icons::themed("icons/arrow-up.svg")).size(px(16.)).text_color(fg).into_any_element()
                         })
                         .into_any_element()
                 }))
@@ -850,7 +850,7 @@ impl NotchChat {
                     .child(if busy {
                         div().size(px(10.)).rounded(px(2.)).bg(send_ink).into_any_element()
                     } else {
-                        svg().path("icons/arrow-up.svg").size(px(15.)).text_color(send_ink).into_any_element()
+                        svg().path(crate::icons::themed("icons/arrow-up.svg")).size(px(15.)).text_color(send_ink).into_any_element()
                     }),
             ))
     }

@@ -412,10 +412,17 @@ struct Tip(gpui::SharedString, Option<gpui::SharedString>);
 
 impl Tip {
     /// El texto y, a su lado, la tecla en un cuadrito (de `color`, con poco relleno).
-    fn label(&self, color: Hsla) -> gpui::Div {
+    /// `m3`: la tecla en LABEL_SMALL (11 px, el mínimo de la escala).
+    fn label(&self, color: Hsla, m3: bool) -> gpui::Div {
         use gpui::{div, prelude::*, px};
+        use gpui_m3::theme::type_scale::{TypeScaleExt, LABEL_SMALL};
         div().flex().items_center().gap(px(6.)).child(self.0.clone()).children(self.1.clone().map(|key| {
-            div().px(px(4.)).rounded(px(4.)).bg(color.opacity(0.18)).text_size(px(10.)).child(key)
+            div()
+                .px(px(4.))
+                .rounded(px(4.))
+                .bg(color.opacity(0.18))
+                .map(|el| if m3 { el.type_style(LABEL_SMALL) } else { el.text_size(px(10.)) })
+                .child(key)
         }))
     }
 }
@@ -440,7 +447,7 @@ impl gpui::Render for Tip {
                         .font_family(t.font)
                         .type_style(BODY_SMALL)
                         .text_color(t.pane)
-                        .child(self.label(t.pane))
+                        .child(self.label(t.pane, true))
                         .with_animation(
                             "tip-in-m3",
                             Animation::new(Duration::from_millis(150)).with_easing(gpui::ease_out_quint()),
@@ -461,7 +468,7 @@ impl gpui::Render for Tip {
                     .font_family(crate::fonts::UI)
                     .text_size(px(11.))
                     .text_color(rgb(0xf0f0ea))
-                    .child(self.label(rgb(0xf0f0ea).into()))
+                    .child(self.label(rgb(0xf0f0ea).into(), false))
                     .with_animation(
                         "tip-in",
                         Animation::new(Duration::from_millis(125)).with_easing(gpui::ease_out_quint()),
@@ -865,7 +872,7 @@ pub fn m3_empty_state(
             gpui_m3::Shape::new(shape)
                 .size(px(64.))
                 .color(s.secondary_container)
-                .child(svg().path(icon).size(px(24.)).text_color(s.on_secondary_container)),
+                .child(svg().path(crate::icons::themed(icon)).size(px(24.)).text_color(s.on_secondary_container)),
         )
         .child(
             div()

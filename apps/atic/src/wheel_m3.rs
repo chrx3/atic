@@ -511,7 +511,7 @@ impl crate::Pill {
                         .rounded(gpui_m3::corner::XS)
                         .bg(bg)
                         .text_color(ink)
-                        .type_style(type_scale::LABEL_MEDIUM)
+                        .type_style(type_scale::BODY_SMALL)
                         .child(slot.hint()),
                 )
                 .into_any_element(),
