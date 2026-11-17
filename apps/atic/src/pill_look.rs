@@ -5,8 +5,10 @@
 //! estilo y otro vive en `PillTokens`, que `frame` resuelve una vez por cuadro:
 //!
 //! - **Atic**: las constantes de siempre, tal cual (`PillTokens::atic`).
-//! - **M3 Expressive** («toolbar flotante»): los roles de un `Scheme` oscuro
-//!   sembrado con la piel elegida (la de Atic usa `baseline_dark`). La tira
+//! - **M3 Expressive** («toolbar flotante»): los roles de un `Scheme`
+//!   sembrado con la piel elegida (la de Atic usa `baseline_dark` o
+//!   `baseline_light`), oscuro o claro según «Tema de la pill»
+//!   (`Appearance::pill_theme`); fundida con el notch, siempre oscuro. La tira
 //!   es un grupo de botones conectado (`group_layout`, `group_radii`): cada
 //!   ficha con su fondo tonal, la del cursor más ancha (sus vecinas ceden, el
 //!   largo no cambia), más cuadrada al presionar y la elegida rellena y
@@ -23,7 +25,8 @@
 //! elegida de cada ficha, el radio al presionar y la forma de la cara), con
 //! resortes de gpui-m3; `Pill::advance` lo avanza. En Atic no hace nada.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{point, px, rgb, BoxShadow, Hsla, PathBuilder, Window};
@@ -56,6 +59,10 @@ const DONE_MS: u64 = 420;
 /// La cara «procesando» recorre `LOADING_SEQUENCE` a estos cuadros por
 /// segundo (como `LoadingIndicator`): se lee continuo y no redibuja de más.
 const LOADING_FPS: f32 = 15.0;
+/// Cuando lo único que procesa es un agente (puede durar horas): 10 cuadros
+/// por segundo, justo dos sondeos en calma de `Pill::tick` (50 ms). A 15 los
+/// cuadros caían a saltos de 50 y 100 ms.
+const LOADING_FPS_AGENTS: f32 = 10.0;
 
 /// Expressive: con la piel pintada, el fondo de cada ficha de la tira es una
 /// capa del texto sobre la piel (así el degradado se ve entre y bajo las fichas).
@@ -106,14 +113,56 @@ pub(crate) struct PillTokens {
 enum Shadow {
     /// `pill_shadow` de siempre.
     Atic,
-    Elevation(Vec<BoxShadow>),
+    /// Compartidas: copiar los tokens no copia la lista.
+    Elevation(Arc<[BoxShadow]>),
+}
+
+/// Lo que decide los tokens de `PillTokens::current`: el estilo, el esquema
+/// (con la piel) y si la piel se pinta.
+type TokensKey = (PillStyle, SchemeKey, bool);
+
+/// Los últimos tokens de `PillTokens::current`: la pill los pide varias veces
+/// por cuadro y armarlos busca el esquema y calcula el velo.
+static TOKENS: Mutex<Option<(TokensKey, PillTokens)>> = Mutex::new(None);
+
+/// El valor guardado en `slot` si es de `key`; si no, lo arma `make` y lo
+/// guarda en su lugar.
+fn remember<K: PartialEq + Copy, V: Clone>(slot: &Mutex<Option<(K, V)>>, key: K, make: impl FnOnce() -> V) -> V {
+    if let Ok(slot) = slot.lock() {
+        if let Some((seen, value)) = slot.as_ref() {
+            if *seen == key {
+                return value.clone();
+            }
+        }
+    }
+    let value = make();
+    if let Ok(mut slot) = slot.lock() {
+        *slot = Some((key, value.clone()));
+    }
+    value
+}
+
+/// El ícono de la tira en Expressive (se puede afinar en `tweaks.json`).
+fn m3_icon() -> f32 {
+    num("pill.m3.icon", M3_ICON)
 }
 
 impl PillTokens {
-    /// Los del estilo elegido en Apariencia.
+    /// Los del estilo elegido en Apariencia. Se guardan mientras no cambie lo
+    /// que los decide (`TokensKey`).
     pub fn current() -> Self {
         let look = crate::appearance::current();
-        Self::of(&look, look.pill)
+        let scheme = SchemeKey::of_pill(&look);
+        let key = (look.pill, scheme, look.skin_fill);
+        let mut tokens = remember(&TOKENS, key, || match look.pill {
+            PillStyle::Atic => Self::atic(look.skin),
+            PillStyle::Expressive => Self::expressive_with(scheme, look.skin_fill),
+        });
+        // Lo único que depende de `tweaks.json`: al día aunque esté guardado.
+        if tokens.scheme.is_some() {
+            tokens.icon = m3_icon();
+        }
+        tokens
     }
 
     /// Los de `style` con los colores de `look` (la muestra de cada estilo
@@ -160,9 +209,10 @@ impl PillTokens {
     /// Material 3 Expressive con el esquema de `key`. Con `paint`, la piel
     /// (lisa o en degradado) es el fondo de la pill y las fichas de la tira
     /// son capas sobre ella; si no, o con la piel de Atic, la pill va en el
-    /// contenedor del esquema. El esquema es siempre oscuro (el contenido de
-    /// la pill y de sus paneles es claro): una piel clara lleva encima un
-    /// velo de `surface` hasta que el texto y los íconos se lean.
+    /// contenedor del esquema. El esquema es oscuro o claro según el tema
+    /// (`SchemeKey::dark`): una piel que no contrasta con su texto (clara con
+    /// tema oscuro, oscura con tema claro) lleva encima un velo de `surface`
+    /// hasta que el texto y los íconos se lean.
     pub fn expressive_with(key: SchemeKey, paint: bool) -> Self {
         let s = scheme_for(key);
         let (fill, skin, veil, segment) = if paint && key.skin != Skin::Atic {
@@ -185,7 +235,7 @@ impl PillTokens {
             off: s.on_surface_variant,
             on: s.on_surface,
             hover_grow: 0.0,
-            icon: num("pill.m3.icon", M3_ICON),
+            icon: m3_icon(),
             layer: Some(s.on_surface),
             segment: Some(segment),
             chosen: Some((s.secondary_container, s.on_secondary_container)),
@@ -193,7 +243,7 @@ impl PillTokens {
             clock: Some((s.surface_container_highest, s.on_surface)),
             tooltip: Some((s.inverse_surface, s.inverse_on_surface)),
             scheme: Some(s),
-            shadow: Shadow::Elevation(Elevation::Level3.shadow(&s)),
+            shadow: Shadow::Elevation(Elevation::Level3.shadow(&s).into()),
         }
     }
 
@@ -319,18 +369,66 @@ pub(crate) struct SchemeKey {
     pub style: SchemeStyle,
     /// -1..1; 0 es el estándar.
     pub contrast: f32,
+    /// Oscuro o claro (`Appearance::pill_theme`).
+    pub dark: bool,
 }
 
 impl SchemeKey {
+    /// El de lo elegido en Apariencia (la muestra de Ajustes).
     pub fn of(look: &Appearance) -> Self {
-        Self { skin: look.skin, accent: look.accent, style: look.scheme, contrast: look.contrast }
+        Self {
+            skin: look.skin,
+            accent: look.accent,
+            style: look.scheme,
+            contrast: look.contrast,
+            dark: look.pill_theme.dark(system_light()),
+        }
     }
 
-    /// La piel con el estilo de color y el contraste de fábrica.
+    /// El de la pill: como `of`, pero oscuro mientras la pill lo pide
+    /// (`set_force_dark`).
+    pub fn of_pill(look: &Appearance) -> Self {
+        let key = Self::of(look);
+        Self { dark: key.dark || FORCE_DARK.load(Ordering::Relaxed), ..key }
+    }
+
+    /// La piel con el estilo de color y el contraste de fábrica, oscura.
     #[cfg(test)]
     pub fn plain(skin: Skin) -> Self {
-        Self { skin, accent: None, style: SchemeStyle::TonalSpot, contrast: 0.0 }
+        Self { skin, accent: None, style: SchemeStyle::TonalSpot, contrast: 0.0, dark: true }
     }
+}
+
+/// El claro u oscuro del sistema, para «Seguir al sistema»: `UNSEEN` hasta
+/// que se mira por primera vez; después lo pone al día `config_watch`.
+static SYSTEM_LIGHT: AtomicU8 = AtomicU8::new(UNSEEN);
+const UNSEEN: u8 = u8::MAX;
+
+/// La pill va oscura aunque el tema sea claro (`set_force_dark`).
+static FORCE_DARK: AtomicBool = AtomicBool::new(false);
+
+/// ¿Está el sistema en claro?
+pub(crate) fn system_light() -> bool {
+    match SYSTEM_LIGHT.load(Ordering::Relaxed) {
+        UNSEEN => {
+            let light = crate::theme::windows_light();
+            SYSTEM_LIGHT.store(light as u8, Ordering::Relaxed);
+            light
+        }
+        seen => seen == 1,
+    }
+}
+
+/// Anota el claro u oscuro del sistema; `true` si cambió.
+pub(crate) fn set_system_light(light: bool) -> bool {
+    SYSTEM_LIGHT.swap(light as u8, Ordering::Relaxed) != light as u8
+}
+
+/// La pill lo anota al dibujarse: va oscura en cualquier tema fundida con el
+/// notch de la cámara (ahí la piel es negra) y con Ahora suena sobre la
+/// carátula (su texto claro va sobre el degradado oscuro de la imagen).
+pub(crate) fn set_force_dark(on: bool) {
+    FORCE_DARK.store(on, Ordering::Relaxed);
 }
 
 /// `from_seed_variant` hace cuentas de color (HCT): se guardan los últimos
@@ -339,26 +437,45 @@ static SCHEMES: Mutex<Vec<(SchemeKey, Scheme)>> = Mutex::new(Vec::new());
 const SCHEMES_KEPT: usize = 16;
 
 pub(crate) fn scheme_for(key: SchemeKey) -> Scheme {
-    if let Ok(cached) = SCHEMES.lock() {
-        if let Some((_, scheme)) = cached.iter().find(|(seen, _)| *seen == key) {
-            return *scheme;
+    if let Ok(mut cached) = SCHEMES.lock() {
+        if let Some(scheme) = lru_get(&mut cached, &key) {
+            return scheme;
         }
     }
     let scheme = build_scheme(key);
     if let Ok(mut cached) = SCHEMES.lock() {
-        if cached.len() >= SCHEMES_KEPT {
-            cached.remove(0);
-        }
-        cached.push((key, scheme));
+        lru_put(&mut cached, key, scheme, SCHEMES_KEPT);
     }
     scheme
+}
+
+/// Lo guardado para `key`, y lo deja al final: lo que se sigue usando es lo
+/// último que se bota.
+fn lru_get<K: PartialEq, V: Copy>(entries: &mut Vec<(K, V)>, key: &K) -> Option<V> {
+    let index = entries.iter().position(|(seen, _)| seen == key)?;
+    let value = entries[index].1;
+    if index + 1 != entries.len() {
+        let entry = entries.remove(index);
+        entries.push(entry);
+    }
+    Some(value)
+}
+
+/// Guarda `value` al final; lleno, bota el que lleva más tiempo sin usarse
+/// (el primero).
+fn lru_put<K, V>(entries: &mut Vec<(K, V)>, key: K, value: V, kept: usize) {
+    if entries.len() >= kept.max(1) {
+        entries.remove(0);
+    }
+    entries.push((key, value));
 }
 
 fn build_scheme(key: SchemeKey) -> Scheme {
     let standard = key.style == SchemeStyle::TonalSpot && key.contrast == 0.0;
     let seed: Hsla = match (key.accent, key.skin) {
         (Some(accent), _) => rgb(accent).into(),
-        (None, Skin::Atic) if standard => return Scheme::baseline_dark(),
+        (None, Skin::Atic) if standard && key.dark => return Scheme::baseline_dark(),
+        (None, Skin::Atic) if standard => return Scheme::baseline_light(),
         (None, Skin::Atic) => rgb(BASELINE_SEED).into(),
         (None, skin) => skin.mid(),
     };
@@ -369,7 +486,7 @@ fn build_scheme(key: SchemeKey) -> Scheme {
         SchemeStyle::TonalSpot if hueless => SchemeVariant::Monochrome,
         style => style.variant(),
     };
-    Scheme::from_seed_variant(seed, true, variant, key.contrast)
+    Scheme::from_seed_variant(seed, key.dark, variant, key.contrast)
 }
 
 /// La luminancia relativa de WCAG (0 negro, 1 blanco).
@@ -597,6 +714,9 @@ pub(crate) struct LookInputs {
     pub dictating: bool,
     /// Se transcribe, se resume o un agente está en su turno.
     pub processing: bool,
+    /// Lo único que procesa es un agente (no el dictado ni Reuniones): la
+    /// cara va a `LOADING_FPS_AGENTS`.
+    pub agents_only: bool,
     /// Lo que estaba en marcha terminó mal: sin «hecho».
     pub failed: bool,
     pub attention: bool,
@@ -615,6 +735,7 @@ impl LookInputs {
             recording: false,
             dictating: false,
             processing: false,
+            agents_only: false,
             failed: false,
             attention: false,
             open: false,
@@ -638,6 +759,9 @@ pub(crate) struct LookState {
     /// `Pill::tick`: si está en marcha y si acaba de terminar mal (se borra
     /// al usarlo).
     pub work: (bool, bool),
+    /// Lo que trabaja afuera es solo de agentes (no Reuniones); lo pone
+    /// `Pill::tick`.
+    pub work_agents_only: bool,
     reduced: bool,
     mark: MarkMorph,
 }
@@ -659,6 +783,11 @@ struct MarkMorph {
     /// Desde cuándo procesa y el último cuadro de la secuencia que se pintó.
     loading_since: Option<Instant>,
     loading_seen: Option<u32>,
+    /// A cuántos cuadros por segundo recorre la secuencia.
+    loading_fps: f32,
+    /// Los puntos de la forma de carga del cuadro `loading_seen`: se
+    /// recalculan solo cuando cambia de cuadro, no en cada uno de la pill.
+    loading_shape: Option<(u32, Vec<(f32, f32)>)>,
 }
 
 impl Default for LookState {
@@ -671,6 +800,7 @@ impl Default for LookState {
             press: Track::at(0.0),
             pressed_slot: None,
             work: (false, false),
+            work_agents_only: false,
             reduced: false,
             mark: MarkMorph {
                 state: MarkState::Rest,
@@ -685,24 +815,36 @@ impl Default for LookState {
                 was_busy: false,
                 loading_since: None,
                 loading_seen: None,
+                loading_fps: LOADING_FPS,
+                loading_shape: None,
             },
         }
     }
 }
 
-/// El cuadro de la secuencia de carga (a `LOADING_FPS`) a `now`.
-fn loading_frame(since: Instant, now: Instant) -> u32 {
-    (now.saturating_duration_since(since).as_secs_f32() * num("pill.m3.loading.fps", LOADING_FPS).max(1.0)) as u32
+/// Los cuadros por segundo de la secuencia de carga: menos si solo procesa un
+/// agente.
+fn loading_fps(agents_only: bool) -> f32 {
+    if agents_only {
+        num("pill.m3.loading.agentsFps", LOADING_FPS_AGENTS).max(1.0)
+    } else {
+        num("pill.m3.loading.fps", LOADING_FPS).max(1.0)
+    }
+}
+
+/// El cuadro de la secuencia de carga (a `fps`) a `now`.
+fn loading_frame(since: Instant, now: Instant, fps: f32) -> u32 {
+    (now.saturating_duration_since(since).as_secs_f32() * fps) as u32
 }
 
 /// Los puntos de la forma de carga en el cuadro `frame`, en la caja unidad.
 /// Como `LoadingIndicator` de gpui-m3: una forma nueva cada 650 ms con un
 /// resorte con rebote, un cuarto de vuelta en cada una y encima una vuelta
 /// entera cada 4,666 s.
-fn loading_points(frame: u32) -> Vec<(f32, f32)> {
+fn loading_points(frame: u32, fps: f32) -> Vec<(f32, f32)> {
     const SEGMENT: f32 = 0.65;
     const SPIN_PERIOD: f32 = 4.666;
-    let t = frame as f32 / num("pill.m3.loading.fps", LOADING_FPS).max(1.0);
+    let t = frame as f32 / fps;
     let n = LOADING_SEQUENCE.len();
     let index = (t / SEGMENT) as usize;
     let local = t - index as f32 * SEGMENT;
@@ -738,6 +880,11 @@ impl LookState {
         // saltaba de una lo que pasó desde el último movimiento.
         let dt = self.last.map_or(0.0, |last| now.duration_since(last).as_secs_f32().min(0.05));
         self.reduced = inputs.reduced;
+        let fps = loading_fps(inputs.agents_only);
+        if fps != self.mark.loading_fps {
+            self.mark.loading_fps = fps;
+            self.mark.loading_shape = None;
+        }
 
         // El grupo: la ficha con el cursor se ensancha y la elegida se
         // rellena, cada una en su lugar (no se desliza de una a otra).
@@ -801,7 +948,16 @@ impl LookState {
             self.mark.color_t.set(1.0);
             self.mark.loading_since = (state == MarkState::Processing).then_some(now);
         }
-        self.mark.loading_seen = self.mark.loading_since.map(|since| loading_frame(since, now));
+        self.mark.loading_seen = self.mark.loading_since.map(|since| loading_frame(since, now, fps));
+        // La forma de carga de este cuadro de la secuencia, una sola vez.
+        match self.mark.loading_seen {
+            Some(frame) if !self.reduced => {
+                if self.mark.loading_shape.as_ref().is_none_or(|(seen, _)| *seen != frame) {
+                    self.mark.loading_shape = Some((frame, loading_points(frame, fps)));
+                }
+            }
+            _ => self.mark.loading_shape = None,
+        }
 
         if inputs.reduced {
             // Sin movimiento: cada cosa salta a su final.
@@ -834,7 +990,10 @@ impl LookState {
     pub fn loading_due(&self, now: Instant) -> bool {
         !self.reduced
             && self.mark.state == MarkState::Processing
-            && self.mark.loading_since.is_some_and(|since| Some(loading_frame(since, now)) != self.mark.loading_seen)
+            && self
+                .mark
+                .loading_since
+                .is_some_and(|since| Some(loading_frame(since, now, self.mark.loading_fps)) != self.mark.loading_seen)
     }
 
     /// Cuánto se ensanchó la ficha `index` a `now` (lo que se ve).
@@ -851,17 +1010,27 @@ impl LookState {
     /// hacia la secuencia de carga (o a Circle, quieta, con movimiento
     /// reducido) en vez de a una forma fija.
     fn mark_points(&self, now: Instant) -> Vec<(f32, f32)> {
-        let to: Vec<(f32, f32)> = match (self.mark.state, self.mark.loading_since) {
-            (MarkState::Processing, _) if self.reduced => ShapeName::Circle.unit_points().to_vec(),
-            (MarkState::Processing, Some(since)) => loading_points(loading_frame(since, now)),
-            _ => self.mark.to.unit_points().to_vec(),
+        let computed;
+        let to: &[(f32, f32)] = match (self.mark.state, self.mark.loading_since) {
+            (MarkState::Processing, _) if self.reduced => ShapeName::Circle.unit_points(),
+            (MarkState::Processing, Some(since)) => {
+                let frame = loading_frame(since, now, self.mark.loading_fps);
+                match &self.mark.loading_shape {
+                    Some((seen, points)) if *seen == frame => points,
+                    _ => {
+                        computed = loading_points(frame, self.mark.loading_fps);
+                        &computed
+                    }
+                }
+            }
+            _ => self.mark.to.unit_points(),
         };
         let t = self.mark.shape_t.value;
         self.mark
             .from
             .iter()
             .zip(to)
-            .map(|(&(ax, ay), (bx, by))| (ax + (bx - ax) * t, ay + (by - ay) * t))
+            .map(|(&(ax, ay), &(bx, by))| (ax + (bx - ax) * t, ay + (by - ay) * t))
             .collect()
     }
 
@@ -936,13 +1105,15 @@ impl crate::Pill {
         }
         let (phase, _) = self.dictation.phase();
         let (work_busy, work_failed) = self.look.work;
+        let transcribing = phase == crate::dictation::Phase::Transcribing;
         let inputs = LookInputs {
             chosen,
             pressed,
             widen,
             recording: self.rec_clock.is_some(),
             dictating: matches!(phase, crate::dictation::Phase::Starting | crate::dictation::Phase::Listening),
-            processing: phase == crate::dictation::Phase::Transcribing || work_busy,
+            processing: transcribing || work_busy,
+            agents_only: work_busy && self.look.work_agents_only && !transcribing,
             failed: matches!(phase, crate::dictation::Phase::Error(_)) || work_failed,
             attention: self.update_mark.target() > 0.5,
             open: self.panel_open,
@@ -1028,6 +1199,62 @@ mod tests {
         let s = seeded.scheme.unwrap();
         assert_eq!(seeded.fill, Skin::Solid { color: to_hex(s.surface_container) });
         assert_eq!(seeded.segment, Some(s.surface_container_high));
+    }
+
+    #[test]
+    fn la_clave_del_esquema_distingue_claro_y_oscuro() {
+        let skin = Skin::Solid { color: 0x3b1220 };
+        let light = SchemeKey { dark: false, ..SchemeKey::plain(skin) };
+        assert_ne!(SchemeKey::plain(skin), light);
+        let (dark, light) = (scheme_for(SchemeKey::plain(skin)), scheme_for(light));
+        assert_ne!(dark, light);
+        assert!(luminance(light.surface) > 0.5 && luminance(dark.surface) < 0.2);
+        assert!(luminance(light.on_surface) < 0.2);
+        // La de Atic de fábrica: el par de siempre de gpui-m3.
+        assert_eq!(scheme_for(SchemeKey { dark: false, ..SchemeKey::plain(Skin::Atic) }), Scheme::baseline_light());
+        // Los tokens del tema claro salen de su esquema.
+        let t = PillTokens::expressive_with(SchemeKey { dark: false, ..SchemeKey::plain(Skin::Atic) }, true);
+        let s = Scheme::baseline_light();
+        assert_eq!((t.skin, t.on, t.off), (s.surface_container, s.on_surface, s.on_surface_variant));
+    }
+
+    #[test]
+    fn con_tema_claro_la_piel_clara_no_lleva_velo_y_la_oscura_si() {
+        let cream = Skin::Solid { color: 0xfff3c4 };
+        let light = |skin| PillTokens::expressive_with(SchemeKey { dark: false, ..SchemeKey::plain(skin) }, true);
+        assert!(light(cream).veil.is_none());
+        assert!(light(Skin::Solid { color: 0xffffff }).veil.is_none());
+        // Con tema oscuro esa misma piel sí lo lleva.
+        assert!(PillTokens::expressive(cream).veil.is_some());
+        // Una piel oscura con tema claro se aclara hasta que el texto oscuro se lea.
+        let night = light(Skin::Solid { color: 0x14213d });
+        let veil = night.veil.expect("velo");
+        let s = night.scheme.unwrap();
+        let under = blend(rgb(0x14213d).into(), Hsla { a: 1.0, ..veil }, veil.a);
+        assert!(contrast_ratio(s.on_surface, under) >= TEXT_CONTRAST);
+    }
+
+    #[test]
+    fn fundida_con_el_notch_o_sobre_la_caratula_la_pill_va_oscura() {
+        let look = Appearance { pill: PillStyle::Expressive, pill_theme: crate::appearance::PillTheme::Light, ..Appearance::default() };
+        assert!(!SchemeKey::of(&look).dark);
+        set_force_dark(true);
+        let fused = SchemeKey::of_pill(&look);
+        set_force_dark(false);
+        assert!(fused.dark);
+        // La muestra de Ajustes no mira el notch.
+        assert!(!SchemeKey::of(&look).dark);
+    }
+
+    #[test]
+    fn los_colores_fijos_toman_su_rol_y_los_acentos_no() {
+        let light = Scheme::baseline_light();
+        assert_eq!(ink_in(0xf0f0ea, &light), light.on_surface);
+        assert_eq!(ink_in(0xa8a89e, &light), light.on_surface_variant);
+        assert_eq!(ink_in(0x1a1a18, &light), light.surface);
+        // El texto sobre su tinta se sigue leyendo en el tema claro.
+        assert!(contrast_ratio(ink_in(0x1a1a18, &light), ink_in(0xf0f0ea, &light)) >= TEXT_CONTRAST);
+        assert_eq!(ink_in(0xff5a52, &light), Hsla::from(rgb(0xff5a52)));
     }
 
     #[test]
@@ -1175,7 +1402,7 @@ mod tests {
         assert!(!look.update(LookInputs { processing: true, ..inputs() }, Some(&s), now));
         // Nada nuevo dentro del mismo cuadro de 1/15 s; el siguiente sí.
         assert!(!look.loading_due(now));
-        let frame = loading_frame(start, now);
+        let frame = loading_frame(start, now, LOADING_FPS);
         let next = start + std::time::Duration::from_secs_f32((frame + 1) as f32 / LOADING_FPS + 1e-3);
         assert!(look.loading_due(next));
         let a = look.mark_paint(&s, now).unwrap().points;
@@ -1323,14 +1550,140 @@ mod tests {
         assert_eq!(group_radii(1, 4, thick, 0.0, 1.0), (GROUP_PRESSED, GROUP_PRESSED));
         assert_eq!(group_radii(0, 4, thick, 1.0, 1.0), (GROUP_PRESSED, GROUP_PRESSED));
     }
+
+    // --- Cachés ---
+
+    #[test]
+    fn el_cache_de_esquemas_bota_el_menos_usado() {
+        let mut entries: Vec<(u32, u32)> = Vec::new();
+        for key in 0..3 {
+            lru_put(&mut entries, key, key * 10, 3);
+        }
+        // Usar el más antiguo lo deja al final…
+        assert_eq!(lru_get(&mut entries, &0), Some(0));
+        assert_eq!(entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(), vec![1, 2, 0]);
+        // …y al llenarse se va el que lleva más sin usarse, no el que se usa.
+        lru_put(&mut entries, 3, 30, 3);
+        assert_eq!(entries.iter().map(|(key, _)| *key).collect::<Vec<_>>(), vec![2, 0, 3]);
+        assert_eq!(lru_get(&mut entries, &1), None);
+        assert_eq!(lru_get(&mut entries, &0), Some(0));
+        assert_eq!(lru_get(&mut entries, &3), Some(30));
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn los_tokens_se_arman_una_vez_por_clave() {
+        static SLOT: Mutex<Option<((PillStyle, SchemeKey, bool), PillTokens)>> = Mutex::new(None);
+        let made = std::cell::Cell::new(0);
+        let skin = Skin::Solid { color: 0x3b1220 };
+        let key = (PillStyle::Expressive, SchemeKey::plain(skin), true);
+        let make = || {
+            made.set(made.get() + 1);
+            PillTokens::expressive_with(SchemeKey::plain(skin), true)
+        };
+        let first = remember(&SLOT, key, make);
+        let again = remember(&SLOT, key, make);
+        assert_eq!(made.get(), 1);
+        assert_eq!(first.skin, again.skin);
+        assert_eq!(first.shadow(0.5), again.shadow(0.5));
+        // Otra piel, otro esquema o sin pintar la piel: se arman de nuevo.
+        remember(&SLOT, (PillStyle::Expressive, SchemeKey::plain(Skin::Atic), true), make);
+        remember(&SLOT, (PillStyle::Expressive, SchemeKey::plain(Skin::Atic), false), make);
+        remember(&SLOT, (PillStyle::Atic, SchemeKey::plain(Skin::Atic), false), make);
+        assert_eq!(made.get(), 4);
+    }
+
+    #[test]
+    fn procesando_solo_por_agentes_va_a_10_fps() {
+        let s = Scheme::baseline_dark();
+        let mut look = LookState::default();
+        let start = Instant::now();
+        let agents = LookInputs { processing: true, agents_only: true, ..inputs() };
+        look.update(agents, Some(&s), start);
+        // 1/15 s después todavía es el mismo cuadro; a 1/10 s, el siguiente.
+        assert!(!look.loading_due(start + std::time::Duration::from_millis(70)));
+        assert!(look.loading_due(start + std::time::Duration::from_millis(101)));
+        // Con dictado o Reuniones, 15.
+        let mut look = LookState::default();
+        look.update(LookInputs { processing: true, ..inputs() }, Some(&s), start);
+        assert!(look.loading_due(start + std::time::Duration::from_millis(70)));
+    }
+
+    #[test]
+    fn la_forma_de_carga_guardada_es_la_del_cuadro() {
+        let s = Scheme::baseline_dark();
+        let mut look = LookState::default();
+        let start = Instant::now();
+        let mut now = start;
+        for _ in 0..60 {
+            look.update(LookInputs { processing: true, ..inputs() }, Some(&s), now);
+            now += std::time::Duration::from_millis(16);
+        }
+        let frame = loading_frame(start, now, LOADING_FPS);
+        look.update(LookInputs { processing: true, ..inputs() }, Some(&s), now);
+        let (seen, points) = look.mark.loading_shape.clone().unwrap();
+        assert_eq!(seen, frame);
+        assert!(close(&points, &loading_points(frame, LOADING_FPS)));
+        // Ya asentada, lo que se pinta es esa forma.
+        assert!(close(&look.mark_paint(&s, now).unwrap().points, &points));
+    }
 }
 
 /// El esquema del contenido de los vistazos y de los paneles del notch: el de
-/// la pill en Expressive (oscuro, sembrado con la piel); `None` en Atic, donde
-/// cada panel sigue con sus colores de siempre.
+/// la pill en Expressive (sembrado con la piel, claro u oscuro según el tema
+/// de la pill); `None` en Atic, donde cada panel sigue con sus colores de
+/// siempre (oscuros).
 pub(crate) fn content_scheme() -> Option<Scheme> {
+    content_key().map(scheme_for)
+}
+
+/// La clave del esquema del contenido; `None` en Atic.
+fn content_key() -> Option<SchemeKey> {
     let look = crate::appearance::current();
-    (look.pill == PillStyle::Expressive).then(|| scheme_for(SchemeKey::of(&look)))
+    (look.pill == PillStyle::Expressive).then(|| SchemeKey::of_pill(&look))
+}
+
+/// ¿Va claro el contenido de la pill? Solo en Expressive con tema claro (y
+/// sin estar fundida con el notch).
+pub(crate) fn content_light() -> bool {
+    content_key().is_some_and(|key| !key.dark)
+}
+
+/// El esquema de lo que va sobre una carátula o una imagen (Ahora suena):
+/// siempre oscuro, con su texto claro y el degradado oscuro de debajo, sea
+/// cual sea el tema. `None` en Atic.
+pub(crate) fn cover_scheme() -> Option<Scheme> {
+    content_key().map(|key| scheme_for(SchemeKey { dark: true, ..key }))
+}
+
+/// Un color fijo del contenido de la pill de siempre (oscura) en el estilo
+/// vigente: en Atic, tal cual; en Expressive, el rol del esquema que hace su
+/// papel (`role_of`), así se lee también en el tema claro.
+pub(crate) fn ink(color: u32) -> Hsla {
+    match content_scheme() {
+        Some(s) => ink_in(color, &s),
+        None => rgb(color).into(),
+    }
+}
+
+/// `ink` con el esquema ya en la mano.
+pub(crate) fn ink_in(color: u32, s: &Scheme) -> Hsla {
+    role_of(color, s).unwrap_or_else(|| rgb(color).into())
+}
+
+/// El rol que hace el papel de un color fijo del contenido oscuro de
+/// siempre: el texto, sus grises, la tinta oscura sobre una ficha clara y los
+/// fondos de burbuja. Uno que no es de la lista (un acento, el rojo de
+/// grabar) no tiene: sale igual en los dos temas.
+fn role_of(color: u32, s: &Scheme) -> Option<Hsla> {
+    Some(match color {
+        0xffffff | 0xf0f0ea | 0xe8e8e0 | 0xc9c9c0 => s.on_surface,
+        0xb8b8ae | 0xa8a89e | 0x9a9a90 | 0x8f8f86 | 0x8a8a82 => s.on_surface_variant,
+        0x6e6e66 => s.outline,
+        0x1a1a18 => s.surface,
+        0x2a2a28 | 0x2a2a27 => s.surface_container_high,
+        _ => return None,
+    })
 }
 
 /// En Expressive, mientras se dibuja la ventana de la pill, los componentes de
@@ -1338,7 +1691,7 @@ pub(crate) fn content_scheme() -> Option<Scheme> {
 /// Atic Code. Devuelve la capa que, pintada al final, deja el de antes, como
 /// `theme::scope_m3`. En Atic no hace nada.
 pub(crate) fn scope_m3(cx: &mut gpui::App) -> Option<gpui::AnyElement> {
-    content_scheme().map(|scheme| gpui_m3::Theme::scoped(scheme, true, cx))
+    content_key().map(|key| gpui_m3::Theme::scoped(scheme_for(key), key.dark, cx))
 }
 
 impl Track {

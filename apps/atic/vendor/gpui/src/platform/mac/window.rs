@@ -517,9 +517,14 @@ impl MacWindowState {
                 return;
             }
         }
-        // Fuera de toda pantalla (al reacomodarse) no hay monitor que seguir:
-        // `windowDidChangeScreen` vuelve a llamar al entrar en una.
-        let screen = unsafe { self.native_window.screen() };
+        // Fuera de toda pantalla (al reacomodarse, al despertar o al
+        // desbloquear) se sigue la pantalla principal: si no, la ventana se
+        // quedaba sin display link hasta un `windowDidChangeScreen` que podía
+        // no llegar, y en pantalla quedaba un cuadro viejo.
+        let mut screen = unsafe { self.native_window.screen() };
+        if screen.is_null() {
+            screen = unsafe { NSScreen::mainScreen(nil) };
+        }
         if screen.is_null() {
             return;
         }

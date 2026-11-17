@@ -862,6 +862,8 @@ impl Render for NotchChat {
             Some(s) => (s.on_surface, s.on_surface_variant, s.outline),
             None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
         };
+        let (text, muted) = (self.text, self.muted);
+        self.composer.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
         let text = self.text;
         let scope = dark_m3(cx);
         // Todo el chat recibe lo que se suelta; mientras pasa encima, se aclara.
@@ -919,7 +921,7 @@ fn dark_m3(cx: &mut gpui::App) -> AnyElement {
     use gpui::{canvas, deferred};
     let previous = gpui_m3::Theme::get(cx);
     let scheme = crate::pill_look::content_scheme().unwrap_or_else(gpui_m3::Scheme::baseline_dark);
-    cx.set_global(gpui_m3::Theme { scheme, dark: true, seed: None });
+    cx.set_global(gpui_m3::Theme { scheme, dark: !crate::pill_look::content_light(), seed: None });
     let restore = canvas(|_, _, _| {}, move |_, _, _, cx| cx.set_global(previous));
     deferred(restore).with_priority(usize::MAX).into_any_element()
 }

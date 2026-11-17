@@ -247,7 +247,7 @@ impl Colors {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
                 faint: rgb(0x6e6e66).into(),
-                track: gpui::white().opacity(0.09),
+                track: crate::pill_look::ink(0xffffff).opacity(0.09),
                 fill: rgb(0xe8e8e0).into(),
                 ink: rgb(0x1a1a18).into(),
                 amber: rgb(0xe8b04b).into(),
@@ -836,7 +836,7 @@ impl SystemPanel {
                         .h_full()
                         .w(fill)
                         .rounded(px(height / 2.0))
-                        .bg(if dragging { gpui::white() } else { c.fill }),
+                        .bg(if dragging { crate::pill_look::ink(0xffffff) } else { c.fill }),
                 )
             })
             .children(icon.map(|icon| {
@@ -1095,7 +1095,7 @@ impl SystemPanel {
             // Encendida no cambia de color con el cursor: se aclara apenas.
             let surface = match bg {
                 Some(bg) => h.mix(bg, bg.opacity(0.86)),
-                None => h.mix(track, gpui::white().opacity(0.14)),
+                None => h.mix(track, crate::pill_look::ink(0xffffff).opacity(0.14)),
             };
             // Al apretar se hunde un poco, como el `scale(.96)` de la web.
             let inset = 2.5 * h.press;
@@ -1183,7 +1183,7 @@ impl SystemPanel {
                 .rounded(px(TABS_H / 2.0))
                 .text_size(px(11.))
                 .text_color(fg)
-                .bg(h.mix(gpui::white().opacity(rest), gpui::white().opacity(over)))
+                .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(rest), crate::pill_look::ink(0xffffff).opacity(over)))
                 .cursor_pointer()
                 .on_click(click)
                 .child(crate::glide::mark(crate::glide::named("system-tabs"), tab as u64))
@@ -1392,7 +1392,7 @@ impl SystemPanel {
                             div()
                                 .id(row_id)
                                 .rounded(px(10.))
-                                .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.06)))
+                                .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(0.0), crate::pill_look::ink(0xffffff).opacity(0.06)))
                                 .cursor_pointer()
                                 .on_click(click)
                                 .child(line)
@@ -1478,7 +1478,7 @@ impl SystemPanel {
                         .flex_1()
                         .h(px(4.))
                         .rounded(px(2.))
-                        .bg(gpui::white().opacity(0.09))
+                        .bg(crate::pill_look::ink(0xffffff).opacity(0.09))
                         .child(
                             div()
                                 .h_full()
@@ -1628,7 +1628,7 @@ impl SystemPanel {
                         .mx(px(-6.))
                         .px(px(6.))
                         .rounded(px(10.))
-                        .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.05)))
+                        .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(0.0), crate::pill_look::ink(0xffffff).opacity(0.05)))
                         .into_any_element()
                 })
                 .into_any_element()
@@ -1871,7 +1871,7 @@ impl SystemPanel {
                     .rounded(px(10.))
                     .when(cleanable, |el| {
                         el.cursor_pointer()
-                            .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.05)))
+                            .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(0.0), crate::pill_look::ink(0xffffff).opacity(0.05)))
                             .on_click(open)
                     })
                     .into_any_element()
@@ -2109,11 +2109,11 @@ impl SystemPanel {
             .h(px(26.))
             .p(px(2.))
             .rounded(px(13.))
-            .bg(gpui::white().opacity(0.05))
+            .bg(crate::pill_look::ink(0xffffff).opacity(0.05))
             .child(crate::glide::indicator(
                 glide.clone(),
                 Some(selected),
-                crate::glide::Look { fill: gpui::white().opacity(0.14), radius: 11., edge: None },
+                crate::glide::Look { fill: crate::pill_look::ink(0xffffff).opacity(0.14), radius: 11., edge: None },
             ));
         for (key, icon, label) in options {
             let picked = key == selected;
@@ -2195,7 +2195,7 @@ impl SystemPanel {
                 .items_center()
                 .gap(px(6.))
                 .rounded(px(13.))
-                .bg(h.mix(gpui::white().opacity(0.05), gpui::white().opacity(0.1)))
+                .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(0.05), crate::pill_look::ink(0xffffff).opacity(0.1)))
                 .cursor_pointer()
                 .text_size(px(11.))
                 .text_color(fg)
@@ -2208,7 +2208,7 @@ impl SystemPanel {
         let mut list: Vec<AnyElement> = Vec::new();
         for (i, display) in displays.iter().enumerate() {
             if i > 0 {
-                list.push(div().h(px(DIVIDER_H)).flex().items_center().child(div().h(px(1.)).w_full().bg(gpui::white().opacity(0.06))).into_any_element());
+                list.push(div().h(px(DIVIDER_H)).flex().items_center().child(div().h(px(1.)).w_full().bg(crate::pill_look::ink(0xffffff).opacity(0.06))).into_any_element());
             }
             list.push(self.render_display(display, displays.len(), cx));
         }
@@ -2255,7 +2255,7 @@ impl SystemPanel {
                     .items_center()
                     .gap(px(5.))
                     .rounded(px(11.))
-                    .bg(h.mix(gpui::white().opacity(if open { 0.06 } else { 0.0 }), gpui::white().opacity(0.08)))
+                    .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(if open { 0.06 } else { 0.0 }), crate::pill_look::ink(0xffffff).opacity(0.08)))
                     .text_size(px(11.))
                     .text_color(fg)
                     .when(can_pick, |el| el.cursor_pointer().on_click(toggle))
@@ -2401,7 +2401,7 @@ impl SystemPanel {
             .child(crate::glide::indicator(
                 glide.clone(),
                 selected.map(|i| i as u64),
-                crate::glide::Look { fill: gpui::white().opacity(0.14), radius: 12., edge: None },
+                crate::glide::Look { fill: crate::pill_look::ink(0xffffff).opacity(0.14), radius: 12., edge: None },
             ));
         for (i, (label, mode)) in labels.into_iter().zip(modes).enumerate() {
             let picked = selected == Some(i);
@@ -2419,7 +2419,7 @@ impl SystemPanel {
                         .items_center()
                         .justify_center()
                         .rounded(px(12.))
-                        .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(if picked { 0.0 } else { 0.06 })))
+                        .bg(h.mix(crate::pill_look::ink(0xffffff).opacity(0.0), crate::pill_look::ink(0xffffff).opacity(if picked { 0.0 } else { 0.06 })))
                         .cursor_pointer()
                         .text_size(px(11.))
                         .text_color(fg)
@@ -2482,6 +2482,8 @@ impl Render for SystemPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
+        let (text, faint) = (self.colors.text, self.colors.faint);
+        self.search.update(cx, |input, cx| input.set_colors(text, faint, text, cx));
         let s = self.state.clone();
         let volume_icon = if s.muted || s.volume <= 0.001 {
             "icons/volume-x.svg"
@@ -2657,7 +2659,7 @@ impl Render for SystemPanel {
                             el.child(crate::glide::indicator(
                                 crate::glide::named("system-tabs"),
                                 self.tab.map(|tab| tab as u64),
-                                crate::glide::Look { fill: gpui::white().opacity(0.12), radius: TABS_H / 2.0, edge: None },
+                                crate::glide::Look { fill: crate::pill_look::ink(0xffffff).opacity(0.12), radius: TABS_H / 2.0, edge: None },
                             ))
                         })
                         .child(self.tab_button(Tab::Audio, "icons/audio-lines.svg", crate::i18n::t("pill.system.tabAudio"), cx))
@@ -2759,7 +2761,7 @@ fn proc_action(
         let bg = if filled {
             h.mix(color, color.opacity(0.85))
         } else {
-            h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.1 + 0.06 * h.press))
+            h.mix(crate::pill_look::ink(0xffffff).opacity(0.0), crate::pill_look::ink(0xffffff).opacity(0.1 + 0.06 * h.press))
         };
         div()
             .id(id)

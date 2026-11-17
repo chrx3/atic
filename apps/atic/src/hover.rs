@@ -225,8 +225,8 @@ pub fn pin_button(
     }
     // Fijado se nota de lejos: claro sobre la piel oscura, como los botones
     // de Atic Code.
-    use gpui::{div, prelude::*, px, rgb, svg};
-    let ink: Hsla = rgb(0x1a1a18).into();
+    use gpui::{div, prelude::*, px, svg};
+    let ink = crate::pill_look::ink(0x1a1a18);
     hover_fx(id, move |h| {
         div()
             .id(id)
@@ -855,4 +855,273 @@ pub fn m3_segment(
             }))
             .into_any_element()
     })
+}
+
+// --- M3 Expressive: las barras de las herramientas de pantalla completa -----
+//
+// Pizarra, Capturas, Color y Flip, cuando `pill_look::content_scheme()` es
+// `Some`: barras flotantes (Floating Toolbar de M3 Expressive) con el esquema
+// de la pill, para que combinen con lo que el usuario eligió. Como las piezas
+// de arriba, solo dan el aspecto: el clic, el arrastre y los atajos los pone
+// cada herramienta en su propio elemento, y el estilo va en
+// `.fx_cx(id, |el, h, window, cx| m3_tool(el, h, ..))`.
+
+/// El lado de un botón de ícono de las barras de M3.
+pub const M3_TOOL: f32 = 40.0;
+/// El relleno de una barra alrededor de sus botones.
+pub const M3_TOOLBAR_PAD: f32 = 4.0;
+
+/// Cómo se pinta un botón de una barra de M3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum M3Tone {
+    /// Botón de ícono estándar: sin contenedor, solo la capa de estado.
+    Standard,
+    /// Botón de alternar elegido: en `secondary_container` y más cuadrado.
+    Selected,
+    /// Tonal, en `secondary_container`, sin cambiar de forma (su menú está abierto).
+    Tonal,
+    /// Lleno, en `primary`: la acción principal («Listo»).
+    Filled,
+    /// Lleno, en `error`: grabar.
+    Error,
+}
+
+/// El contenedor y el contenido de un botón de `tone`.
+pub fn m3_tone_colors(tone: M3Tone, s: &gpui_m3::Scheme) -> (Hsla, Hsla) {
+    match tone {
+        M3Tone::Standard => (s.on_surface_variant.opacity(0.0), s.on_surface_variant),
+        M3Tone::Selected | M3Tone::Tonal => (s.secondary_container, s.on_secondary_container),
+        M3Tone::Filled => (s.primary, s.on_primary),
+        M3Tone::Error => (s.error, s.on_error),
+    }
+}
+
+/// El radio de un botón de barra de alto `height`: redondo en reposo; elegido,
+/// más cuadrado (el botón de alternar de Expressive cambia de forma); apretado,
+/// más todavía. Con `SPATIAL_FAST`, solo dentro de `hover_fx_cx`/`fx_cx`.
+pub fn m3_tool_radius(h: Hover, tone: M3Tone, height: f32, window: &mut Window, cx: &mut App) -> f32 {
+    let target = if m3_pressed(h) {
+        height * 0.2
+    } else if tone == M3Tone::Selected {
+        height * 0.3
+    } else {
+        height / 2.0
+    };
+    gpui_m3::motion::animate_f32("m3-tool-radius", gpui_m3::Spring::SPATIAL_FAST, target, window, cx).max(0.0)
+}
+
+/// El aspecto de un botón de barra: su contenedor con la capa de estado y su
+/// radio. Devuelve el elemento y el color de su contenido.
+pub fn m3_tool<E: gpui::Styled>(
+    el: E,
+    h: Hover,
+    tone: M3Tone,
+    height: f32,
+    s: &gpui_m3::Scheme,
+    window: &mut Window,
+    cx: &mut App,
+) -> (E, Hsla) {
+    let (base, fg) = m3_tone_colors(tone, s);
+    let radius = m3_tool_radius(h, tone, height, window, cx);
+    (el.rounded(gpui::px(radius)).bg(m3_layer(base, fg, h)).text_color(fg), fg)
+}
+
+/// Un botón de un grupo conectado (ButtonGroup `connected` de Expressive:
+/// deshacer, rehacer y borrar; Captura | Grabar): esquinas chicas entre
+/// botones y redondas en los extremos; el elegido se vuelve píldora en
+/// `selected` (normalmente `secondary_container`) y apretado se cuadra, con
+/// `SPATIAL_FAST`. Sin elegir va en `surface_container_highest`, que se ve
+/// sobre la barra. Quien llama los pone en fila con 2 px entre ellos.
+#[allow(clippy::too_many_arguments)]
+pub fn m3_connected<E: gpui::Styled>(
+    el: E,
+    h: Hover,
+    (index, count): (usize, usize),
+    selected: Option<(Hsla, Hsla)>,
+    height: f32,
+    s: &gpui_m3::Scheme,
+    window: &mut Window,
+    cx: &mut App,
+) -> (E, Hsla) {
+    use gpui::px;
+    let (round, small) = (height / 2.0, height * 0.2);
+    let target = if m3_pressed(h) {
+        [small * 0.5, small * 0.5]
+    } else {
+        let chosen = selected.is_some();
+        [
+            if index == 0 || chosen { round } else { small },
+            if index + 1 == count || chosen { round } else { small },
+        ]
+    };
+    let [left, right] =
+        gpui_m3::motion::animate("m3-connected-radii", gpui_m3::Spring::SPATIAL_FAST, target, window, cx);
+    let (left, right) = (left.max(0.0), right.max(0.0));
+    let (base, fg) = selected.unwrap_or((s.surface_container_highest, s.on_surface_variant));
+    (
+        el.rounded_tl(px(left))
+            .rounded_bl(px(left))
+            .rounded_tr(px(right))
+            .rounded_br(px(right))
+            .bg(m3_layer(base, fg, h))
+            .text_color(fg),
+        fg,
+    )
+}
+
+/// Una barra flotante de M3 Expressive: `surface_container`, esquinas
+/// completas y elevación 3.
+pub fn m3_toolbar(id: impl Into<ElementId>, s: &gpui_m3::Scheme) -> gpui::Stateful<gpui::Div> {
+    use gpui::{div, prelude::*, px};
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(M3_TOOLBAR_PAD))
+        .rounded_full()
+        .bg(s.surface_container)
+        .shadow(gpui_m3::Elevation::Level3.shadow(s))
+}
+
+/// El separador vertical entre grupos de una barra de M3.
+pub fn m3_toolbar_divider(s: &gpui_m3::Scheme) -> gpui::Div {
+    use gpui::{div, prelude::*, px};
+    div().flex_none().w(px(1.)).h(px(24.)).mx(px(4.)).bg(s.outline_variant)
+}
+
+/// Un menú o panel que se abre desde una barra de M3: `surface_container`,
+/// esquinas grandes y elevación 2.
+pub fn m3_menu(id: impl Into<ElementId>, s: &gpui_m3::Scheme) -> gpui::Stateful<gpui::Div> {
+    use gpui::{div, prelude::*};
+    div()
+        .id(id)
+        .occlude()
+        .rounded(gpui_m3::corner::L)
+        .bg(s.surface_container)
+        .shadow(gpui_m3::Elevation::Level2.shadow(s))
+        .text_color(s.on_surface)
+        .font_family(crate::fonts::UI)
+}
+
+/// Un aviso sobre la pantalla (la ayuda de la herramienta, «Copiado») como
+/// tooltip rico de M3: lo que va antes del primer « · » es el título y lo
+/// demás, la explicación. `surface_container_high` con elevación 2.
+pub fn m3_hint(s: &gpui_m3::Scheme, text: impl Into<gpui::SharedString>) -> gpui::Div {
+    use gpui::{div, prelude::*, px};
+    use gpui_m3::theme::type_scale::{TypeScaleExt, BODY_MEDIUM, BODY_SMALL, LABEL_LARGE};
+    let text: gpui::SharedString = text.into();
+    let (title, rest) = match text.split_once(" · ") {
+        Some((title, rest)) => (gpui::SharedString::from(title.to_string()), Some(gpui::SharedString::from(rest.to_string()))),
+        None => (text, None),
+    };
+    div()
+        .max_w(px(560.))
+        .px(px(12.))
+        .py(px(6.))
+        .flex()
+        .flex_wrap()
+        .items_baseline()
+        .gap(px(8.))
+        .rounded(gpui_m3::corner::M)
+        .bg(s.surface_container_high)
+        .shadow(gpui_m3::Elevation::Level2.shadow(s))
+        .font_family(crate::fonts::UI)
+        // Sin título (una frase suelta), el texto va sin énfasis.
+        .child(
+            div()
+                .map(|el| if rest.is_some() { el.type_emphasized(LABEL_LARGE) } else { el.type_style(BODY_MEDIUM) })
+                .text_color(s.on_surface)
+                .child(title),
+        )
+        .children(rest.map(|rest| div().type_style(BODY_SMALL).text_color(s.on_surface_variant).child(rest)))
+}
+
+/// Un dato corto sobre la pantalla (el tamaño de lo elegido, un color) en un
+/// chip de M3: `secondary_container`.
+pub fn m3_chip(s: &gpui_m3::Scheme, text: impl Into<gpui::SharedString>) -> gpui::Div {
+    use gpui::{div, prelude::*, px};
+    use gpui_m3::theme::type_scale::{TypeScaleExt, LABEL_MEDIUM};
+    div()
+        .h(px(24.))
+        .px(px(10.))
+        .flex()
+        .items_center()
+        .rounded(gpui_m3::corner::S)
+        .bg(s.secondary_container)
+        .text_color(s.on_secondary_container)
+        .font_family(crate::fonts::UI)
+        .type_style(LABEL_MEDIUM)
+        .child(Into::<gpui::SharedString>::into(text))
+}
+
+/// Una muestra de color de M3: un círculo que, elegido, se vuelve galleta
+/// (Cookie de la biblioteca de Expressive) con un resorte, una vez al cambiar.
+/// Con el cursor encima crece un poco. No pide cuadros en reposo.
+pub fn m3_swatch(id: impl Into<ElementId>, color: Hsla, selected: bool, size: f32, h: Hover) -> gpui_m3::Shape {
+    gpui_m3::Shape::new(gpui_m3::ShapeName::Circle)
+        .breathe_on_hover(id, gpui_m3::ShapeName::Cookie9)
+        .hovered(selected)
+        .size(gpui::px(size))
+        .scale(1.0 + 0.08 * h.t - 0.06 * h.press)
+        .color(color)
+}
+
+/// La entrada de una barra flotante: de 0 a 1 (con el rebote de `SPATIAL`)
+/// desde que apareció. Quien llama la corre hacia de donde viene (la pill) en
+/// proporción a lo que falta. Con movimiento reducido, 1. Se detiene sola: no
+/// pide cuadros en reposo.
+pub fn m3_bar_entrance(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> f32 {
+    if crate::anim::reduced_motion() {
+        return 1.0;
+    }
+    gpui_m3::motion::entrance(id, gpui_m3::Spring::SPATIAL, 0.0, window, cx)
+}
+
+/// El globito de los botones de las barras de las herramientas: en
+/// Expressive, el tooltip plano de M3 con el esquema de la pill
+/// (`inverse_surface`); si no, el de siempre (`tip`).
+pub fn tool_tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |_, cx| tool_tip_view(text.into(), cx)
+}
+
+/// Como `tool_tip`, con un texto armado en el momento.
+pub fn tool_tip_text(text: gpui::SharedString) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |_, cx| tool_tip_view(text.clone(), cx)
+}
+
+fn tool_tip_view(text: gpui::SharedString, cx: &mut App) -> gpui::AnyView {
+    match crate::pill_look::content_scheme() {
+        Some(scheme) => gpui::AppContext::new(cx, |_| TipM3(text, scheme)).into(),
+        None => gpui::AppContext::new(cx, |_| Tip(text, None)).into(),
+    }
+}
+
+/// El tooltip plano de M3 con los colores de la pill.
+struct TipM3(gpui::SharedString, gpui_m3::Scheme);
+
+impl gpui::Render for TipM3 {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        use gpui::{div, prelude::*, px, Animation, AnimationExt};
+        use gpui_m3::theme::type_scale::{TypeScaleExt, BODY_SMALL};
+        let s = self.1;
+        div().pl(px(10.)).pt(px(8.)).child(
+            div()
+                .min_h(px(24.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(gpui_m3::corner::XS)
+                .bg(s.inverse_surface)
+                .font_family(crate::fonts::UI)
+                .type_style(BODY_SMALL)
+                .text_color(s.inverse_on_surface)
+                .child(self.0.clone())
+                .with_animation(
+                    "tip-in-m3-tool",
+                    Animation::new(Duration::from_millis(150)).with_easing(gpui::ease_out_quint()),
+                    |el, t| el.opacity(t).mt(px(4.0 * (1.0 - t))),
+                ),
+        )
+    }
 }

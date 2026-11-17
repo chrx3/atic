@@ -2323,8 +2323,8 @@ impl AgentsPanel {
         use crate::media::Control;
         let track = self.track()?;
         let (text, muted) = (self.colors.text, self.colors.muted);
-        let cream: Hsla = rgb(0xe8e8e0).into();
-        let ink: Hsla = rgb(0x1a1a18).into();
+        let cream = crate::pill_look::ink(0xe8e8e0);
+        let ink = crate::pill_look::ink(0x1a1a18);
         let art = match track.art.clone() {
             Some(art) => img(art).size(px(28.)).flex_none().rounded(px(6.)).into_any_element(),
             None => div()
@@ -3492,6 +3492,10 @@ impl Render for AgentsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
+        let (text, muted) = (self.colors.text, self.colors.muted);
+        for input in [&self.composer, &self.reply_input] {
+            input.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
+        }
         let now = now_secs();
         let sessions: Vec<(usize, Session)> =
             self.running_rows().into_iter().map(|(row, session)| (row, session.clone())).collect();

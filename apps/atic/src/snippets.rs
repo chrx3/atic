@@ -1561,6 +1561,9 @@ impl Render for SnippetsPanel {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
         let (text, faint, muted) = (self.colors.text, self.colors.faint, self.colors.muted);
+        for input in [&self.search, &self.new_task] {
+            input.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
+        }
         let m3 = self.colors.m3;
 
         let body = if self.tab == Tab::Tareas {

@@ -312,7 +312,7 @@ pub(crate) fn chip(
 ) -> impl IntoElement {
     let id: SharedString = id.into();
     let label: SharedString = label.into();
-    let paper: Hsla = rgb(0x1a1a18).into();
+    let paper = crate::pill_look::ink(0x1a1a18);
     div()
         .id(gpui::ElementId::Name(id.clone()))
         .h(px(24.))
@@ -342,7 +342,7 @@ pub(crate) fn chip(
 
 /// Un interruptor chico: encendido, claro con la perilla oscura a la derecha.
 pub(crate) fn switch(on: bool, c: Ink) -> impl IntoElement {
-    let paper: Hsla = rgb(0x1a1a18).into();
+    let paper = crate::pill_look::ink(0x1a1a18);
     div()
         .w(px(30.))
         .h(px(18.))

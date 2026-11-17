@@ -11,8 +11,8 @@
 //! terminal (`console::BACKGROUND`) no está en la tabla, y lo que en la
 //! interfaz se hunde un poco usa `SUNKEN`, que sí cambia.
 //!
-//! La pill y sus paneles flotantes no pasan por aquí: siguen oscuros, se ven
-//! sobre cualquier fondo.
+//! La pill y sus paneles flotantes no pasan por aquí: tienen su propio tema
+//! («Tema de la pill», `pill_look`), oscuro salvo que se elija otro.
 //!
 //! El tema sale de `ui_theme` en `config.json` (el mismo de Atic): `system`
 //! sigue a Windows («Modo de aplicación» claro u oscuro).
@@ -485,6 +485,12 @@ pub fn set_light(light: bool) {
     if LIGHT_ON.swap(light, Ordering::Relaxed) != light {
         CHANGED.store(true, Ordering::Relaxed);
     }
+}
+
+/// Pide redibujar todas las ventanas (cambió algo del tema que no es este,
+/// como el claro u oscuro del sistema que sigue la pill).
+pub fn mark_changed() {
+    CHANGED.store(true, Ordering::Relaxed);
 }
 
 /// Lo consume el bucle de la pill para redibujar todas las ventanas.

@@ -2564,8 +2564,10 @@ impl Focusable for MediaPanel {
     }
 }
 
+/// Blanco a `alpha`; en Expressive, el texto del esquema de la pill (que
+/// puede ser claro u oscuro).
 fn white(alpha: f32) -> Hsla {
-    gpui::white().opacity(alpha)
+    crate::pill_look::ink(0xffffff).opacity(alpha)
 }
 
 impl MediaPanel {
@@ -2758,9 +2760,9 @@ impl MediaPanel {
             return None;
         }
         let primary = self.media.track().map(|t| t.id);
-        let muted: Hsla = rgb(0xb8b8ae).into();
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let ink: Hsla = rgb(0x1a1a18).into();
+        let muted = crate::pill_look::ink(0xb8b8ae);
+        let text = crate::pill_look::ink(0xf0f0ea);
+        let ink = crate::pill_look::ink(0x1a1a18);
         let playing = sources.iter().filter(|t| t.playing).count();
         let head = div()
             .h(px(SOURCES_HEAD_H))
@@ -2851,7 +2853,7 @@ impl MediaPanel {
                             .h_full()
                             .w(px(fill))
                             .rounded(px(APP_VOLUME_H / 2.0))
-                            .bg(if dragging { gpui::white() } else { rgb(0xe8e8e0).into() }),
+                            .bg(if dragging { crate::pill_look::ink(0xffffff) } else { crate::pill_look::ink(0xe8e8e0) }),
                     )
                     .child(
                         div()
@@ -3008,7 +3010,7 @@ impl MediaPanel {
             now_size: 17.,
             now_line: 21.,
             now_h: LYRIC_NOW_H,
-            now_color: rgb(0xf0f0ea).into(),
+            now_color: crate::pill_look::ink(0xf0f0ea),
             next_size: 12.5,
             next_h: LYRIC_SIDE_H,
             next_color: white(0.32),
@@ -3081,7 +3083,7 @@ impl MediaPanel {
         if !cfg!(windows) {
             return label.text_color(muted).into_any_element();
         }
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text = crate::pill_look::ink(0xf0f0ea);
         let tip = crate::i18n::tf("pill.media.goToApp", &[("app", &source)]);
         div()
             .id("media-source")

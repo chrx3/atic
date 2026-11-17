@@ -26,7 +26,7 @@ use gpui::{
 use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 
 use crate::capture::{self, Frozen, Saved};
-use crate::hover::{tip, HoverExt};
+use crate::hover::{tool_tip as tip, HoverExt, M3Tone};
 use crate::i18n::{t, tf};
 use crate::text_area::TextArea;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
@@ -351,6 +351,29 @@ pub(crate) const BUTTON: f32 = 34.0;
 pub(crate) const INK: u32 = 0xf0f0ea;
 /// El fondo de las islas y los paneles: el de la tarjeta oscura de Flip.
 pub(crate) const CARD: u32 = 0x1e1e1c;
+
+/// Los colores de la barra y de sus paneles: con la pill en Atic, los de
+/// siempre (`INK` sobre `CARD`, `scheme` en `None`); en M3 Expressive, el
+/// esquema de la pill, para que combine con lo que se eligió en Apariencia.
+#[derive(Clone, Copy)]
+pub(crate) struct Colors {
+    pub scheme: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    pub(crate) fn current() -> Self {
+        Self { scheme: crate::pill_look::content_scheme() }
+    }
+
+    /// El lado de los botones de la barra.
+    pub(crate) fn button(self) -> f32 {
+        if self.scheme.is_some() {
+            crate::hover::M3_TOOL
+        } else {
+            BUTTON
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
@@ -2457,7 +2480,7 @@ impl BoardView {
 
     /// Los emojis para elegir, bajo la barra mientras la herramienta es Emoji.
     fn emoji_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text: Hsla = Colors::current().scheme.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
         let mut list: Vec<String> = self.recent_emojis.clone();
         for emoji in EMOJIS {
             if !list.iter().any(|e| e == emoji) {
@@ -2487,7 +2510,7 @@ impl BoardView {
                 .child(emoji)
                 .hover_bg(("board-emoji-fx", i), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(0.12))
         });
-        card("board-emoji-panel")
+        card("board-emoji-panel", Colors::current())
             .max_w(px(560.))
             .p(px(6.))
             .flex()
@@ -2677,14 +2700,16 @@ impl BoardView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
-        div()
+        let colors = Colors::current();
+        let side = colors.button();
+        let el = div()
             .id(id)
-            .size(px(BUTTON))
+            .size(px(side))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(px(BUTTON / 2.0))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .when_some(button_tip(id), |el, label| el.tooltip(tip(label)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -2692,33 +2717,48 @@ impl BoardView {
                 // Deshacer, borrar todo o listo: primero queda el texto en curso.
                 view.end_text(cx);
                 on_click(view, cx)
-            }))
-            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+            }));
+        // M3: botón de ícono estándar; encendido (recortar, el panel abierto),
+        // de alternar elegido.
+        if let Some(s) = colors.scheme {
+            let tone = if active { M3Tone::Selected } else { M3Tone::Standard };
+            return el.fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let (el, fg) = crate::hover::m3_tool(el, h, tone, side, &s, window, cx);
+                el.child(svg().path(icon).size(px(20.)).text_color(fg))
+            });
+        }
+        el.fx(SharedString::from(format!("{id}-fx")), move |el, h| {
                 let fg = if active { text } else { h.mix(text.opacity(0.62), text) };
                 el.bg(if active { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
                     .child(svg().path(icon).size(px(17. - 1.5 * h.press)).text_color(fg))
             })
     }
 
-    /// Un interruptor con nombre (Pill, En vivo): encendido se ve marcado.
+    /// Un interruptor con nombre (Pill, En vivo): encendido se ve marcado. En
+    /// M3, un botón del grupo conectado (`slot`: cuál de cuántos), con su ✓.
+    #[allow(clippy::too_many_arguments)]
     fn toggle_button(
         &self,
         id: &'static str,
         label: &'static str,
         on: bool,
         help: &'static str,
+        slot: (usize, usize),
         on_click: fn(&mut Self, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
-        div()
+        let colors = Colors::current();
+        let side = colors.button();
+        let el = div()
             .id(id)
-            .h(px(BUTTON))
+            .h(px(side))
             .px(px(12.))
             .flex()
             .flex_none()
             .items_center()
-            .rounded(px(BUTTON / 2.0))
+            .gap(px(6.))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .text_size(px(12.))
             .font_family(crate::fonts::UI)
@@ -2727,8 +2767,17 @@ impl BoardView {
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 view.end_text(cx);
                 on_click(view, cx)
-            }))
-            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+            }));
+        if let Some(s) = colors.scheme {
+            let chosen = on.then_some((s.secondary_container, s.on_secondary_container));
+            return el.fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let (el, fg) = crate::hover::m3_connected(el, h, slot, chosen, side, &s, window, cx);
+                el.font_weight(gpui::FontWeight::MEDIUM)
+                    .when(on, |el| el.child(svg().path("icons/check.svg").flex_none().size(px(16.)).text_color(fg)))
+                    .child(label)
+            });
+        }
+        el.fx(SharedString::from(format!("{id}-fx")), move |el, h| {
                 let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
                 el.bg(if on { text.opacity(0.14) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
                     .text_color(fg)
@@ -2751,18 +2800,22 @@ impl BoardView {
         };
         let label = group.label;
         let text: Hsla = rgb(INK).into();
+        let colors = Colors::current();
+        let side = colors.button();
         let button = div()
             .id(group.id)
             .relative()
-            .h(px(BUTTON))
-            .min_w(px(BUTTON))
+            .h(px(side))
+            .min_w(px(side))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
             .gap(px(6.))
             .when(label.is_some(), |el| el.pl(px(10.)).pr(px(12.)))
-            .rounded(px(BUTTON / 2.0))
+            // M3: la flecha va al lado del ícono, como un botón de menú.
+            .when(colors.scheme.is_some() && many && label.is_none(), |el| el.pl(px(10.)).pr(px(6.)).gap(px(2.)))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .text_size(px(12.))
             .font_family(crate::fonts::UI)
@@ -2782,7 +2835,36 @@ impl BoardView {
                 }
                 cx.notify();
             }))
-            .child(crate::glide::mark(crate::glide::named("board-tools"), index as u64))
+            .child(crate::glide::mark(crate::glide::named("board-tools"), index as u64));
+        // M3: la herramienta elegida es un botón de alternar elegido (se
+        // cuadra con un resorte); con su menú abierto, tonal.
+        if let Some(s) = colors.scheme {
+            let tone = if active {
+                M3Tone::Selected
+            } else if open {
+                M3Tone::Tonal
+            } else {
+                M3Tone::Standard
+            };
+            let button = button.fx_cx(SharedString::from(format!("{}-fx", group.id)), move |el, h, window, cx| {
+                let (el, fg) = crate::hover::m3_tool(el, h, tone, side, &s, window, cx);
+                el.font_weight(gpui::FontWeight::MEDIUM)
+                    .child(svg().path(icon).flex_none().size(px(20.)).text_color(fg))
+                    .when_some(label, |el, label| el.child(t(label)))
+                    .when(many, |el| {
+                        el.child(
+                            svg()
+                                .path(if open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" })
+                                .flex_none()
+                                .size(px(12.))
+                                .text_color(fg),
+                        )
+                    })
+            });
+            let menu = open.then(|| self.group_menu(index, cx).into_any_element());
+            return popover(button, menu, side);
+        }
+        let button = button
             .fx(SharedString::from(format!("{}-fx", group.id)), move |el, h| {
                 let on = active || open;
                 let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
@@ -2812,13 +2894,14 @@ impl BoardView {
                     })
             });
         let menu = open.then(|| self.group_menu(index, cx).into_any_element());
-        popover(button, menu)
+        popover(button, menu, side)
     }
 
     /// El menú de un grupo, bajo su botón: cada herramienta con su nombre, su
     /// tecla y qué hace.
     fn group_menu(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
+        let colors = Colors::current();
         let item = |id: SharedString,
                     icon: &'static str,
                     name: &'static str,
@@ -2827,7 +2910,7 @@ impl BoardView {
                     on: bool,
                     cx: &mut Context<Self>,
                     act: Box<dyn Fn(&mut Self, &mut Context<Self>)>| {
-            div()
+            let row = div()
                 .id(id.clone())
                 .w_full()
                 .px(px(10.))
@@ -2843,7 +2926,45 @@ impl BoardView {
                     view.menu = None;
                     act(view, cx);
                     cx.notify();
-                }))
+                }));
+            // M3: un ítem de menú; el elegido en `secondary_container`.
+            if let Some(s) = colors.scheme {
+                let (base, fg) = if on {
+                    (s.secondary_container, s.on_secondary_container)
+                } else {
+                    (s.on_surface.opacity(0.0), s.on_surface)
+                };
+                let sub = if on { s.on_secondary_container } else { s.on_surface_variant };
+                return row
+                    .child(svg().path(icon).flex_none().size(px(18.)).text_color(if on { fg } else { s.on_surface_variant }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::MEDIUM).text_color(fg).child(name))
+                            .child(div().text_size(px(11.)).text_color(sub).child(help)),
+                    )
+                    .when(!key.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(gpui_m3::corner::XS)
+                                .border_1()
+                                .border_color(s.outline_variant)
+                                .text_size(px(10.5))
+                                .text_color(sub)
+                                .child(key),
+                        )
+                    })
+                    .fx(SharedString::from(format!("{id}-fx")), move |el, h| el.bg(crate::hover::m3_layer(base, fg, h)))
+                    .into_any_element();
+            }
+            row
                 .child(svg().path(icon).flex_none().size(px(17.)).text_color(if on { text } else { text.opacity(0.7) }))
                 .child(
                     div()
@@ -2904,11 +3025,47 @@ impl BoardView {
                 Box::new(|view, cx| view.hide_data(cx)),
             ));
         }
-        card("board-group-menu").w(px(280.)).p(px(5.)).flex().flex_col().gap(px(1.)).children(items)
+        card("board-group-menu", colors).w(px(280.)).p(px(5.)).flex().flex_col().gap(px(1.)).children(items)
     }
 
-    fn separator() -> impl IntoElement {
-        div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10))
+    fn separator(colors: Colors) -> gpui::Div {
+        match colors.scheme {
+            Some(s) => crate::hover::m3_toolbar_divider(&s),
+            None => div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10)),
+        }
+    }
+
+    /// M3: un botón de ícono de un grupo conectado (deshacer, rehacer y
+    /// borrar), como los de `button`.
+    fn connected_button(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        slot: (usize, usize),
+        s: gpui_m3::Scheme,
+        on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let side = crate::hover::M3_TOOL;
+        div()
+            .id(id)
+            .h(px(side))
+            .w(px(side + 4.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .when_some(button_tip(id), |el, label| el.tooltip(tip(label)))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.end_text(cx);
+                on_click(view, cx)
+            }))
+            .fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let (el, fg) = crate::hover::m3_connected(el, h, slot, None, side, &s, window, cx);
+                el.child(svg().path(icon).size(px(20.)).text_color(fg))
+            })
     }
 
     /// Las herramientas y acciones, en islas como el dock de Flip: cada isla
@@ -2916,18 +3073,28 @@ impl BoardView {
     /// Flameshot; si no caben, saltan a otra fila.
     fn toolbar(&self, framed: bool, max_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
+        let colors = Colors::current();
+        let side = colors.button();
+        // Cada isla es una barra flotante de M3 en Expressive.
+        let bar_of = |id: &'static str| match colors.scheme {
+            Some(s) => crate::hover::m3_toolbar(id, &s),
+            None => island(id),
+        };
         // Mover · dibujar, formas, escribir · ocultar, copiar texto · más, borrador.
         // La herramienta elegida es una píldora que se desliza de un botón a otro
         // (recortar está en otra isla: ahí se recoge).
         let current = GROUPS.iter().position(|group| group.tools.contains(&self.tool)).map(|i| i as u64);
-        let mut tools = island("board-tools").relative().child(crate::glide::indicator(
-            crate::glide::named("board-tools"),
-            current,
-            crate::glide::Look { fill: text.opacity(0.12), radius: BUTTON / 2.0, edge: None },
-        ));
+        // En M3 no hay píldora: la elegida es un botón de alternar elegido.
+        let mut tools = bar_of("board-tools").relative().when(colors.scheme.is_none(), |el| {
+            el.child(crate::glide::indicator(
+                crate::glide::named("board-tools"),
+                current,
+                crate::glide::Look { fill: text.opacity(0.12), radius: BUTTON / 2.0, edge: None },
+            ))
+        });
         for i in 0..GROUPS.len() {
             if matches!(i, 1 | 4 | 6) {
-                tools = tools.child(Self::separator());
+                tools = tools.child(Self::separator(colors));
             }
             let button = self.group_button(i, cx);
             // Ocultar datos tiene su propia marca en la guía.
@@ -2939,12 +3106,12 @@ impl BoardView {
         let style_open = self.style_open;
         let style = div()
             .id("board-style")
-            .size(px(BUTTON))
+            .size(px(side))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(px(BUTTON / 2.0))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .when(!style_open, |el| el.tooltip(tip(t("pill.board.styleTip"))))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -2965,41 +3132,62 @@ impl BoardView {
                     .border_color(ink)
                     .child(div().size(px(dot)).rounded(px(dot / 2.0)).bg(ink)),
             )
-            .fx("board-style-fx", move |el, h| {
-                el.bg(if style_open { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) })
+            .fx_cx("board-style-fx", move |el, h, window, cx| match colors.scheme {
+                // M3: con su panel abierto, tonal.
+                Some(s) => {
+                    let tone = if style_open { M3Tone::Tonal } else { M3Tone::Standard };
+                    crate::hover::m3_tool(el, h, tone, side, &s, window, cx).0
+                }
+                None => el.bg(if style_open { text.opacity(0.12) } else { h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)) }),
             });
-        let style = popover(style, style_open.then(|| self.style_panel(cx).into_any_element()));
-        let history = island("board-history")
-            .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
-                view.undo_step();
-                cx.notify();
-            }, cx))
-            .child(self.button("board-redo", "icons/redo.svg", false, |view, cx| {
-                view.redo_step();
-                cx.notify();
-            }, cx))
-            .child(self.button("board-clear", "icons/trash.svg", false, |view, cx| {
-                view.clear_all();
-                cx.notify();
-            }, cx));
+        let style = popover(style, style_open.then(|| self.style_panel(cx).into_any_element()), side);
+        // M3: deshacer, rehacer y borrar son un grupo de botones conectado.
+        let history = match colors.scheme {
+            Some(s) => bar_of("board-history")
+                .child(self.connected_button("board-undo", "icons/undo.svg", (0, 3), s, |view, cx| {
+                    view.undo_step();
+                    cx.notify();
+                }, cx))
+                .child(self.connected_button("board-redo", "icons/redo.svg", (1, 3), s, |view, cx| {
+                    view.redo_step();
+                    cx.notify();
+                }, cx))
+                .child(self.connected_button("board-clear", "icons/trash.svg", (2, 3), s, |view, cx| {
+                    view.clear_all();
+                    cx.notify();
+                }, cx)),
+            None => island("board-history")
+                .child(self.button("board-undo", "icons/undo.svg", false, |view, cx| {
+                    view.undo_step();
+                    cx.notify();
+                }, cx))
+                .child(self.button("board-redo", "icons/redo.svg", false, |view, cx| {
+                    view.redo_step();
+                    cx.notify();
+                }, cx))
+                .child(self.button("board-clear", "icons/trash.svg", false, |view, cx| {
+                    view.clear_all();
+                    cx.notify();
+                }, cx)),
+        };
         let export = self.button("board-export", "icons/download.svg", self.export_open, |view, cx| {
             view.export_open = !view.export_open;
             view.style_open = false;
             view.menu = None;
             cx.notify();
         }, cx);
-        let export = popover(export, self.export_open.then(|| self.export_panel(cx).into_any_element()));
+        let export = popover(export, self.export_open.then(|| self.export_panel(cx).into_any_element()), side);
         // «Listo» lleva su nombre: es lo que se busca al terminar.
         let done = div()
             .id("board-done")
-            .h(px(BUTTON))
-            .pl(px(10.))
-            .pr(px(13.))
+            .h(px(side))
+            .pl(px(if colors.scheme.is_some() { 14. } else { 10. }))
+            .pr(px(if colors.scheme.is_some() { 18. } else { 13. }))
             .flex()
             .flex_none()
             .items_center()
             .gap(px(6.))
-            .rounded(px(BUTTON / 2.0))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .text_size(px(12.))
             .font_family(crate::fonts::UI)
@@ -3009,13 +3197,22 @@ impl BoardView {
                 view.end_text(cx);
                 view.finish(cx)
             }))
-            .fx("board-done-fx", move |el, h| {
-                el.bg(text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press))
+            .fx_cx("board-done-fx", move |el, h, window, cx| match colors.scheme {
+                // M3: la acción principal, llena en `primary`.
+                Some(s) => {
+                    let (el, fg) = crate::hover::m3_tool(el, h, M3Tone::Filled, side, &s, window, cx);
+                    el.font_weight(gpui::FontWeight::MEDIUM)
+                        .text_size(px(13.))
+                        .child(svg().path("icons/check.svg").size(px(18.)).text_color(fg))
+                        .child(t("pill.board.done"))
+                }
+                None => el
+                    .bg(text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press))
                     .text_color(text)
                     .child(svg().path("icons/check.svg").size(px(16.)).text_color(text))
-                    .child(t("pill.board.done"))
+                    .child(t("pill.board.done")),
             });
-        let output = island("board-output")
+        let output = bar_of("board-output")
             // Recortar no dibuja: decide qué sale al exportar.
             .child(self.button(tool_id(Tool::Crop), "icons/crop.svg", self.tool == Tool::Crop, |view, cx| {
                 view.menu = None;
@@ -3023,11 +3220,12 @@ impl BoardView {
             }, cx))
             .child(export)
             .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
-            .child(Self::separator())
+            .child(Self::separator(colors))
             .child(done)
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx));
         let view = self.can_snap.then(|| {
-            island("board-view")
+            bar_of("board-view")
+                .when(colors.scheme.is_some(), |el| el.gap(px(2.)))
                 .child(self.toggle_button(
                     "board-pill",
                     t("pill.board.pill"),
@@ -3039,6 +3237,7 @@ impl BoardView {
                     } else {
                         t("pill.board.showPill")
                     },
+                    (0, 2),
                     Self::toggle_pill,
                     cx,
                 ))
@@ -3051,6 +3250,7 @@ impl BoardView {
                     } else {
                         t("pill.board.liveTip")
                     },
+                    (1, 2),
                     Self::toggle_live,
                     cx,
                 ))
@@ -3067,17 +3267,18 @@ impl BoardView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(view)
             .child(crate::coach::anchor("board.tools", tools))
-            .child(island("board-ink").child(style))
+            .child(bar_of("board-ink").child(style))
             .child(history)
             .child(crate::coach::anchor("board.done", output))
-            .child(island("board-help-island").child(self.button("board-help", "icons/circle-help.svg", false, |_, cx| crate::coach::replay(GUIDE.id, cx), cx)))
+            .child(bar_of("board-help-island").child(self.button("board-help", "icons/circle-help.svg", false, |_, cx| crate::coach::replay(GUIDE.id, cx), cx)))
     }
 
     /// Color, grosor y estilo, bajo su botón: una fila por cosa.
     fn style_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
+        let colors = Colors::current();
         let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Self, &mut Context<Self>)| {
-            div()
+            let el = div()
                 .id(id)
                 .px(px(10.))
                 .h(px(26.))
@@ -3089,9 +3290,8 @@ impl BoardView {
                 .text_color(if on { text } else { text.opacity(0.62) })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| act(view, cx)))
-                .child(label)
-                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(if on { 0.16 } else { 0.08 }))
-                .into_any_element()
+                .child(label);
+            option_look(el, id, on, colors)
         };
         // La paleta, el color propio (del cuentagotas) y los recientes.
         let custom = (!COLORS.contains(&self.color)).then_some(self.color);
@@ -3101,19 +3301,14 @@ impl BoardView {
             .chain(custom)
             .chain(self.recent.iter().copied().filter(|c| !COLORS.contains(c) && Some(*c) != custom).take(3))
             .collect();
-        let colors = swatches.into_iter().enumerate().map(|(i, color)| {
+        let swatches = swatches.into_iter().enumerate().map(|(i, color)| {
             let active = self.color == color;
-            // Anillo al elegir, como las muestras de Flip.
-            div()
+            let el = div()
                 .id(("board-color", i))
-                .size(px(24.))
+                .size(px(if colors.scheme.is_some() { 28. } else { 24. }))
                 .flex_none()
-                .rounded(px(12.))
-                .p(px(2.))
-                .border_2()
-                .border_color(if active { text } else { text.opacity(0.0) })
                 .cursor_pointer()
-                .when(i >= COLORS.len(), |el| el.tooltip(crate::hover::tip_text(format!("#{color:06X}").into())))
+                .when(i >= COLORS.len(), |el| el.tooltip(crate::hover::tool_tip_text(format!("#{color:06X}").into())))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.color = color;
@@ -3122,7 +3317,20 @@ impl BoardView {
                     }
                     view.restyle_text(cx);
                     cx.notify();
-                }))
+                }));
+            // M3: la elegida es una galleta (Cookie); las demás, círculos.
+            if colors.scheme.is_some() {
+                return el
+                    .fx(("board-color-fx", i), move |el, h| {
+                        el.child(crate::hover::m3_swatch(("board-color-shape", i), hsla(color, 1.0), active, 28.0, h))
+                    })
+                    .into_any_element();
+            }
+            // Anillo al elegir, como las muestras de Flip.
+            el.rounded(px(12.))
+                .p(px(2.))
+                .border_2()
+                .border_color(if active { text } else { text.opacity(0.0) })
                 .child(div().size_full().rounded(px(10.)).bg(rgb(color)))
                 .fx(("board-color-fx", i), move |el, h| {
                     if active { el } else { el.border_color(text.opacity(0.35 * h.t)) }
@@ -3132,7 +3340,7 @@ impl BoardView {
         .collect::<Vec<_>>();
         let widths = WIDTHS.iter().enumerate().map(|(i, &width)| {
             let active = self.width == i;
-            div()
+            let el = div()
                 .id(("board-width", i))
                 .size(px(28.))
                 .flex()
@@ -3145,8 +3353,17 @@ impl BoardView {
                     view.width = i;
                     view.restyle_text(cx);
                     cx.notify();
-                }))
-                .child(div().size(px(width + 2.0)).rounded(px(width)).bg(if active { text } else { text.opacity(0.55) }))
+                }));
+            if let Some(s) = colors.scheme {
+                return el
+                    .fx_cx(("board-width-fx", i), move |el, h, window, cx| {
+                        let tone = if active { M3Tone::Selected } else { M3Tone::Standard };
+                        let (el, fg) = crate::hover::m3_tool(el, h, tone, 28.0, &s, window, cx);
+                        el.child(div().size(px(width + 2.0)).rounded(px(width)).bg(fg))
+                    })
+                    .into_any_element();
+            }
+            el.child(div().size(px(width + 2.0)).rounded(px(width)).bg(if active { text } else { text.opacity(0.55) }))
                 .hover_bg(
                     ("board-width-fx", i),
                     text.opacity(if active { 0.14 } else { 0.0 }),
@@ -3156,39 +3373,40 @@ impl BoardView {
         })
         .collect::<Vec<_>>();
         let (fill, style) = (self.fill, self.style);
-        card("board-style-panel")
+        card("board-style-panel", colors)
             .w(px(330.))
-            .p(px(10.))
+            .p(px(if colors.scheme.is_some() { 12. } else { 10. }))
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().flex().flex_wrap().gap(px(4.)).pb(px(4.)).children(colors))
-            .child(row(t("pill.board.width"), widths))
+            .child(div().flex().flex_wrap().gap(px(4.)).pb(px(4.)).children(swatches))
+            .child(row(t("pill.board.width"), widths, colors))
             .child(row(t("pill.board.fillRow"), vec![
                 option("st-outline", t("pill.board.outline"), fill == Fill::Outline, cx, |v, cx| v.set_fill(Fill::Outline, cx)),
                 option("st-solid", t("pill.board.solid"), fill == Fill::Solid, cx, |v, cx| v.set_fill(Fill::Solid, cx)),
                 option("st-soft", t("pill.board.soft"), fill == Fill::Soft, cx, |v, cx| v.set_fill(Fill::Soft, cx)),
-            ]))
+            ], colors))
             .child(row(t("pill.board.lineRow"), vec![
                 option("st-solid-line", t("pill.board.continuous"), !style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = false, cx)),
                 option("st-dashed", t("pill.board.dashed"), style.dashed, cx, |v, cx| v.set_style(|s| s.dashed = true, cx)),
-            ]))
+            ], colors))
             .child(row(t("pill.board.shadowRow"), vec![
                 option("st-flat", t("pill.board.no"), !style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = false, cx)),
                 option("st-shadow", t("pill.board.yes"), style.shadow, cx, |v, cx| v.set_style(|s| s.shadow = true, cx)),
-            ]))
+            ], colors))
             .child(row(t("pill.board.fontRow"), vec![
                 option("st-sans", Font::Sans.label(), style.font == Font::Sans, cx, |v, cx| v.set_style(|s| s.font = Font::Sans, cx)),
                 option("st-mono", Font::Mono.label(), style.font == Font::Mono, cx, |v, cx| v.set_style(|s| s.font = Font::Mono, cx)),
                 option("st-hand", Font::Hand.label(), style.font == Font::Hand, cx, |v, cx| v.set_style(|s| s.font = Font::Hand, cx)),
-            ]))
+            ], colors))
     }
 
     /// El panel de exportar, bajo su botón: vale para Listo, Flip y el agente.
     fn export_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(INK).into();
+        let colors = Colors::current();
         let option = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>, act: fn(&mut Export)| {
-            div()
+            let el = div()
                 .id(id)
                 .px(px(10.))
                 .h(px(26.))
@@ -3204,15 +3422,14 @@ impl BoardView {
                     view.export.save();
                     cx.notify();
                 }))
-                .child(label)
-                .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(if on { 0.16 } else { 0.08 }))
-                .into_any_element()
+                .child(label);
+            option_look(el, id, on, colors)
         };
-        let group = row;
+        let group = |name: &'static str, items: Vec<gpui::AnyElement>| row(name, items, colors);
         let e = self.export;
-        card("board-export-panel")
+        card("board-export-panel", colors)
             .w(px(420.))
-            .p(px(10.))
+            .p(px(if colors.scheme.is_some() { 12. } else { 10. }))
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -3265,8 +3482,11 @@ pub(crate) fn island(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .shadow(vec![drop(8.0, 24.0, 0.32), drop(1.0, 2.0, 0.2)])
 }
 
-/// Un panel que flota bajo su botón.
-fn card(id: &'static str) -> gpui::Stateful<gpui::Div> {
+/// Un panel que flota bajo su botón. En M3, un menú de M3 (`m3_menu`).
+fn card(id: &'static str, colors: Colors) -> gpui::Stateful<gpui::Div> {
+    if let Some(s) = colors.scheme {
+        return crate::hover::m3_menu(id, &s).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    }
     div()
         .id(id)
         .occlude()
@@ -3289,25 +3509,45 @@ fn drop(y: f32, blur: f32, alpha: f32) -> gpui::BoxShadow {
 }
 
 /// Una fila de un panel: su nombre a la izquierda y las opciones.
-fn row(name: &'static str, items: Vec<gpui::AnyElement>) -> gpui::Div {
+fn row(name: &'static str, items: Vec<gpui::AnyElement>, colors: Colors) -> gpui::Div {
     let text: Hsla = rgb(INK).into();
+    let label = colors.scheme.map_or(text.opacity(0.5), |s| s.on_surface_variant);
     div()
         .flex()
         .items_center()
         .gap(px(2.))
-        .child(div().flex_none().w(px(84.)).text_size(px(11.)).text_color(text.opacity(0.5)).child(name))
+        .child(div().flex_none().w(px(84.)).text_size(px(11.)).text_color(label).child(name))
         .child(div().flex().flex_wrap().items_center().gap(px(2.)).children(items))
 }
 
-/// `button` con `panel` abierto debajo, encima de todo y dentro de la pantalla.
-fn popover(button: impl IntoElement, panel: Option<gpui::AnyElement>) -> gpui::AnyElement {
+/// Una opción de un panel (Contorno, Lleno…): en M3, un botón que elegido va
+/// en `secondary_container` con su forma más cuadrada; si no, el de siempre.
+fn option_look(el: gpui::Stateful<gpui::Div>, id: &'static str, on: bool, colors: Colors) -> gpui::AnyElement {
+    let text: Hsla = rgb(INK).into();
+    match colors.scheme {
+        Some(s) => el
+            .fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let tone = if on { M3Tone::Selected } else { M3Tone::Standard };
+                let (el, fg) = crate::hover::m3_tool(el, h, tone, 26.0, &s, window, cx);
+                el.text_color(if on { fg } else { s.on_surface }).when(on, |el| el.font_weight(gpui::FontWeight::MEDIUM))
+            })
+            .into_any_element(),
+        None => el
+            .hover_bg(SharedString::from(format!("{id}-fx")), text.opacity(if on { 0.14 } else { 0.0 }), text.opacity(if on { 0.16 } else { 0.08 }))
+            .into_any_element(),
+    }
+}
+
+/// `button` (de alto `side`) con `panel` abierto debajo, encima de todo y
+/// dentro de la pantalla.
+fn popover(button: impl IntoElement, panel: Option<gpui::AnyElement>, side: f32) -> gpui::AnyElement {
     div()
         .relative()
         .flex_none()
         .child(button)
         .when_some(panel, |el, panel| {
             el.child(
-                div().absolute().top(px(BUTTON + 12.)).left(px(-8.)).child(
+                div().absolute().top(px(side + 12.)).left(px(-8.)).child(
                     gpui::deferred(gpui::anchored().snap_to_window_with_margin(px(8.)).child(panel)).with_priority(1),
                 ),
             )
@@ -3359,7 +3599,11 @@ fn button_tip(id: &str) -> Option<&'static str> {
     }
 }
 
+/// El aviso bajo la barra. En M3, un tooltip rico (`m3_hint`).
 fn chip(text: impl Into<SharedString>) -> gpui::Div {
+    if let Some(s) = Colors::current().scheme {
+        return crate::hover::m3_hint(&s, text);
+    }
     div()
         .px(px(10.))
         .py(px(4.))
@@ -3530,6 +3774,12 @@ impl Render for BoardView {
         });
         let m3_scope = crate::theme::scope_m3(cx);
         let coach = crate::coach::overlay(&GUIDE, window, cx);
+        // M3: la barra entra con un resorte desde arriba (de la pill); el
+        // recorte y la figura elegida van en `primary`.
+        let colors = Colors::current();
+        let bar_in = colors.scheme.map_or(1.0, |_| crate::hover::m3_bar_entrance("board-bar-in", window, cx));
+        let edge = colors.scheme.map_or(gpui::white(), |s| s.primary);
+        let bar_h = BAR_H + colors.button() - BUTTON;
 
         div()
             .id("board")
@@ -3681,10 +3931,10 @@ impl Render for BoardView {
                                     }
                                 }
                             }
-                            outline(window, (x0, y0, x1, y1), offset, gpui::white().opacity(0.9));
+                            outline(window, (x0, y0, x1, y1), offset, edge.opacity(0.9));
                         }
                         if let Some(rect) = selection {
-                            outline(window, rect, offset, gpui::white());
+                            outline(window, rect, offset, edge);
                         }
                     },
                 )
@@ -3752,7 +4002,10 @@ impl Render for BoardView {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(px(8.));
+                    .gap(px(8.))
+                    .opacity((bar_in * 1.5).clamp(0.0, 1.0));
+                // Lo que le falta por entrar, corrido hacia arriba.
+                let rise = -16.0 * (1.0 - bar_in);
                 // En una pantalla angosta la barra salta a dos filas.
                 let bar_w = TOOLBAR_W.min(screen_w - 16.0);
                 let emojis = (self.tool == Tool::Emoji).then(|| self.emoji_panel(cx));
@@ -3760,19 +4013,19 @@ impl Render for BoardView {
                     let left = (offset.0 + w / 2.0 - bar_w / 2.0)
                         .clamp(8.0, (screen_w - bar_w - 8.0).max(8.0));
                     let below = offset.1 + h + 10.0;
-                    let top = if below + BAR_H + 40.0 < screen_h {
+                    let top = if below + bar_h + 40.0 < screen_h {
                         below
                     } else {
-                        (offset.1 - BAR_H - 40.0).max(8.0)
+                        (offset.1 - bar_h - 40.0).max(8.0)
                     };
                     bar.left(px(left))
-                        .top(px(top))
+                        .top(px(top + rise))
                         .w(px(bar_w))
                         .child(self.toolbar(true, bar_w, cx))
                         .children(emojis)
                         .children(hint.map(chip))
                 } else {
-                    bar.top(px(0.))
+                    bar.top(px(rise))
                         .w_full()
                         .child(self.toolbar(false, bar_w, cx))
                         .children(emojis)

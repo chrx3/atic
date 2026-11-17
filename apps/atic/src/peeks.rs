@@ -1402,7 +1402,9 @@ impl Pill {
             None => (1.0, None),
         };
         let amount = self.tool_peek.amount.value(now);
-        let c = Colors::current();
+        // Ahora suena va sobre la carátula: texto claro en cualquier tema.
+        let on_cover = tool == crate::MEDIA_TOOL && self.media.track().is_some_and(|t| t.backdrop.is_some());
+        let c = if on_cover { Colors::cover() } else { Colors::current() };
         // El contenido se arma con el ancho al que llega (como su alto,
         // `content_height`), no con el del tab que todavía se ensancha: las
         // miniaturas de Capturas y Flip crecían cuadro a cuadro.
@@ -4751,12 +4753,19 @@ impl Pill {
                             .w(px(SHOT_THUMB.0 * 0.8))
                             .h(px(SHOT_THUMB.1 * 0.8))
                             .flex_none()
+                            .overflow_hidden()
                             .rounded(px(inner))
                             .bg(s.surface_container_highest)
                             .children(preview.map(|p| {
+                                // Medidas fijas: con `size_full` la imagen tomaba su
+                                // alto natural y se salía de la tarjeta.
                                 crate::release::scoped(
                                     gpui::SharedString::from(format!("shot-row-{}", p.display())),
-                                    img(p).size_full().object_fit(ObjectFit::Cover).rounded(px(inner)),
+                                    img(p)
+                                        .w(px(SHOT_THUMB.0 * 0.8))
+                                        .h(px(SHOT_THUMB.1 * 0.8))
+                                        .object_fit(ObjectFit::Cover)
+                                        .rounded(px(inner)),
                                 )
                             })),
                     )
@@ -5166,9 +5175,19 @@ struct Colors {
 
 impl Colors {
     /// Los del estilo de la pill: en Atic, los de siempre; en Expressive, los
-    /// roles del esquema oscuro de la pill.
+    /// roles del esquema de la pill (oscuro o claro).
     fn current() -> Self {
-        match crate::pill_look::content_scheme() {
+        Self::with(crate::pill_look::content_scheme())
+    }
+
+    /// Los de lo que va sobre una carátula: en Expressive, del esquema
+    /// oscuro aunque el tema de la pill sea claro.
+    fn cover() -> Self {
+        Self::with(crate::pill_look::cover_scheme())
+    }
+
+    fn with(scheme: Option<gpui_m3::Scheme>) -> Self {
+        match scheme {
             Some(s) => Self { text: s.on_surface, muted: s.on_surface_variant, faint: s.outline, ok: s.success, m3: Some(s) },
             None => {
                 let palette = crate::Palette::dark();
@@ -5266,7 +5285,16 @@ fn shape_fill(morph: Morph, track: Hsla, fill: Hsla, progress: f32) -> impl Into
     gpui::canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            morph.paint(bounds, track, window);
+            // Los puntos de la forma una vez: la pista y el relleno son la misma.
+            let points = morph.points(bounds);
+            let paint = |window: &mut Window, color: Hsla| {
+                let mut builder = gpui::PathBuilder::fill();
+                builder.add_polygon(&points, true);
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, color);
+                }
+            };
+            paint(window, track);
             let progress = progress.clamp(0.0, 1.0);
             if progress <= 0.0 {
                 return;
@@ -5276,7 +5304,7 @@ fn shape_fill(morph: Morph, track: Hsla, fill: Hsla, progress: f32) -> impl Into
                 gpui::point(bounds.origin.x, bounds.origin.y + bounds.size.height - h),
                 gpui::size(bounds.size.width, h),
             );
-            window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| morph.paint(bounds, fill, window));
+            window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| paint(window, fill));
         },
     )
     .size_full()

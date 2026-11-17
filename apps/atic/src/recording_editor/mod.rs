@@ -1632,7 +1632,8 @@ impl RecordingEditor {
         act: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let (text, hover, sub, control) = (pal.text, pal.hover, pal.sub, pal.control);
+        let (text, hover, sub, control, m3) = (pal.text, pal.hover, pal.sub, pal.control, pal.m3);
+        let rest_radius = pal.r_chip.min(BUTTON / 2.0);
         let el = div()
             .id(id)
             .h(px(BUTTON))
@@ -1648,8 +1649,10 @@ impl RecordingEditor {
             .text_size(px(T_CONTROL))
             .tooltip(keys::tip(tip));
         self.interactive(pal.accent, el, act, cx)
-            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+            .fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
                 let fg = h.mix(text.opacity(0.85), text);
+                // M3: apretado se cuadra (`SPATIAL_FAST`).
+                let el = if m3 { el.rounded(px(crate::hover::m3_press_radius(h, rest_radius, 6.0, window, cx))) } else { el };
                 el.bg(h.mix(hover.opacity(0.0), hover))
                     .text_color(fg)
                     .child(svg().path(icon).flex_none().size(px(16. - 1.5 * h.press)).text_color(fg))
@@ -1724,7 +1727,7 @@ impl RecordingEditor {
     /// «Exportando 42 %» → «Listo») no mueve lo que tiene al lado.
     #[allow(clippy::too_many_arguments)]
     fn primary_w(&self, pal: &Ed, id: &'static str, icon: &'static str, label: SharedString, tip: &'static str, min_w: Option<f32>, act: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (accent, on) = (pal.accent, pal.on_accent);
+        let (accent, on, m3) = (pal.accent, pal.on_accent, pal.m3);
         let el = div()
             .id(id)
             .h(px(BUTTON))
@@ -1742,7 +1745,9 @@ impl RecordingEditor {
             .tooltip(keys::tip(tip));
         // Sobre el acento, el anillo es del color del texto del botón (con el acento no se vería).
         self.interactive(on, el, act, cx)
-            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+            .fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                // M3: un botón lleno redondo que al apretarlo se cuadra.
+                let el = if m3 { el.rounded(px(crate::hover::m3_press_radius(h, BUTTON / 2.0, 8.0, window, cx))) } else { el };
                 el.bg(accent.opacity(0.92 + 0.08 * h.t - 0.08 * h.press))
                     .text_color(on)
                     .child(svg().path(icon).size(px(15.)).text_color(on))
@@ -2229,7 +2234,7 @@ impl RecordingEditor {
             .child(self.button_keyed(pal, "editor-speed", "icons/gauge.svg", named(t("pill.editor.laneSpeed")), key("V"), t("pill.editor.side.speedAddTip"), |view, window, cx| view.add_speed(window, cx), cx))
             .child(self.button_keyed(pal, "editor-blur-zone", "icons/pixelate.svg", named(t("pill.editor.laneBlur")), key("B"), t("pill.editor.side.blurAddTip"), |view, window, cx| view.add_blur(window, cx), cx));
         // El botón de reproducir, redondo y al centro.
-        let (accent, on) = (pal.accent, pal.on_accent);
+        let (accent, on, m3) = (pal.accent, pal.on_accent, pal.m3);
         let play = div()
             .id("editor-play")
             .size(px(38.))
@@ -2240,7 +2245,15 @@ impl RecordingEditor {
             .cursor_pointer()
             .tooltip(keys::tip(t("pill.editor.playTip")))
             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_play(cx)))
-            .fx("editor-play-fx", move |el, h| {
+            .fx_cx("editor-play-fx", move |el, h, window, cx| {
+                // M3: redondo en pausa y más cuadrado reproduciendo (con un
+                // resorte); apretado, más todavía.
+                let el = if m3 {
+                    let target = if h.press > 0.5 { 8.0 } else if playing { 12.0 } else { 19.0 };
+                    el.rounded(px(gpui_m3::motion::animate_f32("editor-play-shape", gpui_m3::Spring::SPATIAL_FAST, target, window, cx).max(0.0)))
+                } else {
+                    el
+                };
                 el.bg(accent.opacity(0.92 + 0.08 * h.t - 0.1 * h.press))
                     .child(svg().path(if playing { "icons/pause.svg" } else { "icons/play.svg" }).size(px(17. - 1.5 * h.press)).text_color(on))
             });

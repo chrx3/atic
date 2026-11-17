@@ -284,7 +284,7 @@ fn meeting_row(
 }
 
 /// Lo que dice una reunión bajo su título y la acción que ofrece (si hay una).
-fn row_status(s: &Studio, rec: &Recording, line: Option<String>) -> (String, Option<(&'static str, Job)>) {
+pub(super) fn row_status(s: &Studio, rec: &Recording, line: Option<String>) -> (String, Option<(&'static str, Job)>) {
     match (s.job(&rec.id), rec.status) {
         (Some((Job::Transcribe, p)), _) => (tf("pill.meetings.pill.transcribingPct", &[("pct", &(p * 100.0).round())]), None),
         (Some((Job::Summarize, _)), _) => (t("pill.meetings.pill.summarizing").into(), None),
@@ -406,7 +406,7 @@ fn button_owned(
 }
 
 /// «12 min» o «1 h 05 min».
-fn duration(secs: i64) -> String {
+pub(super) fn duration(secs: i64) -> String {
     let minutes = (secs.max(0) + 30) / 60;
     if minutes < 60 {
         format!("{} min", minutes.max(1))

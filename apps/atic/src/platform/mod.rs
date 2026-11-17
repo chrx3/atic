@@ -9,8 +9,8 @@
 //! - `win`: el overlay sobre la ventana de GPUI. Siempre encima sin robar el
 //!   foco (`Overlay::attach`, `keep_topmost`, `set_focusable`), dejar pasar
 //!   los clics fuera de la pill (`set_passthrough`), ocultarse de las
-//!   capturas (`exclude_from_capture`), los monitores (`Screen`, `move_to`,
-//!   `cover`), los menús de la app activa (`app_menus`, solo en Mac) y el
+//!   capturas (`exclude_from_capture`), si se ve (`on_screen`), los
+//!   monitores (`Screen`, `move_to`, `cover`), los menús de la app activa (`app_menus`, solo en Mac) y el
 //!   cursor y teclas globales (`cursor`, `set_cursor`, `left_button_down`,
 //!   `space_down`).
 //! - `glass`: el vidrio esmerilado detrás de la pill (`Glass`, `Shape`,

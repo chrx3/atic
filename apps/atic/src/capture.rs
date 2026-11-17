@@ -1129,7 +1129,12 @@ struct Paint {
     crosshair: bool,
     loupe: Vec<Hsla>,
     loupe_origin: (f32, f32),
+    /// M3 Expressive: el esquema de la pill (borde y manijas en `primary`).
+    scheme: Option<gpui_m3::Scheme>,
 }
+
+/// El lado de las manijas de las esquinas de lo elegido (M3).
+const HANDLE: f32 = 10.0;
 
 fn bounds(rect: &Rect) -> Bounds<gpui::Pixels> {
     Bounds::new(point(px(rect.x), px(rect.y)), size(px(rect.w), px(rect.h)))
@@ -1156,14 +1161,23 @@ impl Paint {
                 for band in bands {
                     window.paint_quad(fill(self.b(&band), shade));
                 }
-                let edge: Hsla = if self.record {
-                    rgb(RECORD_EDGE).into()
-                } else if self.window_hint {
-                    rgb(0x7aa2ff).into()
-                } else {
-                    gpui::white().opacity(0.95)
+                let edge: Hsla = match self.scheme {
+                    Some(s) if self.record => s.error,
+                    Some(s) if self.window_hint => s.tertiary,
+                    Some(s) => s.primary,
+                    None if self.record => rgb(RECORD_EDGE).into(),
+                    None if self.window_hint => rgb(0x7aa2ff).into(),
+                    None => gpui::white().opacity(0.95),
                 };
                 window.paint_quad(outline(self.b(&r), edge, BorderStyle::Solid));
+                // M3: una región dibujada a mano lleva manijas en las esquinas.
+                if self.scheme.is_some() && !self.window_hint {
+                    let half = HANDLE / 2.0;
+                    for (x, y) in [(r.x, r.y), (r.right(), r.y), (r.x, r.bottom()), (r.right(), r.bottom())] {
+                        let handle = self.b(&Rect::new(x - half, y - half, HANDLE, HANDLE));
+                        window.paint_quad(fill(handle, edge).corner_radii(gpui::Corners::all(px(3.))));
+                    }
+                }
             }
             None => window.paint_quad(fill(self.b(&s), shade)),
         }
@@ -1181,10 +1195,16 @@ impl Paint {
         }
         let (lx, ly) = self.loupe_origin;
         let side = LOUPE_PIXELS as f32 * LOUPE_CELL;
-        window.paint_quad(fill(
-            self.b(&Rect::new(lx - 2.0, ly - 2.0, side + 4.0, side + 4.0)),
-            gpui::black().opacity(0.85),
-        ));
+        // M3: la lupa en un marco `surface_container` redondeado.
+        let (frame, rim, center_edge) = match self.scheme {
+            Some(s) => (s.surface_container, s.outline_variant, s.primary),
+            None => (gpui::black().opacity(0.85), gpui::white().opacity(0.6), gpui::white()),
+        };
+        let pad = if self.scheme.is_some() { 4.0 } else { 2.0 };
+        window.paint_quad(
+            fill(self.b(&Rect::new(lx - pad, ly - pad, side + pad * 2.0, side + pad * 2.0)), frame)
+                .corner_radii(gpui::Corners::all(px(if self.scheme.is_some() { 8. } else { 0. }))),
+        );
         for (i, color) in self.loupe.iter().enumerate() {
             let col = (i as i32 % LOUPE_PIXELS) as f32;
             let row = (i as i32 / LOUPE_PIXELS) as f32;
@@ -1194,19 +1214,31 @@ impl Paint {
         let center = (LOUPE_PIXELS / 2) as f32 * LOUPE_CELL;
         window.paint_quad(outline(
             self.b(&Rect::new(lx + center, ly + center, LOUPE_CELL, LOUPE_CELL)),
-            gpui::white(),
+            center_edge,
             BorderStyle::Solid,
         ));
         window.paint_quad(outline(
             self.b(&Rect::new(lx, ly, side, side)),
-            gpui::white().opacity(0.6),
+            rim,
             BorderStyle::Solid,
         ));
     }
 }
 
-/// Etiqueta oscura y redonda sobre la pantalla congelada.
+/// La ayuda de arriba de la pantalla: en M3, un tooltip rico (`m3_hint`).
+fn hint(text: impl Into<SharedString>) -> gpui::Div {
+    match crate::board::Colors::current().scheme {
+        Some(s) => crate::hover::m3_hint(&s, text),
+        None => chip(text),
+    }
+}
+
+/// Etiqueta oscura y redonda sobre la pantalla congelada. En M3 Expressive,
+/// un chip de M3 con el esquema de la pill.
 fn chip(text: impl Into<SharedString>) -> gpui::Div {
+    if let Some(s) = crate::board::Colors::current().scheme {
+        return crate::hover::m3_chip(&s, text);
+    }
     div()
         .px(px(8.))
         .py(px(3.))
@@ -1286,6 +1318,7 @@ impl CaptureView {
             .unwrap_or_default();
 
         let offset = session.frozen.offset;
+        let scheme = crate::board::Colors::current().scheme;
         let paint = Paint {
             offset,
             screen,
@@ -1296,10 +1329,16 @@ impl CaptureView {
             crosshair: session.press.is_none() && !self.over_bar,
             loupe: if self.over_bar { Vec::new() } else { loupe },
             loupe_origin: (lx, ly),
+            scheme,
         };
 
-        // Mientras se arrastra, la barra no estorba.
-        let toolbar = session.press.is_none().then(|| self.toolbar(help, offset, cx));
+        // Mientras se arrastra, la barra no estorba. En M3 entra con un
+        // resorte desde abajo cada vez que vuelve.
+        let bar_in = match (session.press.is_none(), scheme) {
+            (true, Some(_)) => crate::hover::m3_bar_entrance("capture-bar-in", window, cx),
+            _ => 1.0,
+        };
+        let toolbar = session.press.is_none().then(|| self.toolbar(help, offset, bar_in, cx));
         let label = selection.map(|rect| {
             let phys = session.physical(&rect);
             let dims = format!("{} × {}", phys.width, phys.height);
@@ -1412,7 +1451,7 @@ impl CaptureView {
                     .w(px(help.w))
                     .flex()
                     .justify_center()
-                    .child(chip(if session.record {
+                    .child(hint(if session.record {
                         let yes = |on: bool| if on { crate::i18n::t("pill.capture.yes") } else { crate::i18n::t("pill.capture.no") };
                         let options = session.record_options;
                         crate::i18n::tf(
@@ -1485,11 +1524,23 @@ impl CaptureView {
     /// Con varias pantallas cada ventana dibuja su copia (corrida, fuera de
     /// vista en las otras): el indicador va con una clave por ventana para
     /// que una sola lo mueva en cada una.
-    fn toolbar(&self, help: Rect, offset: (f32, f32), cx: &mut Context<Self>) -> gpui::AnyElement {
+    ///
+    /// En M3 Expressive cada isla es una barra flotante de M3: el modo es un
+    /// grupo de botones conectado, las opciones son botones de alternar y la
+    /// acción principal va llena (en `error` al grabar). `bar_in` es su
+    /// entrada (`m3_bar_entrance`).
+    fn toolbar(&self, help: Rect, offset: (f32, f32), bar_in: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::board::{island, BUTTON, INK};
+        use crate::hover::M3Tone;
         let session = &self.session;
         let t = crate::i18n::t;
         let text: Hsla = rgb(INK).into();
+        let colors = crate::board::Colors::current();
+        let side = colors.button();
+        let bar_of = |id: &'static str| match colors.scheme {
+            Some(s) => crate::hover::m3_toolbar(id, &s),
+            None => island(id),
+        };
         let red: Hsla = rgb(RECORD_EDGE).into();
         let record = session.record;
         let options = session.record_options;
@@ -1503,21 +1554,21 @@ impl CaptureView {
                       on: bool,
                       icon_ink: Option<Hsla>,
                       cx: &mut Context<Self>| {
-            div()
+            let el = div()
                 .id(id)
-                .h(px(BUTTON))
-                .min_w(px(BUTTON))
+                .h(px(side))
+                .min_w(px(side))
                 .flex()
                 .flex_none()
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
                 .when(label.is_some(), |el| el.pl(px(10.)).pr(px(12.)))
-                .rounded(px(BUTTON / 2.0))
+                .rounded(px(side / 2.0))
                 .cursor_pointer()
                 .text_size(px(12.))
                 .font_family(crate::fonts::UI)
-                .tooltip(crate::hover::tip(tip))
+                .tooltip(crate::hover::tool_tip(tip))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _: &MouseDownEvent, window, cx| {
@@ -1527,8 +1578,30 @@ impl CaptureView {
                 )
                 .when(matches!(tool, Tool::Mode(_)), |el| {
                     el.child(crate::glide::mark(glide.clone(), matches!(tool, Tool::Mode(true)) as u64))
-                })
-                .fx(SharedString::from(format!("{}-{}-fx", id.0, id.1)), move |el, h| {
+                });
+            if let Some(s) = colors.scheme {
+                return el.fx_cx(SharedString::from(format!("{}-{}-fx", id.0, id.1)), move |el, h, window, cx| {
+                    let (el, fg) = match tool {
+                        // El modo: un grupo conectado; Grabar elegido, en `error_container`.
+                        Tool::Mode(record) => {
+                            let chosen = on.then_some(if record {
+                                (s.error_container, s.on_error_container)
+                            } else {
+                                (s.secondary_container, s.on_secondary_container)
+                            });
+                            crate::hover::m3_connected(el, h, (record as usize, 2), chosen, side, &s, window, cx)
+                        }
+                        _ => {
+                            let tone = if on { M3Tone::Selected } else { M3Tone::Standard };
+                            crate::hover::m3_tool(el, h, tone, side, &s, window, cx)
+                        }
+                    };
+                    el.font_weight(gpui::FontWeight::MEDIUM)
+                        .child(svg().path(icon).flex_none().size(px(18.)).text_color(fg))
+                        .when_some(label, |el, label| el.child(label))
+                });
+            }
+            el.fx(SharedString::from(format!("{}-{}-fx", id.0, id.1)), move |el, h| {
                     // Apagado: el gris de la Pizarra, que se lee igual.
                     let fg = if on { text } else { h.mix(text.opacity(0.62), text) };
                     // El modo elegido lo pinta la píldora que se desliza.
@@ -1544,13 +1617,15 @@ impl CaptureView {
                 })
         };
 
-        let mode = island("capture-mode")
+        let mode = bar_of("capture-mode")
             .relative()
-            .child(crate::glide::indicator(
-                glide.clone(),
-                Some(record as u64),
-                crate::glide::Look { fill: text.opacity(0.14), radius: BUTTON / 2.0, edge: None },
-            ))
+            .when(colors.scheme.is_none(), |el| {
+                el.child(crate::glide::indicator(
+                    glide.clone(),
+                    Some(record as u64),
+                    crate::glide::Look { fill: text.opacity(0.14), radius: BUTTON / 2.0, edge: None },
+                ))
+            })
             .child(button(("capture-mode", 0), Tool::Mode(false), "icons/scan.svg", Some(t("pill.capture.tool.capture")), t("pill.capture.tip.capture"), !record, None, cx))
             .child(button(
                 ("capture-mode", 1),
@@ -1566,7 +1641,7 @@ impl CaptureView {
 
         // Anchos fijos: al cambiar de modo la barra no se corre y el selector
         // queda bajo el cursor.
-        let mut options_island = island("capture-options").w(px(OPTIONS_W)).justify_center();
+        let mut options_island = bar_of("capture-options").w(px(OPTIONS_W)).justify_center();
         if record {
             options_island = options_island
                 .child(button(
@@ -1630,7 +1705,7 @@ impl CaptureView {
         // Grabar es roja, para que se vea cómo empezar.
         let primary = div()
             .id("capture-go")
-            .h(px(BUTTON))
+            .h(px(side))
             .min_w(px(PRIMARY_W))
             .justify_center()
             .pl(px(10.))
@@ -1639,11 +1714,11 @@ impl CaptureView {
             .flex_none()
             .items_center()
             .gap(px(7.))
-            .rounded(px(BUTTON / 2.0))
+            .rounded(px(side / 2.0))
             .cursor_pointer()
             .text_size(px(12.))
             .font_family(crate::fonts::UI)
-            .tooltip(crate::hover::tip(t("pill.capture.tip.screen")))
+            .tooltip(crate::hover::tool_tip(t("pill.capture.tip.screen")))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, _: &MouseDownEvent, window, cx| {
@@ -1651,7 +1726,26 @@ impl CaptureView {
                     view.use_tool(Tool::Screen, window, cx);
                 }),
             )
-            .fx("capture-go-fx", move |el, h| {
+            .fx_cx("capture-go-fx", move |el, h, window, cx| {
+                // M3: lleno en `primary`, o en `error` para grabar; el punto
+                // de grabar se cuadra (como el botón de detener) al apuntarlo.
+                if let Some(s) = colors.scheme {
+                    let tone = if record { M3Tone::Error } else { M3Tone::Filled };
+                    let (el, fg) = crate::hover::m3_tool(el, h, tone, side, &s, window, cx);
+                    let el = el.font_weight(gpui::FontWeight::MEDIUM).text_size(px(13.));
+                    return if record {
+                        let dot = gpui_m3::motion::animate_f32(
+                            "capture-go-dot",
+                            gpui_m3::Spring::SPATIAL_FAST,
+                            if h.t > 0.5 { 2.5 } else { 6.0 },
+                            window,
+                            cx,
+                        );
+                        el.child(div().size(px(12.)).rounded(px(dot.max(0.0))).bg(fg)).child(t("pill.capture.tool.recordScreen"))
+                    } else {
+                        el.child(svg().path("icons/monitor.svg").size(px(18.)).text_color(fg)).child(t("pill.capture.tool.captureScreen"))
+                    };
+                }
                 if record {
                     el.bg(red.opacity(0.85 + 0.15 * h.t - 0.1 * h.press))
                         .text_color(gpui::white())
@@ -1664,9 +1758,13 @@ impl CaptureView {
                         .child(t("pill.capture.tool.captureScreen"))
                 }
             });
-        let go = island("capture-go-island")
+        let divider = match colors.scheme {
+            Some(s) => crate::hover::m3_toolbar_divider(&s),
+            None => div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10)),
+        };
+        let go = bar_of("capture-go-island")
             .child(primary)
-            .child(div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(gpui::white().opacity(0.10)))
+            .child(divider)
             .child(button(("capture-close", 0), Tool::Close, "icons/x.svg", None, t("pill.capture.tip.close"), false, None, cx));
 
         let bar = div()
@@ -1690,7 +1788,9 @@ impl CaptureView {
         div()
             .absolute()
             .left(px(help.x + offset.0))
-            .top(px(help.bottom() - BAR_BOTTOM - BUTTON - 8.0 + offset.1))
+            // M3: lo que le falta por entrar, corrido hacia abajo.
+            .top(px(help.bottom() - BAR_BOTTOM - side - 8.0 + offset.1 + 16.0 * (1.0 - bar_in)))
+            .opacity((bar_in * 1.5).clamp(0.0, 1.0))
             .w(px(help.w))
             .flex()
             .justify_center()
@@ -1815,7 +1915,7 @@ impl CaptureView {
                     .w(px(help.w))
                     .flex()
                     .justify_center()
-                    .child(chip(hint)),
+                    .child(self::hint(hint)),
             )
             .into_any_element()
     }
@@ -1838,6 +1938,35 @@ impl CaptureView {
             crosshair: false,
             loupe: Vec::new(),
             loupe_origin: (0.0, 0.0),
+            scheme: crate::board::Colors::current().scheme,
+        };
+        // M3: el número dentro de una galleta en `error_container`, el momento
+        // héroe antes de grabar. Quieta: la cuenta ya redibuja cada segundo.
+        let count: gpui::AnyElement = match paint.scheme {
+            Some(s) => gpui_m3::Shape::new(gpui_m3::ShapeName::Cookie12)
+                .size(px(COUNTDOWN_SIZE))
+                .color(s.error_container)
+                .child(
+                    div()
+                        .text_color(s.on_error_container)
+                        .text_size(px(COUNTDOWN_SIZE * 0.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .font_family(crate::fonts::UI)
+                        .child(number.to_string()),
+                )
+                .into_any_element(),
+            None => div()
+                .size(px(COUNTDOWN_SIZE))
+                .rounded_full()
+                .bg(gpui::black().opacity(0.6))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(gpui::white())
+                .text_size(px(COUNTDOWN_SIZE * 0.55))
+                .font_family(crate::fonts::UI)
+                .child(number.to_string())
+                .into_any_element(),
         };
         div()
             .id("capture")
@@ -1866,19 +1995,7 @@ impl CaptureView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
-                        div()
-                            .size(px(COUNTDOWN_SIZE))
-                            .rounded_full()
-                            .bg(gpui::black().opacity(0.6))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(gpui::white())
-                            .text_size(px(COUNTDOWN_SIZE * 0.55))
-                            .font_family(crate::fonts::UI)
-                            .child(number.to_string()),
-                    ),
+                    .child(count),
             )
             .child(
                 div()
@@ -1888,7 +2005,7 @@ impl CaptureView {
                     .w(px(help.w))
                     .flex()
                     .justify_center()
-                    .child(chip(crate::i18n::t("pill.capture.recordSoon"))),
+                    .child(hint(crate::i18n::t("pill.capture.recordSoon"))),
             )
             .into_any_element()
     }

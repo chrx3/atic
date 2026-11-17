@@ -41,7 +41,7 @@ impl Pill {
             None => (rgb(0xf0f0ea).into(), rgb(0x9a9a90).into(), rgb(0x6e6e66).into()),
         };
         let tomato: Hsla = rgb(crate::POMODORO_RED).into();
-        let ink: Hsla = rgb(0x1a1a18).into();
+        let ink = crate::pill_look::ink(0x1a1a18);
         let ring_track = m3.map_or(text.opacity(0.1), |s| s.surface_container_highest);
         let layer = |base: Hsla, on: Hsla, h: crate::hover::Hover| gpui_m3::theme::mix(on, base, 0.08 * h.t + 0.02 * h.press);
         let pomo = &self.pomodoro;

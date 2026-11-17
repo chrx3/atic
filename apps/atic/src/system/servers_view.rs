@@ -60,6 +60,8 @@ impl SystemPanel {
         }
         let c = &self.colors;
         let (text, muted, amber, danger, ink) = (c.text, c.muted, c.amber, c.danger, c.ink);
+        // El velo del hover: blanco sobre la piel de Atic; en M3, el texto del esquema.
+        let veil = c.m3.map_or(gpui::white(), |s| s.on_surface);
         let idle = self.idle_servers();
         let open = self.servers_open;
         let mut rows = Vec::new();
@@ -90,7 +92,7 @@ impl SystemPanel {
                 .px(px(6.))
                 .rounded(px(10.))
                 .cursor_pointer()
-                .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.05)))
+                .bg(h.mix(veil.opacity(0.0), veil.opacity(0.05)))
                 .on_click(toggle)
                 .into_any_element()
         });

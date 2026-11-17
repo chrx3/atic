@@ -1017,6 +1017,9 @@ pub struct LauncherPanel {
     emoji_rows: Vec<emoji::Row>,
     emoji_selected: usize,
     emoji_scroll: UniformListScrollHandle,
+    /// El esquema de la pill en Expressive (se lee en cada `render`); `None`
+    /// en Atic.
+    m3: Option<gpui_m3::Scheme>,
     _search_changed: Subscription,
 }
 
@@ -1030,12 +1033,16 @@ impl Focusable for LauncherPanel {
 
 impl LauncherPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        // En Expressive, los colores del esquema de la pill (como Textos: se
+        // leen al crear el panel).
+        let m3 = crate::pill_look::content_scheme();
+        let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
+        let placeholder: Hsla = m3.map_or(rgb(0x9a9a90).into(), |s| s.on_surface_variant);
         let search = cx.new(|cx| {
             TextInput::new(
                 t("pill.launcher.searchPlaceholder"),
                 text,
-                rgb(0x9a9a90).into(),
+                placeholder,
                 text,
                 cx,
             )
@@ -1066,6 +1073,7 @@ impl LauncherPanel {
             emoji_rows: Vec::new(),
             emoji_selected: 0,
             emoji_scroll: UniformListScrollHandle::new(),
+            m3: None,
             _search_changed: search_changed,
         };
         panel.refresh(cx);
@@ -1213,7 +1221,7 @@ impl LauncherPanel {
             0.0
         };
         let rows = if self.hits.is_empty() {
-            ROW_H
+            if crate::pill_look::content_scheme().is_some() { crate::hover::M3_EMPTY_H } else { ROW_H }
         } else {
             self.hits.len() as f32 * ROW_H
         };
@@ -1436,7 +1444,12 @@ impl LauncherPanel {
 
     /// Bajo el buscador: los chips de categoría (sin búsqueda) y los tonos.
     fn render_emoji_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text: Hsla = self.m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
+        // En M3, la categoría y el tono elegidos van en el contenedor secundario.
+        let (group_fill, tone_fill) = match self.m3 {
+            Some(s) => (s.secondary_container, s.secondary_container),
+            None => (text.opacity(0.14), text.opacity(0.16)),
+        };
         let searching = self.emoji_sections.iter().all(|s| s.title.is_none());
         let active = self.emoji_group_selected();
         let tone = self.store.emoji_tone;
@@ -1453,12 +1466,12 @@ impl LauncherPanel {
             .child(crate::glide::indicator(
                 groups_glide.clone(),
                 active.filter(|_| !searching).map(u64::from),
-                crate::glide::Look { fill: text.opacity(0.14), radius: 9., edge: None },
+                crate::glide::Look { fill: group_fill, radius: 9., edge: None },
             ))
             .child(crate::glide::indicator(
                 tones_glide.clone(),
                 Some(tone as u64),
-                crate::glide::Look { fill: text.opacity(0.16), radius: 13., edge: None },
+                crate::glide::Look { fill: tone_fill, radius: 13., edge: None },
             ))
             .when(!searching, |el| {
                 el.children(emoji::GROUPS.iter().map(|&(group, icon, _)| {
@@ -1505,8 +1518,9 @@ impl LauncherPanel {
     }
 
     fn render_emoji_row(&mut self, row: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let muted: Hsla = rgb(0x8a8a82).into();
+        let m3 = self.m3;
+        let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
+        let muted: Hsla = m3.map_or(rgb(0x8a8a82).into(), |s| s.primary);
         let (start, len) = match self.emoji_rows.get(row) {
             Some(emoji::Row::Cells { start, len }) => (*start, *len),
             Some(emoji::Row::Title(title)) => {
@@ -1542,9 +1556,19 @@ impl LauncherPanel {
                     .fx(("emoji-fx", slot), move |el, h| {
                         // El emoji crece un poco con el cursor y se achica al
                         // apretarlo (`.lf-emoji:active` en la web).
-                        let rest = if selected { 0.14 } else { 0.0 };
-                        el.bg(text.opacity(rest + (0.08_f32.max(rest) - rest) * h.over))
-                            .text_size(px(22. + 2. * h.over - 3. * h.press))
+                        let el = match m3 {
+                            // En M3, el elegido en el contenedor secundario y
+                            // la capa de estado encima.
+                            Some(s) => {
+                                let base = if selected { s.secondary_container } else { s.on_surface.opacity(0.0) };
+                                el.bg(crate::hover::m3_layer(base, s.on_surface, crate::hover::Hover { t: h.over, ..h }))
+                            }
+                            None => {
+                                let rest = if selected { 0.14 } else { 0.0 };
+                                el.bg(text.opacity(rest + (0.08_f32.max(rest) - rest) * h.over))
+                            }
+                        };
+                        el.text_size(px(22. + 2. * h.over - 3. * h.press))
                     })
                     .into_any_element()
             })
@@ -1593,7 +1617,10 @@ impl LauncherPanel {
         self.select(selected, cx);
     }
 
-    fn render_row(&mut self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&mut self, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if let Some(s) = self.m3 {
+            return self.render_row_m3(index, s, cx);
+        }
         let hit = self.hits[index].clone();
         let icon = self.icon(&hit.item, cx);
         let text: Hsla = rgb(0xf0f0ea).into();
@@ -1608,32 +1635,7 @@ impl LauncherPanel {
             }
             _ => hit.note.clone(),
         };
-        let glyph = match hit.item.target {
-            Target::Copy(_) => "icons/type.svg",
-            Target::Action(Action::Capture) => "icons/scan.svg",
-            Target::Action(Action::Board) => "icons/brush.svg",
-            Target::Action(Action::Color) => "icons/pipette.svg",
-            Target::Action(Action::Clipboard) => "icons/clipboard.svg",
-            Target::Action(Action::Textos) => "icons/notebook-pen.svg",
-            Target::Action(Action::Trash) => "icons/trash.svg",
-            Target::Action(Action::Lock) => "icons/lock.svg",
-            Target::Action(Action::Code) => "icons/code.svg",
-            Target::Action(Action::ClaudeSession) | Target::CodeWorkspace(_) => "icons/square-terminal.svg",
-            Target::Action(Action::LooseChat) => "icons/bubble.svg",
-            Target::Action(Action::Meetings) => "icons/audio-waveform.svg",
-            Target::Action(Action::RecordMeeting) => "icons/mic.svg",
-            Target::Action(Action::CopyText) => "icons/scan-text.svg",
-            Target::Action(Action::Flip) => "icons/notebook-tabs.svg",
-            Target::Action(Action::Agents) => "icons/activity.svg",
-            Target::Action(Action::Media) => "icons/music-2.svg",
-            Target::Action(Action::SystemPanel) => "icons/sliders-vertical.svg",
-            Target::Action(Action::Settings) => "icons/settings-2.svg",
-            Target::Action(Action::DarkMode) => "icons/moon.svg",
-            Target::Action(Action::Mute) => "icons/volume-x.svg",
-            Target::Action(Action::Sleep) => "icons/coffee.svg",
-            Target::Folder(_) => "icons/folder.svg",
-            _ => "icons/circle-dot.svg",
-        };
+        let glyph = row_glyph(&hit.item.target);
         let leading = match icon {
             Some(icon) => img(icon).size(px(24.)).into_any_element(),
             None => svg()
@@ -1704,14 +1706,133 @@ impl LauncherPanel {
                         el.bg(h.mix(text.opacity(0.0), text.opacity(if selected { 0.0 } else { 0.09 })))
                     }),
             )
+            .into_any_element()
+    }
+}
+
+/// El ícono de una fila sin ícono propio (acciones, carpetas, textos).
+fn row_glyph(target: &Target) -> &'static str {
+    match target {
+        Target::Copy(_) => "icons/type.svg",
+        Target::Action(Action::Capture) => "icons/scan.svg",
+        Target::Action(Action::Board) => "icons/brush.svg",
+        Target::Action(Action::Color) => "icons/pipette.svg",
+        Target::Action(Action::Clipboard) => "icons/clipboard.svg",
+        Target::Action(Action::Textos) => "icons/notebook-pen.svg",
+        Target::Action(Action::Trash) => "icons/trash.svg",
+        Target::Action(Action::Lock) => "icons/lock.svg",
+        Target::Action(Action::Code) => "icons/code.svg",
+        Target::Action(Action::ClaudeSession) | Target::CodeWorkspace(_) => "icons/square-terminal.svg",
+        Target::Action(Action::LooseChat) => "icons/bubble.svg",
+        Target::Action(Action::Meetings) => "icons/audio-waveform.svg",
+        Target::Action(Action::RecordMeeting) => "icons/mic.svg",
+        Target::Action(Action::CopyText) => "icons/scan-text.svg",
+        Target::Action(Action::Flip) => "icons/notebook-tabs.svg",
+        Target::Action(Action::Agents) => "icons/activity.svg",
+        Target::Action(Action::Media) => "icons/music-2.svg",
+        Target::Action(Action::SystemPanel) => "icons/sliders-vertical.svg",
+        Target::Action(Action::Settings) => "icons/settings-2.svg",
+        Target::Action(Action::DarkMode) => "icons/moon.svg",
+        Target::Action(Action::Mute) => "icons/volume-x.svg",
+        Target::Action(Action::Sleep) => "icons/coffee.svg",
+        Target::Folder(_) => "icons/folder.svg",
+        _ => "icons/circle-dot.svg",
+    }
+}
+
+impl LauncherPanel {
+    /// Una fila en M3 Expressive: lista agrupada (esquinas grandes afuera,
+    /// chicas entre filas), la elegida en el contenedor secundario, la cabeza
+    /// en su contenedor tonal y la capa de estado con el radio que se cuadra
+    /// al apretar. Los clics y atajos son los de `render_row`.
+    fn render_row_m3(&mut self, index: usize, s: gpui_m3::Scheme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_m3::theme::type_scale::{self, TypeScaleExt};
+        let hit = self.hits[index].clone();
+        let icon = self.icon(&hit.item, cx);
+        let selected = index == self.selected;
+        let (first, last) = (index == 0, index + 1 >= self.hits.len());
+        let favorite = self.store.favorites.iter().any(|f| *f == hit.item.id.as_ref());
+        let note: SharedString = match (&hit.item.target, editor()) {
+            (Target::Folder(_), Some(editor)) if selected => {
+                crate::keymap::hint_owned(tf("pill.launcher.openInEditor", &[("editor", &editor.name)])).into()
+            }
+            _ => hit.note.clone(),
+        };
+        let leading = match icon {
+            Some(icon) => div().size(px(32.)).flex_none().flex().items_center().justify_center().child(img(icon).size(px(24.))),
+            None => crate::hover::m3_leading(
+                &s,
+                32.,
+                10.,
+                svg().path(row_glyph(&hit.item.target)).size(px(16.)).text_color(s.on_surface_variant),
+            ),
+        };
+        let row = div()
+            .id(("launcher-row", index))
+            .w_full()
+            .h(px(ROW_H - 2.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .cursor_pointer()
+            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_hit(index, cx)))
+            .child(leading)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().type_style(type_scale::BODY_MEDIUM).child(hit.item.title.clone()))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(11.))
+                            .line_height(px(14.))
+                            .text_color(s.on_surface_variant)
+                            .child(hit.item.subtitle.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .type_style(type_scale::LABEL_SMALL)
+                    .text_color(s.on_surface_variant)
+                    .when(favorite, |el| el.child(svg().path("icons/star.svg").size(px(12.)).text_color(s.tertiary)))
+                    .child(note)
+                    .when(index < 9 && !selected, |el| el.child(crate::keymap::hint_owned(format!("Ctrl+{}", index + 1))))
+                    .when(selected, |el| el.child(div().text_color(s.on_secondary_container).child("↵"))),
+            )
+            .fx_cx(("launcher-row-fx", index), move |el, h, window, cx| {
+                let (top, bottom) = crate::hover::m3_press_radii(h, first, last, crate::hover::M3_GROUP_RADII, window, cx);
+                let bg = gpui_m3::theme::mix(s.secondary_container, s.surface_container_high, h.t);
+                let fg = gpui_m3::theme::mix(s.on_secondary_container, s.on_surface, h.t);
+                let press = crate::hover::Hover { t: 0.0, ..h };
+                el.rounded_tl(px(top))
+                    .rounded_tr(px(top))
+                    .rounded_bl(px(bottom))
+                    .rounded_br(px(bottom))
+                    .bg(crate::hover::m3_layer(bg, fg, press))
+                    .text_color(fg)
+            })
+            .lit(selected);
+        div().w_full().px(px(PAD)).pb(px(2.)).child(row).into_any_element()
     }
 }
 
 impl Render for LauncherPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let muted: Hsla = rgb(0x9a9a90).into();
-        let faint: Hsla = rgb(0x6e6e66).into();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // El estilo de la pill puede cambiar con el panel ya creado.
+        self.m3 = crate::pill_look::content_scheme();
+        let m3 = self.m3;
+        let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
+        let muted: Hsla = m3.map_or(rgb(0x9a9a90).into(), |s| s.on_surface_variant);
+        let faint: Hsla = m3.map_or(rgb(0x6e6e66).into(), |s| s.outline);
+        self.search.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
 
         let band = div()
             .h(px(BAND_H))
@@ -1731,22 +1852,27 @@ impl Render for LauncherPanel {
                 )
             })
             .when(!self.mark_gap, |el| {
-                el.pl(px(14.)).child(
-                    svg()
-                        .path("icons/search.svg")
-                        .size(px(13.))
-                        .mr(px(6.))
-                        .text_color(faint),
-                )
+                el.pl(px(14.)).when(m3.is_none(), |el| {
+                    el.child(
+                        svg()
+                            .path("icons/search.svg")
+                            .size(px(13.))
+                            .mr(px(6.))
+                            .text_color(faint),
+                    )
+                })
             })
-            .child(
-                div()
+            .child(match m3 {
+                // El buscador como SearchBar de M3.
+                Some(s) => crate::hover::m3_search_bar(&s, self.search.clone()).into_any_element(),
+                None => div()
                     .flex_1()
                     .min_w_0()
                     .text_size(px(13.))
                     .line_height(px(18.))
-                    .child(self.search.clone()),
-            );
+                    .child(self.search.clone())
+                    .into_any_element(),
+            });
 
         let favorites: Vec<_> = self
             .favorites
@@ -1767,11 +1893,20 @@ impl Render for LauncherPanel {
                         let item = item.clone();
                         cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_item(&item, cx))
                     })
-                    .fx(("launcher-fav-fx", i), move |el, h| {
+                    .fx_cx(("launcher-fav-fx", i), move |el, h, window, cx| {
                         // Como los favoritos de la web: el ícono crece un
                         // poco con el cursor y se hunde al apretar.
                         let size = 26. + 2. * h.t - 2.5 * h.press;
-                        el.bg(h.mix(text.opacity(0.06), text.opacity(0.12))).child(match icon {
+                        let el = match m3 {
+                            // En M3, su contenedor tonal y el radio que se
+                            // cuadra al apretar.
+                            Some(s) => {
+                                let radius = crate::hover::m3_press_radius(h, 14.0, 8.0, window, cx);
+                                el.rounded(px(radius)).bg(crate::hover::m3_layer(s.surface_container_high, s.on_surface, h))
+                            }
+                            None => el.bg(h.mix(text.opacity(0.06), text.opacity(0.12))),
+                        };
+                        el.child(match icon {
                             Some(icon) => img(icon).size(px(size)).into_any_element(),
                             None => div()
                                 .text_size(px(13. + h.t))
@@ -1817,6 +1952,17 @@ impl Render for LauncherPanel {
                     )
                     .into_any_element()
             }
+        } else if let (true, Some(s)) = (self.hits.is_empty(), m3) {
+            // El estado vacío de M3: una forma grande con la lupa.
+            let text = if self.showing_recents {
+                crate::keymap::hint(t("pill.launcher.recentsHint"))
+            } else {
+                t("overlay.noResults")
+            };
+            crate::hover::m3_empty_state(&s, gpui_m3::ShapeName::Clover4, "icons/search.svg", text)
+                .h(px(crate::hover::M3_EMPTY_H))
+                .flex_none()
+                .into_any_element()
         } else if self.hits.is_empty() {
             div()
                 .h(px(ROW_H))
@@ -1840,10 +1986,13 @@ impl Render for LauncherPanel {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(crate::glide::indicator_marked(
-                    crate::glide::named("launcher-hits"),
-                    crate::glide::Look { fill: text.opacity(0.09), radius: HIT_RADIUS, edge: None },
-                ))
+                // En M3 cada fila lleva su contenedor: no hace falta la píldora.
+                .when(m3.is_none(), |el| {
+                    el.child(crate::glide::indicator_marked(
+                        crate::glide::named("launcher-hits"),
+                        crate::glide::Look { fill: text.opacity(0.09), radius: HIT_RADIUS, edge: None },
+                    ))
+                })
                 .child(
                     uniform_list(
                         "launcher-hits",
@@ -1982,11 +2131,21 @@ impl Render for LauncherPanel {
                         .px(px(PAD + 10.))
                         .text_size(px(10.))
                         .text_color(faint)
+                        // En M3, el encabezado de sección en el acento.
+                        .when_some(m3, |el, s| el.text_color(s.primary).font_weight(gpui::FontWeight::MEDIUM))
                         .child(t("overlay.recents")),
                 )
             })
-            .child(body)
-            .child(footer)
+            .map(|el| match m3 {
+                // En M3, el cuerpo y el pie entran escalonados y cortos (EFFECTS).
+                Some(_) => {
+                    let list = crate::hover::m3_enter("launcher-enter-body", 0, window, cx);
+                    let foot = crate::hover::m3_enter("launcher-enter-foot", 1, window, cx);
+                    el.child(div().w_full().flex_1().min_h_0().flex().flex_col().opacity(list).child(body))
+                        .child(footer.opacity(foot))
+                }
+                None => el.child(body).child(footer),
+            })
     }
 }
 

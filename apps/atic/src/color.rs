@@ -556,7 +556,12 @@ fn rose_parts(at: (f32, f32)) -> (crate::geometry::Rect, crate::geometry::Rect) 
     (plane, hue)
 }
 
+/// La ayuda de arriba de la pantalla. En M3 Expressive, un tooltip rico de
+/// M3 con el esquema de la pill (`m3_hint`).
 fn chip(text: impl Into<SharedString>) -> gpui::Div {
+    if let Some(s) = crate::pill_look::content_scheme() {
+        return crate::hover::m3_hint(&s, text);
+    }
     div()
         .px(px(8.))
         .py(px(3.))
@@ -596,6 +601,13 @@ impl ColorView {
         let color = self.under_cursor();
         let label = color.map(|c| format(c, self.format)).unwrap_or_default();
         let swatch = color.unwrap_or(0);
+        // M3: el marco de la lupa en `surface_container`, el píxel en `primary`
+        // y el color en una píldora.
+        let m3 = crate::pill_look::content_scheme();
+        let (rim, center_ink, label_radius) = match m3 {
+            Some(s) => (s.surface_container, s.primary, side),
+            None => (gpui::white().opacity(0.85), gpui::white(), 8.0),
+        };
         div()
             .absolute()
             .left(px(lx))
@@ -606,11 +618,14 @@ impl ColorView {
             .child(
                 div()
                     .size(px(side))
-                    .rounded(px(14.))
+                    .rounded(px(if m3.is_some() { 16. } else { 14. }))
                     .overflow_hidden()
                     .border_2()
-                    .border_color(gpui::white().opacity(0.85))
-                    .shadow_lg()
+                    .border_color(rim)
+                    .map(|el| match m3 {
+                        Some(s) => el.shadow(gpui_m3::Elevation::Level3.shadow(&s)),
+                        None => el.shadow_lg(),
+                    })
                     .child(
                         canvas(
                             |_, _, _| {},
@@ -636,7 +651,7 @@ impl ColorView {
                                         point(origin.x + px(center), origin.y + px(center)),
                                         size(px(LOUPE_CELL), px(LOUPE_CELL)),
                                     ),
-                                    gpui::white(),
+                                    center_ink,
                                     BorderStyle::Solid,
                                 ));
                             },
@@ -651,7 +666,7 @@ impl ColorView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .rounded(px(8.))
+                    .rounded(px(label_radius))
                     .bg(rgb(swatch))
                     .text_color(ink_on(swatch))
                     .text_size(px(12.))
@@ -662,12 +677,15 @@ impl ColorView {
     }
 
     fn render_rose(&self, rose: &Rose, shift: (f32, f32), cx: &mut Context<Self>) -> impl IntoElement {
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let m3 = crate::pill_look::content_scheme();
+        let text: Hsla = m3.map_or(rgb(0xf0f0ea).into(), |s| s.on_surface);
         let color = rose.color();
         let (plane, hue) = rose_parts(rose.at);
         let pure = hsv_to_rgb(rose.h, 1.0, 1.0);
-        let format_button = |id: &'static str, fmt: Format, active: bool| {
-            div()
+        // M3: los formatos son un grupo de botones conectado (mismo alto: la
+        // rosa se ubica con medidas fijas, `rose_parts`).
+        let format_button = |id: &'static str, index: usize, fmt: Format, active: bool| {
+            let el = div()
                 .id(id)
                 .flex_1()
                 .h(px(26.))
@@ -681,23 +699,37 @@ impl ColorView {
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.format = fmt;
                     cx.notify();
-                }))
-                .hover_bg(
+                }));
+            match m3 {
+                Some(s) => el.fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                    let chosen = active.then_some((s.secondary_container, s.on_secondary_container));
+                    crate::hover::m3_connected(el, h, (index, 3), chosen, 26.0, &s, window, cx)
+                        .0
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                }),
+                None => el.hover_bg(
                     SharedString::from(format!("{id}-fx")),
                     text.opacity(if active { 0.16 } else { 0.0 }),
                     text.opacity(if active { 0.18 } else { 0.09 }),
-                )
+                ),
+            }
         };
         let swatch = |id: (&'static str, usize), c: u32| {
-            // Como `.op-swatch` en la web: crece con el cursor sin mover a
-            // las vecinas (el círculo se sale de su casilla).
-            div()
+            let el = div()
                 .id(id)
                 .size(px(18.))
                 .relative()
                 .cursor_pointer()
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_rose_color(c, cx)))
-                .fx((id.0, id.1 + 10_000), move |el, h| {
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_rose_color(c, cx)));
+            // M3: la del color de ahora es una galleta (Cookie).
+            if m3.is_some() {
+                return el.fx((id.0, id.1 + 10_000), move |el, h| {
+                    el.child(crate::hover::m3_swatch((id.0, id.1 + 20_000), rgb(c).into(), c == color, 18.0, h))
+                });
+            }
+            // Como `.op-swatch` en la web: crece con el cursor sin mover a
+            // las vecinas (el círculo se sale de su casilla).
+            el.fx((id.0, id.1 + 10_000), move |el, h| {
                     let grow = 1.3 * h.t - 1.0 * h.press;
                     el.child(
                         div()
@@ -732,9 +764,12 @@ impl ColorView {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .rounded(px(18.))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
+            // M3: una tarjeta de diálogo (`surface_container`, esquinas XL,
+            // elevación 3).
+            .map(|el| match m3 {
+                Some(s) => el.rounded(gpui_m3::corner::XL).bg(s.surface_container).shadow(gpui_m3::Elevation::Level3.shadow(&s)),
+                None => el.rounded(px(18.)).bg(rgb(0x1a1a18)).shadow_lg(),
+            })
             .font_family(crate::fonts::UI)
             .text_color(text)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -743,7 +778,7 @@ impl ColorView {
                 div()
                     .id("color-big")
                     .h(px(56.))
-                    .rounded(px(12.))
+                    .rounded(if m3.is_some() { gpui_m3::corner::L } else { px(12.) })
                     .bg(rgb(color))
                     .px(px(12.))
                     .flex()
@@ -767,9 +802,10 @@ impl ColorView {
                 div()
                     .flex()
                     .gap(px(4.))
-                    .child(format_button("color-hex", Format::Hex, self.format == Format::Hex))
-                    .child(format_button("color-rgb", Format::Rgb, self.format == Format::Rgb))
-                    .child(format_button("color-hsl", Format::Hsl, self.format == Format::Hsl)),
+                    .when(m3.is_some(), |el| el.gap(px(2.)))
+                    .child(format_button("color-hex", 0, Format::Hex, self.format == Format::Hex))
+                    .child(format_button("color-rgb", 1, Format::Rgb, self.format == Format::Rgb))
+                    .child(format_button("color-hsl", 2, Format::Hsl, self.format == Format::Hsl)),
             )
             // Cuadro: blanco → matiz a lo ancho, transparente → negro a lo alto.
             .child(
@@ -851,7 +887,7 @@ impl ColorView {
                     .items_center()
                     .gap(px(8.))
                     .rounded(px(8.))
-                    .bg(text.opacity(0.07))
+                    .bg(m3.map_or(text.opacity(0.07), |s| s.surface_container_highest))
                     .text_size(px(12.))
                     .child(div().text_size(px(10.)).opacity(0.6).child("HEX"))
                     .child(div().flex_1().child(self.hex.clone())),

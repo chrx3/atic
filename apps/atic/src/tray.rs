@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Div, FontWeight, Hsla, SharedString};
+use gpui::{div, prelude::*, px, svg, AnyElement, Div, FontWeight, Hsla, SharedString};
 
 use crate::agents::{self, Session, Status, AGENTS};
 use crate::anim::{ease_smooth_out, segment, Anim, SpringKind, SpringTrack, Tween};
@@ -46,8 +46,10 @@ const DECISION: u32 = 0x86b6ff;
 const INK: u32 = 0x1a1a18;
 const CLAUDE: u32 = 0xd97757;
 
+/// En Expressive, el texto y sus grises salen del esquema de la pill (que
+/// puede ser claro); los acentos y en Atic, tal cual.
 fn hsla(color: u32) -> Hsla {
-    rgb(color).into()
+    crate::pill_look::ink(color)
 }
 
 // --- La bandeja -----------------------------------------------------------------------

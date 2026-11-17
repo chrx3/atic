@@ -1,7 +1,6 @@
 # GPUI parcheado
 
-`vendor/gpui` es `gpui` 0.2.2 de crates.io con ocho cambios: seis solo
-para macOS, uno solo para Windows y uno para las dos plataformas. Lo usa toda
+`vendor/gpui` es `gpui` 0.2.2 de crates.io con once cambios. Lo usa toda
 la pill (y `../gpui-m3`) por el `[patch.crates-io]` de `Cargo.toml`.
 
 El diff exacto contra el original está en `vendor/gpui.patch`.
@@ -90,6 +89,13 @@ El diff exacto contra el original está en `vendor/gpui.patch`.
    ventana de más arriba que recibe el mouse y se puede redimensionar, GPUI no
    toca el cursor (`mouse_in_window_resize_edge`). La ventana de la pill no es
    redimensionable: no cambia nada ahí.
+
+11. **`src/platform/mac/window.rs`, `start_display_link`.** Si la ventana
+   no tiene pantalla en ese momento (al reacomodarse, al despertar o al
+   desbloquear), GPUI apagaba el display link y no lo volvía a crear hasta un
+   `windowDidChangeScreen` que podía no llegar: la pill seguía viva, pero en
+   pantalla quedaba un cuadro viejo (la tira «pegada» abierta). Ahora sigue la
+   pantalla principal (`NSScreen::mainScreen`).
 
 ## Qué se sacó (sin cambio de código)
 

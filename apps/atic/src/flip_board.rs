@@ -27,7 +27,7 @@ use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::anim::{ease_smooth_out, lerp, Tween};
-use crate::hover::{tip, HoverExt};
+use crate::hover::{tool_tip as tip, HoverExt, M3Tone};
 use crate::i18n::{t as tr, tf as trf};
 use crate::text_area::TextArea;
 use crate::text_input;
@@ -1285,6 +1285,48 @@ struct Colors {
     accent: Hsla,
     ok: Hsla,
     danger: Hsla,
+    /// M3 Expressive: el esquema de la pill. `None` con la pill en Atic (y en
+    /// los colores de la hoja al exportar).
+    scheme: Option<gpui_m3::Scheme>,
+}
+
+impl Colors {
+    /// Los de lo que rodea a la hoja (barra, dock, cajón): oscuros de
+    /// siempre, o en M3 Expressive los del esquema de la pill, para que
+    /// combinen con lo que se eligió en Apariencia.
+    fn chrome() -> Self {
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let atic = Colors {
+            text,
+            muted: rgb(0x9a9a90).into(),
+            faint: rgb(0x6e6e66).into(),
+            bg: rgb(0x1a1a18).into(),
+            // `--hoja` del tema oscuro de Atic: la superficie elevada con un
+            // 30 % del texto.
+            sheet: rgb(0x656561).into(),
+            card: rgb(0x2a2a26).into(),
+            line: text.opacity(0.12),
+            accent: text,
+            ok: rgb(0x6faf88).into(),
+            danger: rgb(0xe5483f).into(),
+            scheme: None,
+        };
+        match crate::pill_look::content_scheme() {
+            Some(s) => Colors {
+                text: s.on_surface,
+                muted: s.on_surface_variant,
+                faint: s.outline,
+                bg: s.surface,
+                card: s.surface_container,
+                line: s.outline_variant,
+                accent: s.on_surface,
+                danger: s.error,
+                scheme: Some(s),
+                ..atic
+            },
+            None => atic,
+        }
+    }
 }
 
 /// Pedido de confirmación en curso.
@@ -1427,21 +1469,7 @@ struct Layout {
 
 impl PaperView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let text: Hsla = rgb(0xf0f0ea).into();
-        let colors = Colors {
-            text,
-            muted: rgb(0x9a9a90).into(),
-            faint: rgb(0x6e6e66).into(),
-            bg: rgb(0x1a1a18).into(),
-            // `--hoja` del tema oscuro de Atic: la superficie elevada con un
-            // 30 % del texto.
-            sheet: rgb(0x656561).into(),
-            card: rgb(0x2a2a26).into(),
-            line: text.opacity(0.12),
-            accent: text,
-            ok: rgb(0x6faf88).into(),
-            danger: rgb(0xe5483f).into(),
-        };
+        let colors = Colors::chrome();
         // El editor escribe sobre la hoja clara: letra oscura, la de `light`.
         let ink: Hsla = rgb(0x1c1917).into();
         let editor = cx.new(|cx| TextArea::new(placeholder(), ink, rgb(0x6b665c).into(), ink, cx));
@@ -1518,6 +1546,7 @@ impl PaperView {
                 accent: rgb(0x1c1917).into(),
                 ok: rgb(0x3f7355).into(),
                 danger: rgb(0xc0392b).into(),
+                scheme: None,
             },
             _editor_changed: editor_changed,
         };
@@ -3205,7 +3234,7 @@ impl PaperView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (text, muted) = (self.colors.text, self.colors.muted);
-        div()
+        let el = div()
             .id(id)
             .h(px(30.))
             .min_w(px(30.))
@@ -3222,8 +3251,20 @@ impl PaperView {
                 el.cursor_pointer()
                     .on_click(cx.listener(move |paper, _, window, cx| on_click(paper, window, cx)))
             })
-            .when(!enabled, |el| el.opacity(0.35))
-            .child(svg().path(icon).size(px(15.)).text_color(muted))
+            .when(!enabled, |el| el.opacity(0.35));
+        // M3: botón de ícono estándar con capa de estado; el del cajón,
+        // abierto, de alternar elegido.
+        if let Some(s) = self.colors.scheme {
+            let on = id == "drawer" && self.drawer;
+            let tone = if on { M3Tone::Selected } else { M3Tone::Standard };
+            return el.fx_cx(SharedString::from(format!("{id}-fx")), move |el, h, window, cx| {
+                let (el, fg) = crate::hover::m3_tool(el, h, tone, 30.0, &s, window, cx);
+                el.font_weight(gpui::FontWeight::MEDIUM)
+                    .child(svg().path(icon).size(px(16.)).text_color(fg))
+                    .when_some(label, |el, label| el.child(label))
+            });
+        }
+        el.child(svg().path(icon).size(px(15.)).text_color(muted))
             .when_some(label, |el, label| el.child(label))
             .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
                 el.bg(h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press)))
@@ -3242,6 +3283,7 @@ impl PaperView {
         };
         let shown_file = self.notice.as_ref().and_then(|(_, file)| file.clone());
         let separator = || div().w(px(1.)).h(px(16.)).mx(px(2.)).bg(colors.line);
+        let m3 = colors.scheme;
         let percent = format!("{}%", (self.view().0 * 100.0).round());
         let drawer_icon = if self.drawer {
             "icons/board/panel-right-close.svg"
@@ -3249,8 +3291,10 @@ impl PaperView {
             "icons/board/panel-right-open.svg"
         };
         // Cada grupo es una píldora como el dock: se lee qué va con qué.
+        // M3: cada grupo es una barra flotante de M3 (más baja que la de la
+        // Pizarra: la barra del tablero tiene alto fijo).
         let group = |id: &'static str| {
-            div()
+            let el = div()
                 .id(id)
                 .h(px(36.))
                 .px(px(3.))
@@ -3258,8 +3302,11 @@ impl PaperView {
                 .items_center()
                 .gap(px(1.))
                 .rounded(px(18.))
-                .bg(colors.card)
-                .shadow_sm()
+                .bg(colors.card);
+            match m3 {
+                Some(s) => el.shadow(gpui_m3::Elevation::Level2.shadow(&s)),
+                None => el.shadow_sm(),
+            }
         };
         let saved = self.notice.is_none() && self.saved == Some(true);
         let drawer_open = self.drawer;
@@ -3320,11 +3367,16 @@ impl PaperView {
                             .tooltip(tip(crate::keymap::hint(tr("pill.flip.board.zoomFit"))))
                             .on_click(cx.listener(|paper, _, _, cx| paper.zoom_reset(cx)))
                             .child(percent)
-                            .fx("zoom-reset-fx", {
+                            .fx_cx("zoom-reset-fx", {
                                 let (text, muted) = (colors.text, colors.muted);
-                                move |el, h| {
-                                    el.bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
-                                        .text_color(h.mix(muted, text))
+                                move |el, h, window, cx| match m3 {
+                                    Some(s) => {
+                                        let (el, _) = crate::hover::m3_tool(el, h, M3Tone::Standard, 30.0, &s, window, cx);
+                                        el.font_weight(gpui::FontWeight::MEDIUM)
+                                    }
+                                    None => el
+                                        .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                                        .text_color(h.mix(muted, text)),
                                 }
                             }),
                     )
@@ -3339,7 +3391,7 @@ impl PaperView {
                     .child(
                         div()
                             .rounded(px(15.))
-                            .when(drawer_open, |el| el.bg(text.opacity(0.12)))
+                            .when(drawer_open && m3.is_none(), |el| el.bg(text.opacity(0.12)))
                             .child(self.icon_button("drawer", drawer_icon, Some(tr("overlay.windowFlip.drawer")), tr("pill.flip.board.insertTip"),
                                 true, |paper, _, cx| paper.toggle_drawer(cx), cx)),
                     )
@@ -3370,7 +3422,12 @@ impl PaperView {
         let now = Instant::now();
         let ink: Hsla = rgb(PALETTE[self.color]).into();
         let sep = || div().flex_none().w(px(1.)).h(px(20.)).mx(px(4.)).bg(colors.line);
-        let mut dock = div()
+        let m3 = colors.scheme;
+        // M3: una barra flotante de M3 (`surface_container`, elevación 3) sin
+        // píldora que se desliza: la herramienta elegida es un botón de
+        // alternar elegido. Mismo tamaño de botones que siempre: `dock_x`
+        // ubica la paleta sobre cada uno.
+        let dock = div()
             .id("dock")
             .occlude()
             .relative()
@@ -3379,42 +3436,73 @@ impl PaperView {
             .gap(px(DOCK_GAP))
             .p(px(DOCK_PAD))
             .rounded(px(999.))
-            .bg(card.opacity(0.92))
-            .border_1()
-            .border_color(colors.line)
-            .shadow(vec![
-                shadow(0.0, 8.0, 24.0, 0.22),
-                shadow(0.0, 1.0, 2.0, 0.12),
-            ])
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .absolute()
-                    .top(px(DOCK_PAD))
-                    .left(px(self.dock_pill.value(now)))
-                    .size(px(DOCK_BTN))
-                    .rounded(px(999.))
-                    .bg(text.opacity(0.10)),
-            );
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        let mut dock = match m3 {
+            Some(s) => dock.bg(card).shadow(gpui_m3::Elevation::Level3.shadow(&s)),
+            None => dock
+                .bg(card.opacity(0.92))
+                .border_1()
+                .border_color(colors.line)
+                .shadow(vec![
+                    shadow(0.0, 8.0, 24.0, 0.22),
+                    shadow(0.0, 1.0, 2.0, 0.12),
+                ])
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(DOCK_PAD))
+                        .left(px(self.dock_pill.value(now)))
+                        .size(px(DOCK_BTN))
+                        .rounded(px(999.))
+                        .bg(text.opacity(0.10)),
+                ),
+        };
         for (i, (tool, icon, label)) in Tool::DOCK.iter().copied().enumerate() {
             let label = tr(label);
             if i == 2 || i == 5 {
                 dock = dock.child(sep());
             }
             let active = self.tool == tool;
+            let button = div()
+                .id(("dock-tool", i))
+                .relative()
+                .size(px(DOCK_BTN))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(px(999.))
+                .cursor_pointer()
+                .tooltip(tip(label))
+                .on_click(cx.listener(move |paper, _, window, cx| paper.set_tool(tool, window, cx)));
+            if let Some(s) = m3 {
+                let tone = if active { M3Tone::Selected } else { M3Tone::Standard };
+                let inks = tool.inks();
+                dock = dock.child(button.fx_cx(("dock-tool-fx", i), move |el, h, window, cx| {
+                    let (el, fg) = crate::hover::m3_tool(el, h, tone, DOCK_BTN, &s, window, cx);
+                    el.child(
+                        div()
+                            .relative()
+                            .child(svg().path(icon).size(px(18.)).text_color(fg))
+                            .when(inks, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .right(px(-3.))
+                                        .bottom(px(-3.))
+                                        .size(px(8.))
+                                        .rounded(px(4.))
+                                        .bg(ink)
+                                        .border_1()
+                                        .border_color(card),
+                                )
+                            }),
+                    )
+                }));
+                continue;
+            }
             dock = dock.child(
-                div()
-                    .id(("dock-tool", i))
-                    .relative()
-                    .size(px(DOCK_BTN))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(999.))
-                    .cursor_pointer()
-                    .tooltip(tip(label))
-                    .on_click(cx.listener(move |paper, _, window, cx| paper.set_tool(tool, window, cx)))
+                button
                     .child(
                         div()
                             .relative()
@@ -3457,7 +3545,10 @@ impl PaperView {
                 .cursor_pointer()
                 .tooltip(tip(if self.group.is_some() { tr("pill.flip.board.deleteChosen") } else { tr("pill.flip.board.remove") }))
                 .on_click(cx.listener(|paper, _, window, cx| paper.delete_selected(&DeleteSelected, window, cx)))
-                .fx("dock-delete-fx", move |el, h| el.bg(h.mix(danger.opacity(0.0), danger.opacity(0.12))))
+                .fx("dock-delete-fx", move |el, h| match m3 {
+                    Some(_) => el.bg(crate::hover::m3_layer(danger.opacity(0.0), danger, h)),
+                    None => el.bg(h.mix(danger.opacity(0.0), danger.opacity(0.12))),
+                })
                 .into_any_element()
         } else {
             // Apagado: se sabe que existe y qué hace falta para usarlo.
@@ -3481,14 +3572,21 @@ impl PaperView {
                             .justify_center()
                             .rounded(px(14.))
                             .cursor_pointer()
-                            .when(chosen, |el| el.bg(text.opacity(0.14)))
+                            .when(chosen, |el| match m3 {
+                                Some(s) => el.bg(s.secondary_container).rounded(px(9.)),
+                                None => el.bg(text.opacity(0.14)),
+                            })
                             .tooltip(tip([tr("pill.flip.board.eraserSizes"), tr("pill.flip.board.eraserMedium"), tr("pill.flip.board.eraserLarge")][i]))
                             .on_click(cx.listener(move |paper, _, _, cx| {
                                 paper.eraser_radius = radius;
                                 paper.palette = false;
                                 cx.notify();
                             }))
-                            .child(div().size(px(d)).rounded(px(d / 2.0)).bg(if chosen { text } else { muted }))
+                            .child(div().size(px(d)).rounded(px(d / 2.0)).bg(match m3 {
+                                Some(s) if chosen => s.on_secondary_container,
+                                _ if chosen => text,
+                                _ => muted,
+                            }))
                     }))
                     .into_any_element()
             } else {
@@ -3500,18 +3598,24 @@ impl PaperView {
                     .children((0..PALETTE.len()).map(|i| self.swatch(i, cx)))
                     .into_any_element()
             };
-            div()
+            let palette = div()
                 .id("palette")
                 .occlude()
                 .absolute()
                 .bottom(px(DOCK_BTN + DOCK_PAD * 2.0 + 12.0))
                 .left(px(left - 8.0))
                 .p(px(8.))
-                .rounded(px(14.))
-                .bg(card)
-                .border_1()
-                .border_color(colors.line)
-                .shadow(vec![shadow(0.0, 8.0, 24.0, 0.22)])
+                .bg(card);
+            // M3: un menú de M3 (esquinas grandes, elevación 2, sin borde).
+            let palette = match m3 {
+                Some(s) => palette.rounded(gpui_m3::corner::L).shadow(gpui_m3::Elevation::Level2.shadow(&s)),
+                None => palette
+                    .rounded(px(14.))
+                    .border_1()
+                    .border_color(colors.line)
+                    .shadow(vec![shadow(0.0, 8.0, 24.0, 0.22)]),
+            };
+            palette
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(content)
         });
@@ -3530,21 +3634,27 @@ impl PaperView {
         let color: Hsla = rgb(PALETTE[index]).into();
         let chosen = self.color == index;
         let (text, card) = (self.colors.text, self.colors.card);
-        // Anillo doble al elegir: uno del color de la tarjeta y otro del texto.
-        div()
+        let el = div()
             .id(("swatch", index))
             .size(px(24.))
             .flex_none()
-            .rounded(px(12.))
-            .p(px(2.))
-            .border_2()
-            .border_color(if chosen { text } else { text.opacity(0.0) })
             .cursor_pointer()
             .on_click(cx.listener(move |paper, _, _, cx| {
                 paper.color = index;
                 paper.palette = false;
                 cx.notify();
-            }))
+            }));
+        // M3: la elegida es una galleta (Cookie); las demás, círculos.
+        if self.colors.scheme.is_some() {
+            return el.fx(("swatch-fx", index), move |el, h| {
+                el.child(crate::hover::m3_swatch(("swatch-shape", index), color, chosen, 24.0, h))
+            });
+        }
+        // Anillo doble al elegir: uno del color de la tarjeta y otro del texto.
+        el.rounded(px(12.))
+            .p(px(2.))
+            .border_2()
+            .border_color(if chosen { text } else { text.opacity(0.0) })
             .child(div().size_full().rounded(px(10.)).bg(color))
             .fx(("swatch-fx", index), move |el, h| {
                 if chosen {
@@ -4742,6 +4852,8 @@ impl Render for PaperView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         perf::frame(now);
+        // Sigue al estilo de la pill aunque cambie con el tablero abierto.
+        self.colors = Colors::chrome();
         if std::mem::take(&mut self.pending_import) {
             if let Some(row) = crate::meetings::digest::list().into_iter().next() {
                 self.import_meeting(&row.id, window, cx);

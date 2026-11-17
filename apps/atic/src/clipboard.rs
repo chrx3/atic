@@ -1752,6 +1752,8 @@ impl Render for ClipboardPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // El estilo de la pill puede cambiar con el panel ya creado.
         self.colors = Colors::current();
+        let (text, muted) = (self.colors.text, self.colors.muted);
+        self.search.update(cx, |input, cx| input.set_colors(text, muted, text, cx));
         let colors = &self.colors;
         let text = colors.text;
         let m3 = colors.m3;

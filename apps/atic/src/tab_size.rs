@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Context, Hsla};
+use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Context};
 use serde::{Deserialize, Serialize};
 
 use crate::anim::lerp;
@@ -547,9 +547,11 @@ impl Pill {
             .collect();
         at.dedup();
         let alpha = crate::anim::segment(strip, 0.6, 0.4);
+        let (layout, first) = (self.strip_layout(false, now), self.strip_first(now));
         at.into_iter()
             .map(|slot| {
-                let icon = edge.point(&self.work, self.strip_tool_along(slot, now), edge.depth_of(&self.work, mark));
+                let along = self.strip_tool_along_in(&layout, first, slot, now);
+                let icon = edge.point(&self.work, along, edge.depth_of(&self.work, mark));
                 let (x, y) = (icon.0 + 8.0, icon.1 - 8.0);
                 div()
                     .absolute()
@@ -942,9 +944,10 @@ impl Pill {
     /// edición mientras se edita.
     pub(crate) fn resize_element(&self, now: Instant) -> Option<AnyElement> {
         let (edge, rect, _) = self.resize_target(now)?;
-        let ink: Hsla = rgb(0xf0f0ea).into();
-        let on_ink: Hsla = rgb(0x1a1a18).into();
-        let skin = crate::appearance::current().skin.mid();
+        // En Expressive, del esquema de la pill (puede ser claro).
+        let ink = crate::pill_look::ink(0xf0f0ea);
+        let on_ink = crate::pill_look::ink(0x1a1a18);
+        let skin = crate::Palette::dark().skin;
         let lift = || {
             vec![
                 gpui::BoxShadow {

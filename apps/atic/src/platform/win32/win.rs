@@ -238,6 +238,12 @@ impl Overlay {
         }
     }
 
+    /// Si alguna parte de la ventana se ve. En Windows no se sabe barato:
+    /// siempre.
+    pub fn on_screen(&self) -> bool {
+        true
+    }
+
     /// Lo que deja la ventana «siempre visible» es su lugar en el orden de
     /// apilamiento, no el estilo `WS_EX_TOPMOST`. Windows a veces la saca de
     /// esa capa sin quitarle el estilo (al cerrar Fotos abierto desde el

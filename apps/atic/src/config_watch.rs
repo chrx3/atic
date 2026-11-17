@@ -29,6 +29,10 @@ pub fn spawn() {
                 }
                 // «Según Windows» sigue al sistema aunque el archivo no cambie.
                 crate::theme::set_ui_theme(&ui_theme);
+                // La pill con «Seguir al sistema» (Apariencia) también.
+                if crate::pill_look::set_system_light(crate::theme::windows_light()) {
+                    crate::theme::mark_changed();
+                }
                 std::thread::sleep(EVERY);
             }
         });

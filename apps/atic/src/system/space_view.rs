@@ -390,6 +390,9 @@ impl SystemPanel {
         let disk = self.disk();
         let c = &self.colors;
         let (text, muted, faint, ink, fill, track) = (c.text, c.muted, c.faint, c.ink, c.fill, c.track);
+        // El velo del hover: blanco sobre la piel de Atic; en M3, el texto del
+        // esquema (que también se ve sobre un esquema claro).
+        let (veil, m3): (Hsla, _) = (c.m3.map_or(gpui::white(), |s| s.on_surface), c.m3);
         let Some(view) = self.space.as_ref() else {
             return div().into_any_element();
         };
@@ -420,7 +423,7 @@ impl SystemPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(13.))
-                    .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.1)))
+                    .bg(h.mix(veil.opacity(0.0), veil.opacity(0.1)))
                     .cursor_pointer()
                     .on_click(back)
                     .child(
@@ -526,7 +529,7 @@ impl SystemPanel {
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(10.))
-                    .bg(h.mix(gpui::white().opacity(if is_open { 0.04 } else { 0.0 }), gpui::white().opacity(0.06)))
+                    .bg(h.mix(veil.opacity(if is_open { 0.04 } else { 0.0 }), veil.opacity(0.06)))
                     .cursor_pointer()
                     .on_click(toggle_open)
                     .child(checkbox(SharedString::from(format!("space-check-{gi}")), check, 16., text, ink, faint, toggle_check))
@@ -582,7 +585,7 @@ impl SystemPanel {
                             .items_center()
                             .gap(px(10.))
                             .rounded(px(8.))
-                            .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(if locked { 0.0 } else { 0.05 })))
+                            .bg(h.mix(veil.opacity(0.0), veil.opacity(if locked { 0.0 } else { 0.05 })))
                             .when(!locked, |el| el.cursor_pointer().on_click(toggle))
                             .child(checkbox(SharedString::from(format!("{item_id}-check")), check, 14., text, ink, faint, |_, _, _| {}))
                             .child(div().flex_1().min_w_0().truncate().text_size(px(11.)).text_color(if locked { faint } else { text }).child(name))
@@ -652,7 +655,7 @@ impl SystemPanel {
                         .items_center()
                         .gap(px(10.))
                         .rounded(px(10.))
-                        .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(if scanning { 0.0 } else { 0.06 })))
+                        .bg(h.mix(veil.opacity(0.0), veil.opacity(if scanning { 0.0 } else { 0.06 })))
                         .when(!scanning, |el| el.cursor_pointer().on_click(ask))
                         .text_size(px(11.))
                         .text_color(fg)
@@ -712,7 +715,12 @@ impl SystemPanel {
                     .flex()
                     .items_center()
                     .child(hover_fx("space-go-fx", move |h| {
-                        let bg = if ready { h.mix(fill, gpui::white()) } else { gpui::white().opacity(0.06) };
+                        let bg = match (ready, m3) {
+                            // En M3, el botón lleno con su capa de estado.
+                            (true, Some(_)) => crate::hover::m3_layer(fill, ink, h),
+                            (true, None) => h.mix(fill, gpui::white()),
+                            (false, _) => veil.opacity(0.06),
+                        };
                         let inset = 2.0 * h.press * ready as u8 as f32;
                         div()
                             .id("space-go")

@@ -412,7 +412,9 @@ impl FlipView {
                     .h(px(self.screen.1 * s)),
             )
         } else {
-            strip.bg(self.colors.back)
+            // M3 Expressive: el dorso es el fondo del tablero (`surface` del
+            // esquema de la pill), el mismo que aparece al terminar de girar.
+            strip.bg(crate::pill_look::content_scheme().map_or(self.colors.back, |s| s.surface))
         };
         strip
             .child(

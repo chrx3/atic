@@ -264,7 +264,13 @@ impl Pill {
     pub(crate) fn verse_lines(&self, side: bool, id: &'static str, grow: f32) -> Option<AnyElement> {
         let lerp = |a: f32, b: f32| a + (b - a) * grow.clamp(0.0, 1.0);
         let verses = self.hang_verse()?;
-        let text = crate::Palette::dark().text;
+        // El vistazo de Ahora suena va sobre la carátula: ahí, texto claro en
+        // cualquier tema; la letra que cuelga, el de la pill.
+        let on_cover = id == "peek" && self.media.track().is_some_and(|t| t.backdrop.is_some());
+        let text = match crate::pill_look::cover_scheme().filter(|_| on_cover) {
+            Some(s) => s.on_surface,
+            None => crate::Palette::dark().text,
+        };
         let look = VerseLook {
             now_size: lerp(14.5, 17.),
             now_line: lerp(18., 21.),

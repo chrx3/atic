@@ -60,6 +60,37 @@ pub struct Appearance {
     /// Expressive: la piel pinta la pill (lisa o en degradado). Apagado, la
     /// pill va en el contenedor del esquema y la piel solo lo tiñe.
     pub skin_fill: bool,
+    /// Expressive: el tema de la pill y de sus paneles (en Atic, siempre oscura).
+    pub pill_theme: PillTheme,
+}
+
+/// Expressive: el tema del esquema de la pill. Oscuro es el de siempre.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PillTheme {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl PillTheme {
+    /// En el orden de Apariencia, con la clave `i18n` de su nombre.
+    pub const ALL: [(PillTheme, &'static str); 3] = [
+        (PillTheme::Dark, "pill.appearance.pillThemeDark"),
+        (PillTheme::Light, "pill.appearance.pillThemeLight"),
+        (PillTheme::System, "pill.appearance.pillThemeSystem"),
+    ];
+
+    /// ¿Va oscura? `system_light`: si el sistema está en claro (solo cuenta
+    /// con «Seguir al sistema»).
+    pub fn dark(self, system_light: bool) -> bool {
+        match self {
+            PillTheme::Dark => true,
+            PillTheme::Light => false,
+            PillTheme::System => !system_light,
+        }
+    }
 }
 
 /// Cómo se pinta la pill: la de siempre, o Material 3 Expressive como toolbar
@@ -81,8 +112,9 @@ impl PillStyle {
 }
 
 /// El color de la piel: el de Atic, uno liso o un degradado de dos o tres
-/// colores. El texto y los íconos encima son claros: si la piel es clara, se
-/// tapa con un velo (`PillTokens::veil`) hasta que se lean.
+/// colores. Si el texto y los íconos encima no se leen (una piel clara con
+/// el tema oscuro, o una oscura con el claro de Expressive), se tapa con un
+/// velo (`PillTokens::veil`) hasta que se lean.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Skin {
@@ -396,6 +428,7 @@ impl Default for Appearance {
             scheme: SchemeStyle::TonalSpot,
             contrast: 0.0,
             skin_fill: true,
+            pill_theme: PillTheme::Dark,
         }
     }
 }
@@ -404,6 +437,15 @@ const REST_RANGE: (f32, f32) = (0.15, 1.0);
 const READ_RANGE: (f32, f32) = (0.5, 1.0);
 
 static CURRENT: Mutex<Option<Appearance>> = Mutex::new(None);
+
+/// La pill no se redibuja sola en reposo: al arrastrar un color o el ángulo se
+/// le avisa solo a ella. `refresh_windows` redibujaba todas las ventanas sin
+/// caché (Atic Code incluido) en cada movimiento del mouse.
+fn notify_pill(cx: &mut gpui::App) {
+    if let Some(pill) = cx.windows().into_iter().find_map(|window| window.downcast::<crate::Pill>()) {
+        let _ = pill.update(cx, |_, _, cx| cx.notify());
+    }
+}
 
 /// La apariencia vigente. La pill la lee en cada cuadro.
 pub fn current() -> Appearance {
@@ -606,8 +648,7 @@ impl AppearancePane {
             crate::theme::restyle();
         }
         if knob == Knob::Angle {
-            // La pill no se redibuja sola en reposo.
-            cx.refresh_windows();
+            notify_pill(cx);
         }
         cx.notify();
     }
@@ -636,7 +677,8 @@ impl AppearancePane {
     /// Pone `hex` en lo que se edita y lo aplica. Al arrastrar (`persist`
     /// apagado) se guarda al soltar; `from_picker` deja el campo HEX al día.
     fn pick(&mut self, hex: u32, persist: bool, from_picker: bool, cx: &mut Context<Self>) {
-        let mut look = current();
+        let before = current();
+        let mut look = before;
         match self.editing {
             Editing::Nothing => return,
             Editing::Color => {
@@ -653,13 +695,17 @@ impl AppearancePane {
             }
             Editing::Accent => look.accent = Some(hex),
         }
+        // Arrastrando, el selector repite el mismo color: si nada cambia, nada
+        // que guardar ni que redibujar.
+        if look == before && !persist {
+            return;
+        }
         apply(look, persist);
         self.unsaved |= !persist;
         if from_picker {
             self.sync_hex(cx);
         }
-        // La pill no se redibuja sola en reposo.
-        cx.refresh_windows();
+        notify_pill(cx);
         cx.notify();
     }
 
@@ -990,7 +1036,24 @@ impl AppearancePane {
                 )
                 .when(self.editing == Editing::Accent, |el| el.child(self.color_editor(look, cx)))
         });
+        let theme = PillTheme::ALL.iter().position(|&(theme, _)| theme == look.pill_theme).unwrap_or(0);
         card()
+            .child(row(
+                crate::i18n::t("pill.appearance.pillTheme"),
+                crate::i18n::t("pill.appearance.pillThemeHint"),
+                None,
+                div().flex().child(
+                    gpui_m3::SegmentedButtons::new(
+                        "appearance-pill-theme",
+                        PillTheme::ALL.iter().map(|&(_, name)| gpui_m3::Segment::label(crate::i18n::t(name))).collect::<Vec<_>>(),
+                        theme,
+                    )
+                    .on_change(|index, _, cx| {
+                        let theme = PillTheme::ALL.get(index).map_or(PillTheme::Dark, |&(theme, _)| theme);
+                        Self::set_look(|look| look.pill_theme = theme, cx);
+                    }),
+                ),
+            ))
             .child(switch_row(
                 "appearance-skin-fill",
                 crate::i18n::t("pill.appearance.skinFill"),
@@ -1682,6 +1745,23 @@ mod tests {
         assert!(back == look);
         assert_eq!(back.custom.gradient(), back.skin);
         assert!(!back.skin.is_preset());
+    }
+
+    #[test]
+    fn el_tema_de_la_pill_es_oscuro_si_no_se_eligio_y_sigue_al_sistema() {
+        // Una apariencia guardada antes de poder elegirlo queda oscura.
+        let old: Appearance = serde_json::from_str(r#"{"pill":"expressive"}"#).unwrap();
+        assert_eq!(old.pill_theme, PillTheme::Dark);
+        let look = Appearance { pill_theme: PillTheme::System, ..Appearance::default() };
+        let json = serde_json::to_string(&look).unwrap();
+        assert!(json.contains(r#""pill_theme":"system""#), "{json}");
+        assert!(serde_json::from_str::<Appearance>(&json).unwrap() == look);
+        // Oscuro y claro no miran el sistema; «Seguir al sistema», sí.
+        for system_light in [false, true] {
+            assert!(PillTheme::Dark.dark(system_light));
+            assert!(!PillTheme::Light.dark(system_light));
+            assert_eq!(PillTheme::System.dark(system_light), !system_light);
+        }
     }
 
     #[test]

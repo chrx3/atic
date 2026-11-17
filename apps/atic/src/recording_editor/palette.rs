@@ -31,6 +31,9 @@ pub struct Ed {
     /// Los paneles son vidrios del sistema (no se pinta su fondo).
     pub glass: bool,
     pub expressive: bool,
+    /// Con la pill en M3 Expressive (`pill_look::content_scheme`): los botones
+    /// cambian de forma al apretarlos (y el de reproducir al reproducir).
+    pub m3: bool,
     /// El fondo de la ventana.
     pub bg: Hsla,
     /// Paneles (la barra lateral, la línea de tiempo).
@@ -85,6 +88,7 @@ impl Ed {
                 light: t.light,
                 glass: crate::glass_pieces::active(t.style),
                 expressive: t.style == Style::Expressive,
+                m3: false,
                 bg: theme::window_bg(),
                 panel: t.pane,
                 raised: t.raised,
@@ -115,6 +119,7 @@ impl Ed {
                 light: theme::is_light(),
                 glass: false,
                 expressive: false,
+                m3: false,
                 bg: theme::hsla(theme::WINDOW),
                 panel: theme::hsla(theme::SURFACE),
                 raised: theme::hsla(theme::SUNKEN),
@@ -143,6 +148,7 @@ impl Ed {
             },
         };
         ed.sub = readable(ed.muted, ed.surface(), ed.text, MIN_CONTRAST);
+        ed.m3 = ed.expressive && crate::pill_look::content_scheme().is_some();
         ed
     }
 

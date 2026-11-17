@@ -512,8 +512,13 @@ struct Palette {
 
 impl Palette {
     /// Tema "atic" oscuro, con la piel elegida en Apariencia (lo que no cabe
-    /// en un degradado usa su color del medio).
+    /// en un degradado usa su color del medio). En Expressive, los roles del
+    /// esquema de la pill, que puede ser claro («Tema de la pill»).
     fn dark() -> Self {
+        let tokens = pill_look::PillTokens::current();
+        if let Some(s) = tokens.scheme {
+            return Self { skin: tokens.skin, text: s.on_surface, muted: s.on_surface_variant };
+        }
         Self {
             skin: appearance::current().skin.mid(),
             text: rgb(0xf0f0ea).into(),
@@ -820,6 +825,10 @@ struct Pill {
 
     strip: Anim,
     strip_leave_at: Option<Instant>,
+    /// Desde cuándo `tick` pide un cuadro que no llega (`render` lo borra), y
+    /// si ya se avisó en el log. Diagnóstico de la pill que queda congelada en
+    /// pantalla mientras su estado sigue (la tira abierta con el cursor lejos).
+    unrendered: (Option<Instant>, bool),
     /// El tamaño del tab en reposo (`tab_size.rs`): sin molestar y la escala.
     tab_size: tab_size::TabSize,
     /// Cuánto del modo sin molestar se ve (0 la cara, 1 solo los ojos).
@@ -1495,6 +1504,7 @@ impl Pill {
             hover_since: None,
             strip: Anim::of(Tween::new(0.0, Duration::from_millis(240), ease_island), SpringKind::Spatial),
             strip_leave_at: None,
+            unrendered: (None, false),
             quiet: Tween::new(if tab_size.quiet { 1.0 } else { 0.0 }, Duration::from_millis(320), ease_island),
             quiet_eyes: Tween::new(1.0, Duration::from_millis(700), ease_island),
             quiet_side: Tween::new(0.0, Duration::from_millis(320), ease_island),
@@ -2636,15 +2646,18 @@ impl Pill {
     /// El centro de la ficha `index` a lo largo, tal como se ve en este cuadro
     /// (en Expressive, con el ancho animado del grupo).
     fn strip_tool_along(&self, index: usize, now: Instant) -> f32 {
+        self.strip_tool_along_in(&self.strip_layout(false, now), self.strip_first(now), index, now)
+    }
+
+    /// `strip_tool_along` con la tira (`strip_layout(false, now)`) y su
+    /// principio (`strip_first`) ya calculados: para recorrer varias fichas
+    /// sin rehacerlos por cada una.
+    fn strip_tool_along_in(&self, layout: &[(f32, f32)], first: f32, index: usize, now: Instant) -> f32 {
         let open = self.strip.value(now).max(0.0);
         // Las del paso que se deja pueden ser más que las de ahora: van a su
         // lugar de siempre.
-        let (start, width) = self
-            .strip_layout(false, now)
-            .get(index)
-            .copied()
-            .unwrap_or((index as f32 * (TOOL_W + TOOL_GAP), TOOL_W));
-        self.strip_first(now) + (start + width / 2.0) * open
+        let (start, width) = layout.get(index).copied().unwrap_or((index as f32 * (TOOL_W + TOOL_GAP), TOOL_W));
+        first + (start + width / 2.0) * open
     }
 
     /// Donde empieza la tira: justo después de la marca.
@@ -4065,7 +4078,7 @@ impl Pill {
         let (Some(entry), Some(cursor)) = (self.notch_drag.as_ref(), self.cursor) else {
             return Vec::new();
         };
-        let text: Hsla = rgb(0xf0f0ea).into();
+        let text = pill_look::ink(0xf0f0ea);
         let mut out = Vec::new();
         if let Some(zone) = self.chat_drop_zone(now).filter(|zone| zone.contains(cursor, 0.0)) {
             out.push(
@@ -4096,7 +4109,7 @@ impl Pill {
                 .px(px(10.))
                 .py(px(6.))
                 .rounded(px(10.))
-                .bg(rgb(0x2a2a28))
+                .bg(pill_look::ink(0x2a2a28))
                 .border_1()
                 .border_color(text.opacity(0.18))
                 .shadow_md()
@@ -5318,7 +5331,9 @@ impl Pill {
         self.level += (self.media.level() - self.level) * follow;
         // Dictando, la onda del micrófono también pide ~30 cuadros/s. Los
         // pulsos de avisos van aparte, a ~10 (`pulse_frame_due`).
-        let live_on = self.live.value(now) > 0.01
+        // En pausa la carátula queda quieta (sin barras): no pide cuadros;
+        // aparecer y desaparecer los pide `advance`.
+        let live_on = (self.live.value(now) > 0.01 && self.bars_shown())
             || media_wave
             || self.dict.value(now) > 0.01;
 
@@ -5331,14 +5346,20 @@ impl Pill {
         // Lo que trabaja fuera de la pill y la cara dice «procesando»
         // (Reuniones transcribe o resume, un agente en su turno). Al terminar,
         // si Reuniones dejó un error, sin «hecho».
-        let work_busy = self.studio.read(cx).busy() || self.agents.read(cx).agent_working();
+        let studio_busy = self.studio.read(cx).busy();
+        let work_busy = studio_busy || self.agents.read(cx).agent_working();
         if self.look.work.0 && !work_busy {
             self.look.work.1 = self.studio.read(cx).notice().is_some_and(|(_, error)| error);
         }
         let work_changed = self.look.work.0 != work_busy;
         self.look.work.0 = work_busy;
-        // Procesando, la cara recorre su secuencia a 15 cuadros/s.
-        let loading = work_changed || self.look.loading_due(now);
+        self.look.work_agents_only = !studio_busy;
+        // Procesando, la cara recorre su secuencia a 15 cuadros/s (a 10 si es
+        // solo un agente, que puede durar horas). Si la pill no se ve (sesión
+        // bloqueada, pantalla apagada), no pide cuadros: al volver a verse,
+        // el cuadro que toca ya está atrasado y se pide solo.
+        let loading = work_changed
+            || (self.look.loading_due(now) && self.overlay.as_ref().is_none_or(|overlay| overlay.on_screen()));
         if moved
             || loading
             || self.ticks.is_multiple_of(refresh_every)
@@ -5347,6 +5368,14 @@ impl Pill {
             || (onboarding::wants_ticks() && self.ticks.is_multiple_of(2))
         {
             cx.notify();
+            let since = *self.unrendered.0.get_or_insert(now);
+            if !self.unrendered.1
+                && now.duration_since(since) >= Duration::from_secs(3)
+                && self.overlay.as_ref().is_some_and(|overlay| overlay.on_screen())
+            {
+                self.unrendered.1 = true;
+                tracing::warn!("la pill se ve pero no se dibuja hace 3 s: lo de la pantalla es un cuadro viejo");
+            }
         }
         let quiet = !dragging
             && self.press.is_none()
@@ -5636,6 +5665,11 @@ impl Pill {
         let slide = switch.map_or(0.0, |(_, dir)| dir * PAGE_SLIDE);
 
         let media_art = self.media.track().and_then(|t| t.art);
+        // La tira de este cuadro, una vez para todas sus fichas.
+        let (strip_layout, strip_first) = match pill {
+            PillShape::Tab { .. } if reveal > 0.02 => (self.strip_layout(false, now), self.strip_first(now)),
+            _ => (Vec::new(), 0.0),
+        };
         let mut strip_tools: Vec<IconDraw> = match pill {
             PillShape::Tab { edge, thick, .. } if reveal > 0.02 => {
                 let slots = self.strip_slots();
@@ -5667,7 +5701,7 @@ impl Pill {
                             path: slot.icon(),
                             center: edge.point(
                                 &self.work,
-                                self.strip_tool_along(index, now) + slide * (1.0 - entered),
+                                self.strip_tool_along_in(&strip_layout, strip_first, index, now) + slide * (1.0 - entered),
                                 thick.min(TAB_THICK) / 2.0,
                             ),
                             size: tokens.icon * scale,
@@ -5695,12 +5729,13 @@ impl Pill {
         let strip_segments: Vec<pill_look::StripSegment> = match pill {
             PillShape::Tab { edge, thick, .. } if reveal > 0.02 && tokens.segment.is_some() => {
                 let count = self.strip_slots().len();
-                let first = self.strip_first(now);
+                let first = strip_first;
                 let open = open.max(0.0);
                 let side = (pill_look::group_thick() * (0.4 + 0.6 * open)).min(TAB_THICK);
                 let depth = thick.min(TAB_THICK) / 2.0;
-                self.strip_layout(false, now)
-                    .into_iter()
+                strip_layout
+                    .iter()
+                    .copied()
                     .enumerate()
                     .filter_map(|(index, (start, width))| {
                         let entered = page_in(index, count);
@@ -5728,7 +5763,18 @@ impl Pill {
             }
             _ => Vec::new(),
         };
-        let mark_container = tokens.scheme.as_ref().and_then(|scheme| self.look.mark_paint(scheme, now));
+        // Con la cara en solo ojos (No molestar, el notch cerrado) el contenedor
+        // se apaga con la «a»: si no, su forma se salía de la franja angosta.
+        let eyes_only = self.mark_look(now).1.clamp(0.0, 1.0);
+        let mark_container = tokens
+            .scheme
+            .as_ref()
+            .and_then(|scheme| self.look.mark_paint(scheme, now))
+            .filter(|_| eyes_only < 0.99)
+            .map(|mut paint| {
+                paint.color = paint.color.opacity(1.0 - eyes_only);
+                paint
+            });
         let mark_ink = mark_container.as_ref().map_or(tokens.face, |paint| paint.ink);
         // Las del paso que se deja salen hacia atrás, en sus mismos lugares.
         if let (Some(switch), PillShape::Tab { edge, thick, .. }) = (&self.page_switch, pill) {
@@ -5739,7 +5785,7 @@ impl Pill {
                         path: slot.icon(),
                         center: edge.point(
                             &self.work,
-                            self.strip_tool_along(index, now) - slide * gone,
+                            self.strip_tool_along_in(&strip_layout, strip_first, index, now) - slide * gone,
                             thick.min(TAB_THICK) / 2.0,
                         ),
                         size: tokens.icon * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
@@ -6323,6 +6369,7 @@ impl Frame {
     fn paint_base(&self, window: &mut Window) {
         // Sombras primero: así la de una gota no oscurece a su vecina. La de
         // vidrio no lleva: se vería por transparencia como una mancha.
+        let shadow = self.tokens.shadow(1.0);
         match self.pill {
             _ if self.glass => {}
             PillShape::Tab { edge, rect, block, .. } => {
@@ -6330,16 +6377,16 @@ impl Frame {
                 window.paint_shadows(
                     bounds_of(&grow_outward(&rect, edge, TAB_RADIUS)),
                     Corners::all(px(TAB_RADIUS)),
-                    &self.tokens.shadow(1.0),
+                    &shadow,
                 );
                 if let Some(block) = block {
-                    window.paint_shadows(bounds_of(&block), Corners::all(px(TAB_RADIUS)), &self.tokens.shadow(1.0));
+                    window.paint_shadows(bounds_of(&block), Corners::all(px(TAB_RADIUS)), &shadow);
                 }
             }
             PillShape::Disc { center } => window.paint_shadows(
                 bounds_of(&Rect::centered(center, DISC_R * 2.0, DISC_R * 2.0)),
                 Corners::all(px(DISC_R)),
-                &self.tokens.shadow(1.0),
+                &shadow,
             ),
         }
         if let Some((x, y, r, alpha)) = self.wheel_shadow {
@@ -6353,7 +6400,7 @@ impl Frame {
             window.paint_shadows(
                 bounds_of(&panel.rect),
                 Corners::all(px(PANEL_CORNER)),
-                &self.tokens.shadow(1.0),
+                &shadow,
             );
         }
 
@@ -6861,6 +6908,16 @@ pub(crate) fn ring_path(cx: f32, cy: f32, r: f32, width: f32) -> Option<gpui::Pa
 impl Render for Pill {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.scale_factor = window.scale_factor();
+        // Fundida con el notch o con Ahora suena sobre la carátula, el esquema
+        // de la pill va oscuro aunque el tema sea claro.
+        let media_shown = self.tool_peek_media_amount(Instant::now()) > 0.01
+            || (self.panel_visible() && self.notch_tool == NotchTool::Media);
+        let on_cover = media_shown && self.media.track().is_some_and(|t| t.backdrop.is_some());
+        pill_look::set_force_dark(self.fused().is_some() || on_cover);
+        if self.unrendered.1 {
+            tracing::info!("la pill vuelve a dibujarse");
+        }
+        self.unrendered = (None, false);
         let fullscreen = self.capture.is_some()
             || self.board.is_some()
             || self.color.is_some()
@@ -7460,7 +7517,7 @@ fn render_peek(
             })
             .lit(hovered == Some(PeekHit::Row(index)))
     });
-    let faint: Hsla = rgb(0x8f8f86).into();
+    let faint = pill_look::ink(0x8f8f86);
     let title = div()
         .h(px(PEEK_PAD))
         .flex_none()

@@ -12,7 +12,7 @@
 use gpui::Window;
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSEvent, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask};
+use objc2_app_kit::{NSApplication, NSEvent, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowOcclusionState, NSWindowSharingType, NSWindowStyleMask};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -521,6 +521,13 @@ impl Overlay {
         let window = self.window.clone();
         later(move || window.orderFrontRegardless());
         true
+    }
+
+    /// Si alguna parte de la ventana se ve. No se ve con la sesión
+    /// bloqueada, la pantalla apagada o tapada entera: entonces no vale la
+    /// pena pedir cuadros que nadie mira.
+    pub fn on_screen(&self) -> bool {
+        self.window.occlusionState().contains(NSWindowOcclusionState::Visible)
     }
 
     pub fn hwnd(&self) -> Handle {

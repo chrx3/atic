@@ -118,6 +118,15 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Cambia los colores: el tema de la pill puede cambiar con el campo ya
+    /// creado. Solo pide redibujar si cambió algo.
+    pub fn set_colors(&mut self, text_color: Hsla, placeholder_color: Hsla, accent: Hsla, cx: &mut Context<Self>) {
+        if (self.text_color, self.placeholder_color, self.accent) != (text_color, placeholder_color, accent) {
+            (self.text_color, self.placeholder_color, self.accent) = (text_color, placeholder_color, accent);
+            cx.notify();
+        }
+    }
+
     pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.placeholder = text.into();
         cx.notify();
