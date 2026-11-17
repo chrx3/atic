@@ -4075,16 +4075,18 @@ impl Pill {
                 .top(px(-8.0 * (1.0 - e)))
                 .opacity(e)
                 .rounded(px(radius))
+                .overflow_hidden()
                 .bg(s.surface_container_high)
                 .cursor_grab()
                 .on_mouse_down(MouseButton::Left, press)
                 // La imagen lleva las esquinas de la tarjeta (el recorte de
-                // GPUI es rectangular).
+                // GPUI es rectangular) y sus medidas fijas: dentro del caché de
+                // imágenes `size_full` no la limitaba y se salía de la tarjeta.
                 .children(thumb.map(|p| {
-                    crate::release::scoped(
+                    div().absolute().left_0().top_0().w(px(w)).h(px(h)).child(crate::release::scoped(
                         gpui::SharedString::from(format!("shot-{}", p.display())),
-                        img(p).absolute().inset_0().size_full().object_fit(ObjectFit::Cover).rounded(px(radius)),
-                    )
+                        img(p).w(px(w)).h(px(h)).object_fit(ObjectFit::Cover).rounded(px(radius)),
+                    ))
                 }))
                 .when(shot.video && !has_thumb, |el| {
                     el.child(
