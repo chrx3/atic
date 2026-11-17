@@ -64,31 +64,33 @@ pub struct Appearance {
     pub pill_theme: PillTheme,
 }
 
-/// Expressive: el tema del esquema de la pill. Oscuro es el de siempre.
+/// Expressive: el tema del esquema de la pill. Por defecto, el mismo de las
+/// ventanas («Tema de las ventanas»): así la pill y Ajustes, Reuniones y Atic
+/// Code cambian juntos. Se guarda como `system` por compatibilidad.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PillTheme {
-    #[default]
     Dark,
     Light,
+    #[default]
     System,
 }
 
 impl PillTheme {
     /// En el orden de Apariencia, con la clave `i18n` de su nombre.
     pub const ALL: [(PillTheme, &'static str); 3] = [
-        (PillTheme::Dark, "pill.appearance.pillThemeDark"),
-        (PillTheme::Light, "pill.appearance.pillThemeLight"),
         (PillTheme::System, "pill.appearance.pillThemeSystem"),
+        (PillTheme::Light, "pill.appearance.pillThemeLight"),
+        (PillTheme::Dark, "pill.appearance.pillThemeDark"),
     ];
 
-    /// ¿Va oscura? `system_light`: si el sistema está en claro (solo cuenta
-    /// con «Seguir al sistema»).
-    pub fn dark(self, system_light: bool) -> bool {
+    /// ¿Va oscura? `windows_light`: si las ventanas están en claro (solo
+    /// cuenta con «Igual que las ventanas»).
+    pub fn dark(self, windows_light: bool) -> bool {
         match self {
             PillTheme::Dark => true,
             PillTheme::Light => false,
-            PillTheme::System => !system_light,
+            PillTheme::System => !windows_light,
         }
     }
 }
@@ -428,7 +430,7 @@ impl Default for Appearance {
             scheme: SchemeStyle::TonalSpot,
             contrast: 0.0,
             skin_fill: true,
-            pill_theme: PillTheme::Dark,
+            pill_theme: PillTheme::System,
         }
     }
 }
@@ -1748,10 +1750,10 @@ mod tests {
     }
 
     #[test]
-    fn el_tema_de_la_pill_es_oscuro_si_no_se_eligio_y_sigue_al_sistema() {
-        // Una apariencia guardada antes de poder elegirlo queda oscura.
+    fn el_tema_de_la_pill_sigue_a_las_ventanas_si_no_se_eligio() {
+        // Una apariencia guardada antes de poder elegirlo va con las ventanas.
         let old: Appearance = serde_json::from_str(r#"{"pill":"expressive"}"#).unwrap();
-        assert_eq!(old.pill_theme, PillTheme::Dark);
+        assert_eq!(old.pill_theme, PillTheme::System);
         let look = Appearance { pill_theme: PillTheme::System, ..Appearance::default() };
         let json = serde_json::to_string(&look).unwrap();
         assert!(json.contains(r#""pill_theme":"system""#), "{json}");

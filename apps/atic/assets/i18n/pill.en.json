@@ -142,7 +142,7 @@
  "pill.appearance.pillThemeHint": "Light or dark, for the pill, its peeks and its panels. Merged with the notch it stays dark.",
  "pill.appearance.pillThemeDark": "Dark",
  "pill.appearance.pillThemeLight": "Light",
- "pill.appearance.pillThemeSystem": "System",
+ "pill.appearance.pillThemeSystem": "Same as windows",
  "pill.appearance.skin": "Pill color",
  "pill.appearance.skinHint": "The skin of the pill and the notch: one from the list, a custom color or a gradient. Right-clicking «Color» in Quick actions brings you here. Fused with the MacBook notch it stays black.",
  "pill.appearance.skinAtic": "Atic",

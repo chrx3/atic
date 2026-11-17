@@ -381,7 +381,9 @@ impl SchemeKey {
             accent: look.accent,
             style: look.scheme,
             contrast: look.contrast,
-            dark: look.pill_theme.dark(system_light()),
+            // El tema de las ventanas (`theme::is_light`, que ya sigue al sistema si
+            // las ventanas lo siguen): cambia en el acto, junto con ellas.
+            dark: look.pill_theme.dark(crate::theme::is_light()),
         }
     }
 
@@ -406,18 +408,6 @@ const UNSEEN: u8 = u8::MAX;
 
 /// La pill va oscura aunque el tema sea claro (`set_force_dark`).
 static FORCE_DARK: AtomicBool = AtomicBool::new(false);
-
-/// ¿Está el sistema en claro?
-pub(crate) fn system_light() -> bool {
-    match SYSTEM_LIGHT.load(Ordering::Relaxed) {
-        UNSEEN => {
-            let light = crate::theme::windows_light();
-            SYSTEM_LIGHT.store(light as u8, Ordering::Relaxed);
-            light
-        }
-        seen => seen == 1,
-    }
-}
 
 /// Anota el claro u oscuro del sistema; `true` si cambió.
 pub(crate) fn set_system_light(light: bool) -> bool {
