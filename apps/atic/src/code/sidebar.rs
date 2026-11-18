@@ -1301,6 +1301,12 @@ impl CodeView {
         } else {
             state.label()
         };
+        // En espera: un ícono con su número por cosa (subagentes, tareas en segundo plano) y
+        // el texto entero en el globito; «Esperando a 2 subagentes · 2 tareas…» no cabía.
+        let pending = match state {
+            RowState::Waiting(pending) => Some(pending),
+            _ => None,
+        };
         let status = label.map(|label| {
             // «Lista» o «Se detuvo» en el acento mientras no la hayas mirado.
             let color = if live || unread { hot } else { second };
@@ -1330,17 +1336,43 @@ impl CodeView {
                     .hovered(lit)
                     .child(child)
             });
+            // Encoge y corta con «…»: «Esperando a 2 subagentes» se salía de la tarjeta.
             div()
-                .flex_none()
+                .min_w(px(0.))
                 .flex()
                 .items_center()
                 .gap(px(5.))
                 .text_size(px(11.))
                 .font_weight(FontWeight::BOLD)
                 .text_color(color)
-                .when(running && !waiting, |el| el.child(if m3 { super::spinners::slot(12.).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() }))
-                .children(mark)
-                .child(label)
+                .when(running && !waiting, |el| el.child(div().flex_none().child(if m3 { super::spinners::slot(12.).into_any_element() } else { div().size(px(6.)).rounded_full().bg(hot).into_any_element() })))
+                .children(mark.map(|mark| div().flex_none().child(mark)))
+                .map(|el| match pending {
+                    Some(pending) => {
+                        let count = |icon: &'static str, n: usize| {
+                            (n > 0).then(|| {
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(3.))
+                                    .child(gpui::svg().path(icon).size(px(12.)).text_color(color))
+                                    .child(n.to_string())
+                            })
+                        };
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("{id}-pending")))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .tooltip(crate::hover::tip_text(label.into()))
+                                .children(count("icons/bot.svg", pending.subagents))
+                                .children(count("icons/square-terminal.svg", pending.background)),
+                        )
+                    }
+                    None => el.child(div().min_w(px(0.)).truncate().child(label)),
+                })
         });
         let time = meta.map(|meta| div().flex_none().text_size(px(11.)).text_color(quiet).child(meta));
         div()
