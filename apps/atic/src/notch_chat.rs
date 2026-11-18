@@ -14,7 +14,9 @@
 //!
 //! Lo que se suelta sobre el chat (desde Finder, el Explorador o el
 //! Portapapeles) se adjunta como en Atic Code: las imágenes como imagen y lo
-//! demás como su ruta (`code::Attachment`, `compose_message`).
+//! demás como su ruta (`code::Attachment`, `compose_message`). Un texto largo
+//! pegado también, como en Atic Code: se guarda como archivo .md y el mensaje
+//! solo lo nombra (`code::save_long_paste`, `code::with_pasted_refs`).
 //!
 //! En el notch todo va resumido: el texto de Claude tal cual, cada herramienta
 //! en una línea y los permisos con Permitir o Rechazar. Lo demás (diffs,
@@ -210,7 +212,7 @@ impl NotchChat {
         // Sin proyecto corre en la carpeta de los chats sueltos de Atic Code, sin carpetas
         // de proyecto: así «Seguir en Atic Code» lo abre como uno de ellos.
         let loose = self.loose();
-        let (workspace, cwd, folders, extras) = if loose {
+        let (workspace, cwd, folders, mut extras) = if loose {
             let Some(dir) = crate::code::loose_dir() else {
                 return;
             };
@@ -234,8 +236,11 @@ impl NotchChat {
         }
         self.picking = false;
         self.composer.update(cx, |input, cx| input.clear(cx));
-        // Las imágenes van como imagen; lo demás, con su ruta en el proyecto.
-        let (mut images, mut thumbs, mut files, mut pasted) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        // Las imágenes van como imagen; lo demás, con su ruta en el proyecto. Los pegados
+        // largos, como archivos en la carpeta de esta conversación.
+        let (mut images, mut thumbs, mut files, mut pasted, mut saved) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let folder = self.chat.as_ref().map(|chat| chat.session_id.clone().unwrap_or_else(|| chat.key.clone())).unwrap_or_default();
+        let stamp = crate::code::pasted_stamp();
         for attachment in self.attachments.drain(..) {
             match attachment {
                 Attachment::Image { media_type, data, image, .. } => {
@@ -243,10 +248,17 @@ impl NotchChat {
                     thumbs.push(image);
                 }
                 Attachment::File(path) => files.push(crate::code::relative_to(&path, &folders)),
-                Attachment::Pasted { text, .. } => pasted.push(text),
+                Attachment::Pasted { text, lines } => match crate::code::save_long_paste(&folder, &stamp, saved.len() + 1, &text) {
+                    Some(path) => saved.push((path.display().to_string(), lines)),
+                    None => {
+                        tracing::warn!("notch: no se pudo guardar un pegado largo; va dentro del mensaje");
+                        pasted.push(text);
+                    }
+                },
             }
         }
-        let text = crate::code::compose_message_with(&typed, None, &files, !images.is_empty(), &pasted);
+        let text = crate::code::compose_message_with(&typed, None, &files, !images.is_empty() && saved.is_empty(), &pasted);
+        let text = crate::code::with_pasted_refs(text, &saved);
         let sidecar = self.sidecar(cx);
         let Some(chat) = self.chat.as_mut() else {
             return;
@@ -257,6 +269,8 @@ impl NotchChat {
             chat.live = true;
             chat.starting = true;
             let mut params = json!({ "key": key, "cwd": cwd });
+            // Los pegados largos se guardan fuera del proyecto: así Claude los lee sin pedir permiso.
+            extras.extend(crate::code::pasted_dir_for_agent());
             if loose {
                 // La carpeta propia se crea con la primera sesión.
                 params["createCwd"] = json!(true);
@@ -323,6 +337,22 @@ impl NotchChat {
             self.attachments.remove(index);
             cx.notify();
         }
+    }
+
+    /// ⌘V o Ctrl+V en el campo: un texto largo no entra al campo (una sola línea), va como
+    /// adjunto, igual que en Atic Code. Uno corto sigue al campo.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let text = text.replace("\r\n", "\n");
+        if !crate::code::is_long_paste(&text) {
+            return;
+        }
+        cx.stop_propagation();
+        let lines = text.lines().count();
+        self.attachments.push(Attachment::Pasted { text, lines });
+        cx.notify();
     }
 
     /// Texto soltado sobre el chat: va al campo, tras lo ya escrito.
@@ -442,38 +472,45 @@ impl NotchChat {
         }
         let (text, muted, faint) = (self.text, self.muted, self.faint);
         let element = match chat.items.get(row)? {
-            Item::User { text: said, images, .. } => div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap(px(4.))
-                .when(!images.is_empty(), |el| {
-                    el.child(div().flex().gap(px(4.)).children(images.iter().map(|image| {
-                        img(image.clone()).size(px(56.)).rounded(px(10.)).object_fit(gpui::ObjectFit::Cover)
-                    })))
-                })
-                .child(
-                    div()
-                        .max_w(gpui::relative(0.82))
-                        .px(px(12.))
-                        .py(px(8.))
-                        .rounded(px(14.))
-                        .map(|el| match crate::pill_look::content_scheme() {
-                            // La burbuja de M3: esquinas asimétricas, la de abajo
-                            // hacia quien habla casi recta.
-                            Some(s) => el
-                                .rounded_tl(px(18.))
-                                .rounded_tr(px(18.))
-                                .rounded_bl(px(18.))
-                                .rounded_br(px(6.))
-                                .bg(s.secondary_container)
-                                .text_color(s.on_secondary_container),
-                            None => el.bg(text.opacity(0.1)),
-                        })
-                        .text_size(px(12.5))
-                        .child(said.clone()),
-                )
-                .into_any_element(),
+            Item::User { text: said, images, .. } => {
+                // Los pegados largos que llevó, como fichas (`(Texto pegado adjunto: …)`).
+                let (shown, refs) = crate::code::split_pasted_refs(said);
+                let shown = shown.to_string();
+                let pasted = self.render_pasted(row, &chat.key, refs);
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(4.))
+                    .when(!images.is_empty(), |el| {
+                        el.child(div().flex().gap(px(4.)).children(images.iter().map(|image| {
+                            img(image.clone()).size(px(56.)).rounded(px(10.)).object_fit(gpui::ObjectFit::Cover)
+                        })))
+                    })
+                    .when(!shown.is_empty(), |el| el.child(
+                        div()
+                            .max_w(gpui::relative(0.82))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(px(14.))
+                            .map(|el| match crate::pill_look::content_scheme() {
+                                // La burbuja de M3: esquinas asimétricas, la de abajo
+                                // hacia quien habla casi recta.
+                                Some(s) => el
+                                    .rounded_tl(px(18.))
+                                    .rounded_tr(px(18.))
+                                    .rounded_bl(px(18.))
+                                    .rounded_br(px(6.))
+                                    .bg(s.secondary_container)
+                                    .text_color(s.on_secondary_container),
+                                None => el.bg(text.opacity(0.1)),
+                            })
+                            .text_size(px(12.5))
+                            .child(shown),
+                    ))
+                    .children(pasted)
+                    .into_any_element()
+            }
             // Con formato, como en Atic Code (el mismo `Markdown` de gpui-m3).
             Item::Text(said) => {
                 let id = SharedString::from(format!("notch-chat-md-{}-{row}", chat.key));
@@ -532,6 +569,43 @@ impl NotchChat {
             _ => return None,
         };
         Some(element)
+    }
+
+    /// Los pegados largos de un mensaje enviado: «Pegado · N líneas»; al pasar el cursor se
+    /// ven sus primeras líneas y un clic abre el archivo.
+    fn render_pasted(&self, row: usize, key: &str, refs: Vec<crate::code::PastedRef>) -> Option<AnyElement> {
+        if refs.is_empty() {
+            return None;
+        }
+        let (text, muted) = (self.text, self.muted);
+        let chips = refs.into_iter().enumerate().map(|(n, pasted)| {
+            let id = SharedString::from(format!("notch-chat-pasted-{key}-{row}-{n}"));
+            let (open, preview) = (pasted.path.clone(), pasted.path);
+            div()
+                .id(id.clone())
+                .h(px(28.))
+                .px(px(9.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(9.))
+                .text_size(px(11.))
+                .cursor_pointer()
+                // El archivo se lee solo al mostrar el globito, no en cada cuadro.
+                .tooltip(move |window, cx| {
+                    let text = match std::fs::read_to_string(&preview) {
+                        Ok(text) => crate::code::pasted_preview(&text),
+                        Err(_) => t("pill.code.view.pastedMissing").to_string(),
+                    };
+                    crate::hover::tip_text(text.into())(window, cx)
+                })
+                .on_click(move |_, _, cx| cx.open_with_system(&open))
+                .child(svg().path(crate::icons::themed("icons/file.svg")).size(px(13.)).flex_none().text_color(muted))
+                .child(tf("pill.code.view.pastedSent", &[("lines", &pasted.lines)]))
+                .fx(id, move |el, h| el.text_color(h.mix(muted, text)).bg(text.opacity(0.08 + 0.06 * h.t)))
+        });
+        Some(div().flex().flex_wrap().justify_end().gap(px(4.)).children(chips.collect::<Vec<_>>()).into_any_element())
     }
 
     fn render_head(&self, chat: &Chat, cx: &mut Context<Self>) -> impl IntoElement {
@@ -870,6 +944,7 @@ impl Render for NotchChat {
         // Todo el chat recibe lo que se suelta; mientras pasa encima, se aclara.
         let target = |el: gpui::Stateful<gpui::Div>, cx: &mut Context<Self>| {
             el.rounded(px(14.))
+                .capture_action(cx.listener(|view, _: &crate::text_input::Paste, _, cx| view.paste(cx)))
                 .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(text.opacity(0.06)))
                 .on_drop(cx.listener(|view, paths: &ExternalPaths, _, cx| view.attach(paths.paths().to_vec(), cx)))
         };
@@ -886,6 +961,8 @@ impl Render for NotchChat {
         };
         let rows: Vec<AnyElement> = (0..chat.items.len()).filter_map(|row| self.render_item(row, chat)).collect();
         let working = chat.working();
+        let pending = chat.pending(&[]);
+        let waiting = (!chat.busy && pending.any()).then(|| pending.label());
         let faint = self.faint;
         let open = div()
             .id("notch-chat")
@@ -905,7 +982,9 @@ impl Render for NotchChat {
                     .flex_col()
                     .gap(px(8.))
                     .children(rows)
-                    .when(working, |el| el.child(div().text_size(px(11.)).text_color(faint).child(t("pill.notchChat.working")))),
+                    .when(working, |el| el.child(div().text_size(px(11.)).text_color(faint).child(t("pill.notchChat.working"))))
+                    // Terminó el turno, pero dejó algo corriendo en segundo plano.
+                    .when_some(waiting, |el, label| el.child(div().text_size(px(11.)).text_color(faint).child(label))),
             )
             .children(self.render_permission(chat, cx))
             .children(self.render_attachments(cx))

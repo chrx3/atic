@@ -200,6 +200,9 @@ pub enum AgentsEvent {
 pub enum Status {
     Working,
     Ready,
+    /// Una conversación de Atic Code que terminó su turno pero espera a sus subagentes o a
+    /// algo en segundo plano (`ChatLink::waiting`): no está lista ni por revisar.
+    Waiting,
 }
 
 #[derive(Clone, Debug)]
@@ -291,7 +294,7 @@ impl Tracked {
 
     fn keep(&self, now: i64) -> bool {
         match self.status {
-            Some(Status::Working) => true,
+            Some(Status::Working | Status::Waiting) => true,
             Some(Status::Ready) => now - self.updated < DISAPPEAR_SECS,
             None => false,
         }
@@ -423,10 +426,19 @@ impl Watch {
     }
 }
 
+/// Un turno terminado cuya conversación espera a sus subagentes o a algo en segundo plano:
+/// en vez de «Listo», «Esperando…» con lo que espera.
+fn mark_waiting(session: &mut Session, waiting: Option<&str>) {
+    if let Some(label) = waiting.filter(|_| session.status == Status::Ready) {
+        session.status = Status::Waiting;
+        session.activity = Some(label.to_string());
+    }
+}
+
 /// Lo que trabaja primero; después, lo más reciente.
 fn sort_sessions(sessions: &mut [Session]) {
     sessions.sort_by(|a, b| {
-        let working = |s: &Session| s.status == Status::Working;
+        let working = |s: &Session| matches!(s.status, Status::Working | Status::Waiting);
         working(b)
             .cmp(&working(a))
             .then(b.updated.cmp(&a.updated))
@@ -1795,7 +1807,11 @@ impl AgentsPanel {
                     // Codex u otros en terminales sueltas ya no se muestran.
                     let sessions: Vec<Session> = sessions
                         .into_iter()
-                        .filter(|session| crate::code::link::link_for(&links, &session.id).is_some())
+                        .filter_map(|mut session| {
+                            let link = crate::code::link::link_for(&links, &session.id)?;
+                            mark_waiting(&mut session, link.waiting.as_deref());
+                            Some(session)
+                        })
                         .collect();
                     let in_front = |session: &Session| match crate::code::link::link_for(&links, &session.id) {
                         Some(link) => link.in_view,
@@ -3117,8 +3133,9 @@ impl AgentsPanel {
         }
         let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
         let working = session.status == Status::Working;
-        let dot = if working { self.colors.working } else { self.colors.ready };
-        let detail = if working {
+        let waiting = session.status == Status::Waiting;
+        let dot = if working { self.colors.working } else if waiting { muted } else { self.colors.ready };
+        let detail = if working || waiting {
             session.activity.clone().unwrap_or_else(|| crate::i18n::t("page.agents.window.status.working").into())
         } else {
             session.preview.clone().unwrap_or_else(|| crate::i18n::t("pill.agentsList.ready").into())
@@ -3227,7 +3244,8 @@ impl AgentsPanel {
     ) -> AnyElement {
         use gpui_m3::ShapeName;
         let working = session.status == Status::Working;
-        let detail = if working {
+        let waiting = session.status == Status::Waiting;
+        let detail = if working || waiting {
             session.activity.clone().unwrap_or_else(|| crate::i18n::t("page.agents.window.status.working").into())
         } else {
             session.preview.clone().unwrap_or_else(|| crate::i18n::t("pill.agentsList.ready").into())
@@ -3259,6 +3277,9 @@ impl AgentsPanel {
         // El estado como chip: trabajando en el terciario, listo en el secundario.
         let (chip_bg, chip_fg, chip_label) = if working {
             (s.tertiary_container, s.on_tertiary_container, crate::i18n::t("page.agents.window.status.working"))
+        } else if waiting {
+            // En espera: tenue, ni el terciario de trabajar ni el secundario de listo.
+            (s.surface_container_highest, s.on_surface_variant, crate::i18n::t("pill.agentsList.waiting"))
         } else {
             (s.secondary_container, s.on_secondary_container, crate::i18n::t("pill.agentsList.ready"))
         };
@@ -3856,6 +3877,19 @@ mod tests {
         sort_sessions(&mut list);
         let ids: Vec<_> = list.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["trabaja-nuevo", "trabaja-viejo", "listo-nuevo"]);
+    }
+
+    #[test]
+    fn un_turno_listo_que_espera_dice_a_que_espera() {
+        let mut session = Session { id: "a".into(), agent: CLAUDE, cwd: String::new(), status: Status::Ready, preview: Some("Delegué".into()), activity: None, updated: 1 };
+        mark_waiting(&mut session, None);
+        assert_eq!(session.status, Status::Ready);
+        mark_waiting(&mut session, Some("Esperando a 2 subagentes"));
+        assert_eq!((session.status, session.activity.as_deref()), (Status::Waiting, Some("Esperando a 2 subagentes")));
+        // Con turno en curso manda el turno.
+        let mut busy = Session { status: Status::Working, activity: None, ..session.clone() };
+        mark_waiting(&mut busy, Some("Esperando a 2 subagentes"));
+        assert_eq!((busy.status, busy.activity), (Status::Working, None));
     }
 
     #[test]

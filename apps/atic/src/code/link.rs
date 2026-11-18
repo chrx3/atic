@@ -46,6 +46,9 @@ pub struct ChatLink {
     /// Terminó un turno mientras no se miraba.
     pub unread: bool,
     pub busy: bool,
+    /// Terminó su turno pero espera a sus subagentes o a algo en segundo plano: lo que se
+    /// muestra en vez de «Listo» («Esperando a 2 subagentes»).
+    pub waiting: Option<String>,
     pub model: Option<String>,
     /// El agente ACP (`opencode`, `agy`…); `None` es Claude.
     pub acp: Option<&'static str>,
@@ -94,6 +97,8 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
             let delegation = chat.delegation.as_ref();
             let parent = delegation.and_then(|d| chats.iter().find(|c| c.key == d.parent)).and_then(first_session).map(str::to_string);
             let role = delegation.and_then(|d| d.role.clone()).filter(|r| !r.trim().is_empty());
+            let pending = chat.pending(chats);
+            let waiting = (!chat.busy && pending.any()).then(|| pending.label());
             [chat.session_id.as_deref(), chat.acp_session.as_deref()]
                 .into_iter()
                 .flatten()
@@ -106,6 +111,7 @@ fn links_of(chats: &[Chat], active: Option<&str>, window_active: bool) -> Vec<Ch
                     cwd: chat.cwd.clone(),
                     unread: chat.unread,
                     busy: chat.busy,
+                    waiting: waiting.clone(),
                     model: chat.model.clone(),
                     acp: chat.acp,
                     subagent: delegation.is_some(),

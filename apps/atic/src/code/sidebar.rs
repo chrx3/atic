@@ -650,9 +650,15 @@ impl CodeView {
         Some(self.bucket_of_session(info))
     }
 
+    /// Va con las que trabajan: tiene turno, o lo terminó y espera a sus subagentes o a algo
+    /// en segundo plano.
+    fn still_working(&self, chat: &super::Chat) -> bool {
+        chat.in_working_group() || (!chat.busy && chat.pending(&self.chats).any())
+    }
+
     fn bucket_of_session(&self, info: &SessionInfo) -> Bucket {
         let chat = self.chats.iter().find(|c| c.listed_session() == Some(info.session_id.as_str()));
-        let working = chat.is_some_and(|c| c.in_working_group());
+        let working = chat.is_some_and(|c| self.still_working(c));
         bucket_of(self.is_bookmarked(&info.session_id), working, self.is_settled(&info.session_id))
     }
 
@@ -847,7 +853,7 @@ impl CodeView {
     /// Con `listed`, cada fila lleva su proyecto arriba (la barra sin carpetas).
     #[allow(clippy::too_many_arguments)]
     fn grouped_convs<'a>(&'a self, mut list: Div, live: Vec<&'a super::Chat>, sessions: Vec<(u64, &'a SessionInfo)>, limit: usize, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> (Div, usize, Vec<Conv<'a>>) {
-        let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| c.in_working_group());
+        let working = |chat: Option<&super::Chat>| chat.is_some_and(|c| self.still_working(c));
         // Las de una vista dividida van juntas en su tarjeta (`split_groups_m3`), no aquí.
         let grouped = self.grouped_keys();
         let in_group = |chat: Option<&super::Chat>| chat.is_some_and(|c| grouped.contains(&c.key));
@@ -1013,11 +1019,13 @@ impl CodeView {
             .or_else(|| info.map(|i| i.title.clone()))
             .unwrap_or_default();
         let running = chat.is_some_and(|c| c.in_working_group() || !c.permissions.is_empty());
-        let unread = !running && chat.is_some_and(|c| c.unread);
         let state = match chat {
-            Some(chat) => chat.row_state(),
+            Some(chat) => chat.row_state_with(chat.pending(&self.chats)),
             None => info.and_then(|i| self.session_ends.get(&i.session_id)).copied().unwrap_or(super::chat::RowState::Idle),
         };
+        // Mientras espera a sus subagentes o a algo en segundo plano no está «por revisar».
+        let pending = matches!(state, super::chat::RowState::Waiting(_));
+        let unread = !running && !pending && chat.is_some_and(|c| c.unread);
         let on = !self.history_page && chat.is_some_and(|c| self.active.as_deref() == Some(c.key.as_str()));
         // El borrador sin enviar de una conversación que no es la activa (la activa lo tiene en la
         // caja); una guardada que no está abierta lo tiene con su sesión.
@@ -1085,6 +1093,15 @@ impl CodeView {
         if running {
             // En la capa de indicadores (`spinners.rs`): girar no rehace la barra.
             row = row.trailing(super::spinners::slot(18.));
+        } else if pending {
+            // Un reloj tenue, no el ✓: el globito dice a qué espera.
+            let label = SharedString::from(state.label().unwrap_or_default());
+            row = row.trailing(
+                div()
+                    .id(SharedString::from(format!("{row_id}-waiting")))
+                    .tooltip(crate::hover::tip_text(label))
+                    .child(gpui_m3::Icon::new("icons/timer.svg").size(px(14.)).color(t().faint)),
+            );
         } else if unread {
             row = row.trailing(Badge::dot().size(px(10.)).strong(Tone::Tertiary).pop(SharedString::from(format!("{row_id}-dot"))));
         } else if has_draft {
@@ -1280,7 +1297,7 @@ impl CodeView {
         // queda arriba, donde la tapa la barrita sin perder nada importante.
         let live = waiting || running || state.calls_you();
         let label = if live {
-            Some(state.label().unwrap_or(if waiting { crate::i18n::t("pill.code.sidebar.needsInput") } else { crate::i18n::t("pill.code.sidebar.working") }))
+            Some(state.label().unwrap_or_else(|| if waiting { crate::i18n::t("pill.code.sidebar.needsInput") } else { crate::i18n::t("pill.code.sidebar.working") }.to_string()))
         } else {
             state.label()
         };
@@ -1302,6 +1319,7 @@ impl CodeView {
                 RowState::Done => Some((glyph("check"), ShapeName::SoftBurst)),
                 RowState::Asking | RowState::NeedsYou => Some((div().text_size(px(9.5)).font_weight(FontWeight::EXTRA_BOLD).text_color(ink).child("?").into_any_element(), ShapeName::Puffy)),
                 RowState::Stopped => Some((glyph("pause"), ShapeName::Square)),
+                RowState::Waiting(_) => Some((glyph("icons/timer.svg"), ShapeName::Cookie4)),
                 RowState::Working | RowState::Idle => None,
             };
             let mark = mark.map(|(child, other)| {

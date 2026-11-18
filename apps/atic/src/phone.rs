@@ -2282,7 +2282,8 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
                 backend_name: agent.name.to_string(),
                 project: crate::agents::folder_name(&session.cwd),
                 status: match session.status {
-                    crate::agents::Status::Working => AgentStatus::Working,
+                    // Esperar a sus subagentes o a algo en segundo plano todavía es trabajar.
+                    crate::agents::Status::Working | crate::agents::Status::Waiting => AgentStatus::Working,
                     crate::agents::Status::Ready => AgentStatus::Ready,
                 },
                 activity: session.activity.clone().map(|detail| AgentActivity {
@@ -2320,7 +2321,7 @@ pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_p
             backend_id: cli.to_string(),
             backend_name: name.to_string(),
             project: crate::agents::folder_name(&link.cwd.to_string_lossy()),
-            status: if link.busy { AgentStatus::Working } else if link.unread { AgentStatus::Ready } else { AgentStatus::Idle },
+            status: if link.busy || link.waiting.is_some() { AgentStatus::Working } else if link.unread { AgentStatus::Ready } else { AgentStatus::Idle },
             activity: None,
             preview: None,
             permission: link.permission.as_ref().map(permission_ask),
@@ -2657,6 +2658,7 @@ mod tests {
             cwd: PathBuf::from("/repos/atic"),
             unread,
             busy: false,
+            waiting: None,
             model: Some("opus".into()),
             acp: None,
             subagent: false,

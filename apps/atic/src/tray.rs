@@ -255,7 +255,9 @@ impl Inbox {
     /// terminal de su agente o su conversación de Atic Code): un turno que
     /// termina delante de él no es noticia.
     pub fn observe(&mut self, sessions: &[Session], now: i64, in_front: &dyn Fn(&Session) -> bool) {
-        self.working = sessions.iter().filter(|s| s.status == Status::Working).count();
+        // Lo que espera a sus subagentes o a algo en segundo plano sigue trabajando: no está
+        // por revisar.
+        self.working = sessions.iter().filter(|s| matches!(s.status, Status::Working | Status::Waiting)).count();
         let mut seen = std::collections::HashMap::new();
         for session in sessions {
             seen.insert(session.id.clone(), session.status);
@@ -263,7 +265,7 @@ impl Inbox {
                 continue;
             }
             match (self.seen.get(&session.id), session.status) {
-                (Some(Status::Working), Status::Ready) => {
+                (Some(Status::Working | Status::Waiting), Status::Ready) => {
                     if in_front(session) {
                         continue;
                     }
@@ -285,7 +287,7 @@ impl Inbox {
                     });
                 }
                 // Volvió a trabajar: ya le respondiste desde su terminal.
-                (_, Status::Working) => {
+                (_, Status::Working | Status::Waiting) => {
                     let origin = Origin::Session(session.id.clone());
                     self.items.retain(|item| item.origin != origin);
                 }
@@ -2254,6 +2256,19 @@ mod tests {
         assert_eq!(items[0].kind, Kind::Review);
         assert_eq!(items[0].title, "Claude Code terminó un turno");
         assert_eq!(items[0].detail, "atic · Listo: subí el cambio.");
+        assert_eq!(inbox.counts(), Counts { working: 0, review: 1, decide: 0 });
+    }
+
+    #[test]
+    fn mientras_espera_a_subagentes_no_esta_por_revisar() {
+        let mut inbox = Inbox::default();
+        inbox.observe(&[session("a", Status::Working)], 1_000, &|_| false);
+        // Terminó su turno, pero sus subagentes o un comando siguen: cuenta como trabajando.
+        inbox.observe(&[session("a", Status::Waiting)], 1_001, &|_| false);
+        assert!(inbox.is_empty());
+        assert_eq!(inbox.counts(), Counts { working: 1, review: 0, decide: 0 });
+        // Cuando ya no queda nada, recién ahí está por revisar.
+        inbox.observe(&[session("a", Status::Ready)], 1_002, &|_| false);
         assert_eq!(inbox.counts(), Counts { working: 0, review: 1, decide: 0 });
     }
 

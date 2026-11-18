@@ -864,7 +864,7 @@ fn nav_row(
 
 /// Un chip con un archivo y su «×»: el de Expressive es el `Chip::input` de gpui-m3.
 /// Las primeras líneas de un pegado largo, para el globito de su chip.
-fn pasted_preview(text: &str) -> String {
+pub(crate) fn pasted_preview(text: &str) -> String {
     const LINES: usize = 12;
     let mut out: Vec<String> = text
         .lines()
@@ -2228,8 +2228,12 @@ impl CodeView {
             // La presencia del agente: una sola forma con dueño al final del chat. Mientras
             // hay turno queda montada (si escribe texto se atenúa, no se va: así su morph no
             // se reinicia a cada rato) y al terminar se vuelve un ✓ que se apaga solo.
+            let pending = chat.pending(&self.chats);
             let mode = if chat.busy && chat.permissions.is_empty() {
                 Some(Presence::Working { dim: !chat.working() })
+            } else if chat.permissions.is_empty() && pending.any() {
+                // Terminó su turno pero sigue algo corriendo: no es «Listo» todavía.
+                Some(Presence::Waiting { label: pending.label() })
             } else if chat.permissions.is_empty() {
                 chat.finished_at.filter(|at| at.elapsed().as_secs_f32() < DONE_SECS).map(|since| Presence::Done { since })
             } else {
@@ -4794,12 +4798,14 @@ fn redraw_at(at: std::time::Instant, window: &mut Window, cx: &mut gpui::App) {
 }
 
 /// En qué está la presencia del agente al final del chat.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Presence {
     /// Hay turno. `dim`: está escribiendo texto (el texto mismo ya dice que trabaja).
     Working { dim: bool },
     /// Terminó el turno en `since`.
     Done { since: std::time::Instant },
+    /// Terminó el turno, pero espera a sus subagentes o a algo en segundo plano.
+    Waiting { label: String },
 }
 
 /// La presencia del agente en Expressive: el indicador que cambia de forma mientras
@@ -4848,6 +4854,14 @@ impl RenderOnce for AgentPresence {
                     )
                     .child(crate::i18n::t("pill.code.view.done"))
             }
+            // Quieto: un reloj en su forma, sin girar (no hay nada que mirar hasta que vuelva).
+            Presence::Waiting { label } => row
+                .child(
+                    div().size(px(28.)).flex().items_center().justify_center().child(
+                        Shape::new(ShapeName::Cookie4).size(px(22.)).color(scheme.surface_container_highest).child(Icon::new("icons/timer.svg").size(px(13.)).color(scheme.on_surface_variant)),
+                    ),
+                )
+                .child(label),
         }
     }
 }

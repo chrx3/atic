@@ -78,6 +78,8 @@ mod usage;
 mod view;
 mod vscode;
 
+pub(crate) use view::pasted_preview;
+
 use crate::i18n::tf;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -257,6 +259,22 @@ fn pasted_root() -> Option<PathBuf> {
     crate::paths::file("code-attachments")
 }
 
+/// La carpeta de los pegados, creada, para darla al agente en `additionalDirectories`: así
+/// Claude los lee sin pedir permiso.
+pub(crate) fn pasted_dir_for_agent() -> Option<PathBuf> {
+    pasted_root().filter(|root| std::fs::create_dir_all(root).is_ok())
+}
+
+/// La hora con que se nombran los pegados de un mensaje.
+pub(crate) fn pasted_stamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string()
+}
+
+/// Guarda un pegado largo en la carpeta de la conversación `folder` (su sesión o su clave).
+pub(crate) fn save_long_paste(folder: &str, stamp: &str, n: usize, text: &str) -> Option<PathBuf> {
+    save_pasted(&pasted_root()?.join(folder), stamp, n, text)
+}
+
 /// Guarda un pegado largo en `dir` como `pegado-<stamp>-<n>.md`, sin pisar otro que ya esté.
 fn save_pasted(dir: &std::path::Path, stamp: &str, mut n: usize, text: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
@@ -270,7 +288,7 @@ fn save_pasted(dir: &std::path::Path, stamp: &str, mut n: usize, text: &str) -> 
 }
 
 /// ¿Este texto pegado es tan largo que va como adjunto y no en la caja?
-fn is_long_paste(text: &str) -> bool {
+pub(crate) fn is_long_paste(text: &str) -> bool {
     text.chars().count() >= PASTE_MIN_CHARS || text.lines().count() >= PASTE_MIN_LINES
 }
 
@@ -362,7 +380,7 @@ pub(crate) fn compose_message_with(text: &str, context: Option<&str>, files: &[S
 }
 
 /// `message` con los pegados guardados (ruta y líneas) nombrados al final, uno por párrafo.
-fn with_pasted_refs(message: String, saved: &[(String, usize)]) -> String {
+pub(crate) fn with_pasted_refs(message: String, saved: &[(String, usize)]) -> String {
     let mut full = message;
     for (path, lines) in saved {
         let line = pasted_ref(path, *lines);
@@ -3220,7 +3238,7 @@ impl CodeView {
         }
         let mut extras = extras;
         // Los pegados largos se guardan fuera del proyecto: así Claude los lee sin pedir permiso.
-        if let Some(root) = pasted_root().filter(|root| std::fs::create_dir_all(root).is_ok()) {
+        if let Some(root) = pasted_dir_for_agent() {
             extras.push(root);
         }
         if !extras.is_empty() {
@@ -3402,8 +3420,7 @@ impl CodeView {
             .active_chat()
             .map(|chat| chat.session_id.clone().unwrap_or_else(|| chat.key.clone()))
             .unwrap_or_else(|| "nuevo".into());
-        let dir = pasted_root().map(|root| root.join(folder));
-        let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+        let stamp = pasted_stamp();
         for attachment in &self.attachments {
             match attachment {
                 Attachment::Image { media_type, data, image, .. } => {
@@ -3412,7 +3429,7 @@ impl CodeView {
                 }
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
                 Attachment::Pasted { text, lines } => {
-                    match dir.as_deref().and_then(|dir| save_pasted(dir, &stamp, saved.len() + 1, text)) {
+                    match save_long_paste(&folder, &stamp, saved.len() + 1, text) {
                         Some(path) => saved.push((path.display().to_string(), *lines)),
                         None => {
                             tracing::warn!("atic code: no se pudo guardar un pegado largo; va dentro del mensaje");

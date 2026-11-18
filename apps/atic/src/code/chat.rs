@@ -311,18 +311,22 @@ pub enum RowState {
     Done,
     /// Se detuvo, falló o se cortó.
     Stopped,
+    /// Terminó su turno, pero espera a sus subagentes o a algo en segundo plano: todavía
+    /// no está lista.
+    Waiting(Pending),
 }
 
 impl RowState {
     /// La etiqueta en el idioma de la app; `Idle` no lleva.
-    pub fn label(self) -> Option<&'static str> {
+    pub fn label(self) -> Option<String> {
         Some(match self {
             Self::Idle => return None,
-            Self::Working => t("pill.code.sidebar.working"),
-            Self::NeedsYou => t("pill.code.sidebar.needsInput"),
-            Self::Asking => t("pill.code.sidebar.asking"),
-            Self::Done => t("pill.code.sidebar.doneState"),
-            Self::Stopped => t("pill.code.sidebar.stoppedState"),
+            Self::Working => t("pill.code.sidebar.working").to_string(),
+            Self::NeedsYou => t("pill.code.sidebar.needsInput").to_string(),
+            Self::Asking => t("pill.code.sidebar.asking").to_string(),
+            Self::Done => t("pill.code.sidebar.doneState").to_string(),
+            Self::Stopped => t("pill.code.sidebar.stoppedState").to_string(),
+            Self::Waiting(pending) => pending.label(),
         })
     }
 
@@ -341,6 +345,40 @@ impl RowState {
         matches!(self, Self::NeedsYou | Self::Asking)
     }
 }
+
+/// Lo que sigue corriendo de una conversación aunque su turno haya terminado: los
+/// subagentes que delegó (`atic_delegate`) y sus tareas en segundo plano (comandos con
+/// `run_in_background`, `Monitor`, agentes en segundo plano). Mientras haya algo, no está
+/// «Lista» ni se avisa que terminó.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pending {
+    pub subagents: usize,
+    pub background: usize,
+}
+
+impl Pending {
+    pub fn any(self) -> bool {
+        self.subagents > 0 || self.background > 0
+    }
+
+    /// «Esperando a 2 subagentes», «Trabajando en segundo plano» o las dos cosas.
+    pub fn label(self) -> String {
+        let subagents = match self.subagents {
+            0 => None,
+            1 => Some(t("pill.code.chat.waitingSubagent").to_string()),
+            n => Some(tf("pill.code.chat.waitingSubagents", &[("n", &n)])),
+        };
+        let background = match self.background {
+            0 => None,
+            1 => Some(t("pill.code.chat.waitingBackground").to_string()),
+            n => Some(tf("pill.code.chat.waitingBackgroundMany", &[("n", &n)])),
+        };
+        [subagents, background].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+    }
+}
+
+/// Cuántos niveles de subagentes se miran (un hijo y su nieto, como `delegate::MAX_DEPTH`).
+const PENDING_DEPTH: u8 = 3;
 
 /// ¿Termina en pregunta? Sin contar el Markdown ni las comillas o paréntesis del cierre.
 fn ends_with_question(text: &str) -> bool {
@@ -1360,6 +1398,34 @@ impl Chat {
             Some(Item::Text(text)) if ends_with_question(text) => RowState::Asking,
             Some(Item::Text(_)) => RowState::Done,
             _ => RowState::Idle,
+        }
+    }
+
+    /// Lo que sigue corriendo de esta conversación entre `chats` (todas las abiertas): sus
+    /// subagentes con turno (o que esperan a los suyos) y sus tareas en segundo plano.
+    pub fn pending(&self, chats: &[Chat]) -> Pending {
+        self.pending_at(chats, PENDING_DEPTH)
+    }
+
+    fn pending_at(&self, chats: &[Chat], depth: u8) -> Pending {
+        let subagents = if depth == 0 {
+            0
+        } else {
+            chats
+                .iter()
+                .filter(|c| c.key != self.key && c.delegation.as_ref().is_some_and(|d| d.parent == self.key))
+                .filter(|c| c.busy || c.pending_at(chats, depth - 1).any())
+                .count()
+        };
+        Pending { subagents, background: self.background.len() }
+    }
+
+    /// `row_state` con lo que sigue corriendo: un turno terminado que espera a sus subagentes
+    /// o a algo en segundo plano no está «Lista». Lo que pide algo de ti o se detuvo, sí se dice.
+    pub fn row_state_with(&self, pending: Pending) -> RowState {
+        match self.row_state() {
+            RowState::Done | RowState::Idle if pending.any() && !self.busy && !self.starting => RowState::Waiting(pending),
+            state => state,
         }
     }
 
@@ -3070,6 +3136,54 @@ mod tests {
         chat.items.push(Item::Notice { text: "Detenido.".into(), error: false });
         chat.items.push(Item::Turn("1.0 s".into()));
         assert_eq!(chat.row_state(), RowState::Stopped);
+    }
+
+    /// Un hijo delegado por `parent`, con o sin turno.
+    fn child_of(key: &str, parent: &str, busy: bool) -> Chat {
+        let mut child = Chat::new(key.into(), 1, PathBuf::from("."));
+        child.delegation = super::super::delegate::Delegation::from_tag(&json!({ "parent": parent, "root": parent, "depth": 1, "backend": "claude" }));
+        child.busy = busy;
+        child
+    }
+
+    #[test]
+    fn con_subagentes_o_tareas_en_segundo_plano_no_esta_lista() {
+        let mut parent = Chat::new("p".into(), 1, PathBuf::from("."));
+        parent.push_user("reparte el trabajo", Vec::new());
+        parent.busy = false;
+        parent.items.push(Item::Text("Delegué las dos partes.".into()));
+        let mut chats = vec![child_of("h1", "p", true), child_of("h2", "p", true), child_of("h3", "p", false), child_of("otro", "x", true)];
+        // Dos hijos con turno: el que terminó y el de otra conversación no cuentan.
+        let pending = parent.pending(&chats);
+        assert_eq!(pending, Pending { subagents: 2, background: 0 });
+        assert_eq!(parent.row_state_with(pending), RowState::Waiting(pending));
+        assert_eq!(pending.label(), "Esperando a 2 subagentes");
+        // Un hijo sin turno que espera a su propio hijo (un nieto) también cuenta.
+        chats[1].busy = false;
+        chats.push(child_of("n1", "h2", true));
+        assert_eq!(parent.pending(&chats).subagents, 2);
+        // Un comando en segundo plano, sin hijos trabajando.
+        for chat in &mut chats {
+            chat.busy = false;
+        }
+        parent.background = vec!["b1".into()];
+        let pending = parent.pending(&chats);
+        assert_eq!(pending, Pending { subagents: 0, background: 1 });
+        assert_eq!(pending.label(), "Trabajando en segundo plano");
+        assert_eq!(Pending { subagents: 1, background: 2 }.label(), "Esperando a un subagente · 2 tareas en segundo plano");
+        // Mientras el padre trabaja, su estado es el de siempre.
+        parent.busy = true;
+        assert_eq!(parent.row_state_with(pending), RowState::Working);
+        // Lo que pide algo de ti o se detuvo se dice igual.
+        parent.busy = false;
+        parent.items.push(Item::Text("¿Sigo con la otra parte?".into()));
+        assert_eq!(parent.row_state_with(pending), RowState::Asking);
+        // Sin nada pendiente, «Lista».
+        parent.items.push(Item::Text("Terminé.".into()));
+        parent.background.clear();
+        let pending = parent.pending(&chats);
+        assert!(!pending.any());
+        assert_eq!(parent.row_state_with(pending), RowState::Done);
     }
 
     #[test]

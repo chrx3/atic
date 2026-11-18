@@ -5,7 +5,8 @@
 //! se avisa.
 //!
 //! «Mirando» es la ventana al frente con esa conversación a la vista. Si
-//! estás en otra conversación, también se avisa (como en la referencia).
+//! estás en otra conversación, también se avisa (como en la referencia). Un turno que
+//! termina con subagentes o tareas en segundo plano corriendo no se avisa (`Chat::pending`).
 
 use crate::i18n::{t, tf};
 use serde_json::Value;
@@ -80,6 +81,11 @@ impl CodeView {
         };
         // Con algo en cola el turno no era el último: el aviso espera al de verdad.
         if !chat.queued.is_empty() {
+            return;
+        }
+        // Terminó el turno pero espera a sus subagentes o a algo en segundo plano: el aviso
+        // de «terminó» espera al turno con que vuelve.
+        if event == "result" && chat.pending(&self.chats).any() {
             return;
         }
         let Some((title, body, error)) = alert_for(chat, event, data, interrupted) else {
