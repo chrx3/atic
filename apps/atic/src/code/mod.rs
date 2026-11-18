@@ -195,13 +195,79 @@ pub enum Attachment {
     /// (px), para que la miniatura conserve la proporción.
     Image { name: String, media_type: &'static str, data: String, image: Arc<gpui::Image>, size: (f32, f32) },
     File(PathBuf),
-    /// Un texto largo pegado en la caja: va dentro del mensaje, en su propio bloque.
+    /// Un texto largo pegado en la caja: al enviar se guarda como archivo .md y el mensaje
+    /// solo lo nombra (`pasted_ref`); si no se puede guardar, va dentro, en su propio bloque.
     Pasted { text: String, lines: usize },
 }
 
 /// Un pegado con al menos tantas líneas o tantos caracteres se vuelve adjunto.
-const PASTE_MIN_LINES: usize = 40;
+const PASTE_MIN_LINES: usize = 20;
 const PASTE_MIN_CHARS: usize = 2000;
+
+/// Cómo nombra el mensaje un pegado largo guardado como archivo:
+/// `(Texto pegado adjunto: "/ruta/pegado-….md", 120 líneas)`. La ruta va entre comillas
+/// porque la carpeta de datos puede tener espacios («Application Support»).
+const PASTED_REF: &str = "(Texto pegado adjunto: ";
+
+/// Un pegado largo ya guardado como archivo, nombrado en un mensaje.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PastedRef {
+    pub path: PathBuf,
+    pub lines: usize,
+}
+
+/// La línea que va en el mensaje en vez del texto pegado.
+fn pasted_ref(path: &str, lines: usize) -> String {
+    format!("{PASTED_REF}\"{path}\", {lines} líneas)")
+}
+
+fn parse_pasted_ref(line: &str) -> Option<PastedRef> {
+    let rest = line.strip_prefix(PASTED_REF)?.strip_suffix(" líneas)")?;
+    let (path, lines) = rest.rsplit_once(", ")?;
+    let path = path.strip_prefix('"')?.strip_suffix('"')?;
+    Some(PastedRef { path: PathBuf::from(path), lines: lines.parse().ok()? })
+}
+
+/// El mensaje sin los pegados guardados que lleva al final, y esos pegados en orden.
+pub(crate) fn split_pasted_refs(message: &str) -> (&str, Vec<PastedRef>) {
+    let mut rest = message.trim_end();
+    let mut refs = Vec::new();
+    loop {
+        let (head, last) = match rest.rfind("\n\n") {
+            Some(at) => (&rest[..at], &rest[at + 2..]),
+            None => ("", rest),
+        };
+        let Some(found) = parse_pasted_ref(last) else {
+            break;
+        };
+        refs.push(found);
+        rest = head;
+    }
+    refs.reverse();
+    (rest, refs)
+}
+
+/// El nombre del archivo del pegado `n` (desde 1) de un mensaje enviado a la hora `stamp`.
+fn pasted_file_name(stamp: &str, n: usize) -> String {
+    format!("pegado-{stamp}-{n}.md")
+}
+
+/// Dónde se guardan los pegados largos: en los datos de Atic, no en el repo del usuario.
+fn pasted_root() -> Option<PathBuf> {
+    crate::paths::file("code-attachments")
+}
+
+/// Guarda un pegado largo en `dir` como `pegado-<stamp>-<n>.md`, sin pisar otro que ya esté.
+fn save_pasted(dir: &std::path::Path, stamp: &str, mut n: usize, text: &str) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    let mut path = dir.join(pasted_file_name(stamp, n));
+    while path.exists() {
+        n += 1;
+        path = dir.join(pasted_file_name(stamp, n));
+    }
+    std::fs::write(&path, text).ok()?;
+    Some(path)
+}
 
 /// ¿Este texto pegado es tan largo que va como adjunto y no en la caja?
 fn is_long_paste(text: &str) -> bool {
@@ -235,7 +301,7 @@ fn recall_step(current: Option<usize>, len: usize, up: bool) -> Option<Option<us
 /// Lo que el usuario escribió en un mensaje ya compuesto: sin los bloques de texto pegado,
 /// la lista de archivos adjuntos ni la nota de contexto del editor que agrega `compose_message`.
 pub(crate) fn typed_prompt(message: &str) -> String {
-    let mut text = message;
+    let mut text = split_pasted_refs(message).0;
     if text.starts_with(PASTED_OPEN) {
         text = "";
     } else if let Some(at) = text.find(&format!("\n\n{PASTED_OPEN}\n")) {
@@ -291,6 +357,16 @@ pub(crate) fn compose_message_with(text: &str, context: Option<&str>, files: &[S
     }
     if full.is_empty() && images {
         full = "Mira la imagen adjunta.".into();
+    }
+    full
+}
+
+/// `message` con los pegados guardados (ruta y líneas) nombrados al final, uno por párrafo.
+fn with_pasted_refs(message: String, saved: &[(String, usize)]) -> String {
+    let mut full = message;
+    for (path, lines) in saved {
+        let line = pasted_ref(path, *lines);
+        full = if full.is_empty() { line } else { format!("{full}\n\n{line}") };
     }
     full
 }
@@ -3142,6 +3218,11 @@ impl CodeView {
             params["createCwd"] = json!(true);
             system.push(LOOSE_CONTEXT.to_string());
         }
+        let mut extras = extras;
+        // Los pegados largos se guardan fuera del proyecto: así Claude los lee sin pedir permiso.
+        if let Some(root) = pasted_root().filter(|root| std::fs::create_dir_all(root).is_ok()) {
+            extras.push(root);
+        }
         if !extras.is_empty() {
             params["additionalDirectories"] = json!(extras);
         }
@@ -3315,6 +3396,14 @@ impl CodeView {
         let mut thumbs = Vec::new();
         let mut files = Vec::new();
         let mut pasted = Vec::new();
+        let mut saved = Vec::new();
+        // Los pegados largos, como archivos en la carpeta de esta conversación.
+        let folder = self
+            .active_chat()
+            .map(|chat| chat.session_id.clone().unwrap_or_else(|| chat.key.clone()))
+            .unwrap_or_else(|| "nuevo".into());
+        let dir = pasted_root().map(|root| root.join(folder));
+        let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
         for attachment in &self.attachments {
             match attachment {
                 Attachment::Image { media_type, data, image, .. } => {
@@ -3322,13 +3411,22 @@ impl CodeView {
                     thumbs.push(image.clone());
                 }
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
-                Attachment::Pasted { text, .. } => pasted.push(text.clone()),
+                Attachment::Pasted { text, lines } => {
+                    match dir.as_deref().and_then(|dir| save_pasted(dir, &stamp, saved.len() + 1, text)) {
+                        Some(path) => saved.push((path.display().to_string(), *lines)),
+                        None => {
+                            tracing::warn!("atic code: no se pudo guardar un pegado largo; va dentro del mensaje");
+                            pasted.push(text.clone());
+                        }
+                    }
+                }
             }
         }
         let note = self
             .editor_context(cx)
             .and_then(|ctx| editor::context_note(&typed, &relative_to(&ctx.path, &roots), ctx.lines));
-        let text = compose_message_with(&typed, note.as_deref(), &files, !images.is_empty(), &pasted);
+        let text = compose_message_with(&typed, note.as_deref(), &files, !images.is_empty() && saved.is_empty(), &pasted);
+        let text = with_pasted_refs(text, &saved);
         self.prompt_nav = None;
         Some((text, images, thumbs))
     }
@@ -5016,6 +5114,48 @@ mod tests {
         assert!(is_long_paste(&"x".repeat(PASTE_MIN_CHARS)));
         assert!(is_long_paste(&"l\n".repeat(PASTE_MIN_LINES)));
         assert!(!is_long_paste(&"l\n".repeat(PASTE_MIN_LINES - 1)));
+    }
+
+    #[test]
+    fn el_umbral_del_pegado_largo_es_de_20_lineas_o_2000_caracteres() {
+        assert_eq!((PASTE_MIN_LINES, PASTE_MIN_CHARS), (20, 2000));
+        assert!(is_long_paste(&"l\n".repeat(20)));
+        assert!(!is_long_paste(&"l\n".repeat(19)));
+        assert!(!is_long_paste(&"x".repeat(1999)));
+    }
+
+    #[test]
+    fn el_pegado_largo_se_guarda_con_su_nombre_y_sin_pisar_otro() {
+        assert_eq!(pasted_file_name("2026-11-17-101500", 2), "pegado-2026-11-17-101500-2.md");
+        let dir = std::env::temp_dir().join(format!("atic-pegados-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_pasted(&dir, "2026-11-17-101500", 1, "uno").unwrap();
+        let second = save_pasted(&dir, "2026-11-17-101500", 1, "dos").unwrap();
+        assert!(first.ends_with("pegado-2026-11-17-101500-1.md"));
+        assert!(second.ends_with("pegado-2026-11-17-101500-2.md"));
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "uno");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn el_mensaje_nombra_el_pegado_guardado_en_vez_de_llevarlo() {
+        let path = "/datos/Application Support/code-attachments/c1/pegado-x-1.md";
+        let saved = vec![(path.to_string(), 120)];
+        let text = with_pasted_refs(compose_message_with("analiza", None, &["a.rs".into()], false, &[]), &saved);
+        assert_eq!(text, format!("analiza\n\n(Archivos adjuntos: @a.rs)\n\n(Texto pegado adjunto: \"{path}\", 120 líneas)"));
+        let (rest, refs) = split_pasted_refs(&text);
+        assert_eq!(rest, "analiza\n\n(Archivos adjuntos: @a.rs)");
+        assert_eq!(refs, vec![PastedRef { path: PathBuf::from(path), lines: 120 }]);
+        assert_eq!(typed_prompt(&text), "analiza");
+        // Solo pegados: el mensaje es la referencia, y lo escrito queda vacío.
+        let two = vec![("/a/pegado-1.md".to_string(), 20), ("/a/pegado-2.md".to_string(), 30)];
+        let only = with_pasted_refs(String::new(), &two);
+        let (rest, refs) = split_pasted_refs(&only);
+        assert_eq!((rest, refs.len()), ("", 2));
+        assert_eq!(refs[1].lines, 30);
+        assert_eq!(typed_prompt(&only), "");
+        // Un texto que solo se parece no se toma por pegado.
+        assert!(split_pasted_refs("(Texto pegado adjunto: sin comillas, 3 líneas)").1.is_empty());
     }
 
     #[test]

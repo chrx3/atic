@@ -1638,6 +1638,8 @@
  "pill.code.view.oneFileChanged": "1 archivo cambiado",
  "pill.code.view.open": "Abrir",
  "pill.code.view.pastedChip": "Texto pegado · {lines} líneas",
+ "pill.code.view.pastedSent": "Pegado · {lines} líneas",
+ "pill.code.view.pastedMissing": "El archivo de este pegado ya no está",
  "pill.code.view.pending": "Pendiente: {short}",
  "pill.code.view.pendingModel": "{pending} en el próximo mensaje",
  "pill.code.view.permMode": "Modo de permisos",

@@ -1471,7 +1471,16 @@ fn prompt_blocks(text: &str, images: &[Value], roots: &[PathBuf], exists: impl F
         })
         .collect();
     prompt.push(json!({ "type": "text", "text": text }));
-    prompt.extend(mention_links(text, roots, exists));
+    let mut links = mention_links(text, roots, &exists);
+    // Los textos largos pegados, guardados como archivo (`(Texto pegado adjunto: "…")`).
+    for pasted in super::split_pasted_refs(text).1 {
+        let uri = file_uri(&pasted.path);
+        if exists(&pasted.path) && !links.iter().any(|link| link["uri"] == uri) {
+            let name = pasted.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            links.push(json!({ "type": "resource_link", "uri": uri, "name": name }));
+        }
+    }
+    prompt.extend(links);
     prompt
 }
 
@@ -2345,6 +2354,18 @@ mod tests {
         let other = r#"level=ERROR message="x" cause="Rate limit exceeded" more=1"#;
         assert_eq!(opencode_cause(other).unwrap(), "OpenCode: Rate limit exceeded");
         assert_eq!(opencode_cause("level=ERROR message=\"x\""), None);
+    }
+
+    #[test]
+    fn el_pegado_guardado_va_como_enlace_a_su_archivo() {
+        let path = "/datos/Application Support/code-attachments/c1/pegado-2026-11-17-101500-1.md";
+        let exists = |p: &Path| p == Path::new(path);
+        let text = format!("analiza esto\n\n(Texto pegado adjunto: \"{path}\", 120 líneas)");
+        let blocks = prompt_blocks(&text, &[], &[], exists);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1]["type"], "resource_link");
+        assert_eq!(blocks[1]["uri"], file_uri(Path::new(path)));
+        assert_eq!(blocks[1]["name"], "pegado-2026-11-17-101500-1.md");
     }
 
     #[test]

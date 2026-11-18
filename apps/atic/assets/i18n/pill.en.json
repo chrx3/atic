@@ -1638,6 +1638,8 @@
  "pill.code.view.oneFileChanged": "1 file changed",
  "pill.code.view.open": "Open",
  "pill.code.view.pastedChip": "Pasted text · {lines} lines",
+ "pill.code.view.pastedSent": "Pasted · {lines} lines",
+ "pill.code.view.pastedMissing": "This pasted text's file is gone",
  "pill.code.view.pending": "Pending: {short}",
  "pill.code.view.pendingModel": "{pending} on the next message",
  "pill.code.view.permMode": "Permission mode",

@@ -863,6 +863,20 @@ fn nav_row(
 }
 
 /// Un chip con un archivo y su «×»: el de Expressive es el `Chip::input` de gpui-m3.
+/// Las primeras líneas de un pegado largo, para el globito de su chip.
+fn pasted_preview(text: &str) -> String {
+    const LINES: usize = 12;
+    let mut out: Vec<String> = text
+        .lines()
+        .take(LINES)
+        .map(|line| if line.chars().count() > 100 { format!("{}…", line.chars().take(100).collect::<String>()) } else { line.to_string() })
+        .collect();
+    if text.lines().count() > LINES {
+        out.push("…".into());
+    }
+    out.join("\n")
+}
+
 fn file_chip(
     id: (&'static str, usize),
     name: String,
@@ -2772,6 +2786,40 @@ impl CodeView {
 
     /// Un mensaje del usuario o una respuesta, con sus acciones (copiar y marcar).
     #[allow(clippy::too_many_arguments)]
+    /// Los pegados largos que llevó un mensaje, como chips de archivo: al pasar el cursor se
+    /// ven sus primeras líneas y, con un clic, se abre el archivo en el editor.
+    fn pasted_chips(&self, key: &str, index: usize, refs: Vec<super::PastedRef>, cx: &mut Context<Self>) -> Option<Div> {
+        if refs.is_empty() {
+            return None;
+        }
+        let mut row = div().flex().flex_wrap().gap(px(6.));
+        for (n, pasted) in refs.into_iter().enumerate() {
+            let label = tf("pill.code.view.pastedSent", &[("lines", &pasted.lines)]);
+            let path = pasted.path.clone();
+            let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_file(path.clone(), cx));
+            let preview_path = pasted.path;
+            // El archivo se lee solo al mostrar el globito, no en cada cuadro.
+            let preview = move |window: &mut Window, cx: &mut gpui::App| {
+                let text = match std::fs::read_to_string(&preview_path) {
+                    Ok(text) => pasted_preview(&text),
+                    Err(_) => crate::i18n::t("pill.code.view.pastedMissing").to_string(),
+                };
+                crate::hover::tip_text(text.into())(window, cx)
+            };
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("pasted-{key}-{index}-{n}")))
+                    .tooltip(preview)
+                    .child(
+                        gpui_m3::Chip::new(SharedString::from(format!("pasted-chip-{key}-{index}-{n}")), label)
+                            .leading(svg().path("icons/file.svg").size(px(16.)).text_color(muted()))
+                            .on_click(open),
+                    ),
+            );
+        }
+        Some(row)
+    }
+
     fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, streaming: bool, fades: Vec<(usize, f32)>, cx: &mut Context<Self>) -> AnyElement {
         let group = SharedString::from(format!("msg-{index}"));
         let flag = self.flag_button(index, flagged, cx);
@@ -2794,6 +2842,9 @@ impl CodeView {
         match item {
             Item::User { text, images, .. } if expressive() => {
                 let copy = text.clone();
+                let (shown, refs) = super::split_pasted_refs(text);
+                let shown = shown.to_string();
+                let pasted = self.pasted_chips(key, index, refs, cx);
                 div()
                     .group(group.clone())
                     .flex()
@@ -2802,8 +2853,9 @@ impl CodeView {
                     .child(
                         gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
                             .when(fresh, |b| b.entrance(SharedString::from(format!("bubble-{key}-{index}")), 0.))
-                            .when_some(thumbs(images), |el, row| el.child(row.mb(px(if text.is_empty() { 0. } else { 8. }))))
-                            .child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), text.clone())),
+                            .when_some(thumbs(images), |el, row| el.child(row.mb(px(if shown.is_empty() && pasted.is_none() { 0. } else { 8. }))))
+                            .when(!shown.is_empty(), |el| el.child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), shown.clone())))
+                            .when_some(pasted, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.))))),
                     )
                     .child(
                         // Copiar y Marcar bajo el mensaje, a la derecha como la burbuja.
@@ -2829,6 +2881,9 @@ impl CodeView {
             }
             Item::User { text, images, .. } => {
                 let copy_button = self.flat_copy(index, text.clone(), group.clone(), cx);
+                let (shown, refs) = super::split_pasted_refs(text);
+                let shown = shown.to_string();
+                let pasted = self.pasted_chips(key, index, refs, cx);
                 // El mensaje guarda el alto de sus botones (que van debajo): así no
                 // pisan lo que sigue y el cursor no sale del mensaje al ir a ellos.
                 div()
@@ -2849,7 +2904,8 @@ impl CodeView {
                         .border_color(accent_line())
                         .line_height(px(22.))
                         .when_some(thumbs(images), |el, row| el.child(row.mb(px(8.))))
-                        .child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), text.clone())),
+                        .when(!shown.is_empty(), |el| el.child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), shown.clone())))
+                        .when_some(pasted, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.))))),
                 )
                 .child(div().absolute().right(px(-6.)).bottom_0().flex().gap(px(2.)).child(copy_button).child(actions(div().child(flag))))
                 .into_any_element()
