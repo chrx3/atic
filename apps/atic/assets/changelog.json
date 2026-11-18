@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.7.2",
+      "date": "2026-11-18",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Un pegado largo en Atic Code o el chat del notch va como archivo .md adjunto y ya no llena el contexto del agente",
+          "en": "A long paste in Atic Code or the notch chat is attached as a .md file and no longer fills the agent's context"
+        },
+        {
+          "kind": "improved",
+          "es": "Un chat con subagentes o tareas en segundo plano dice a qué espera en vez de «Listo», y avisa recién cuando terminó todo",
+          "en": "A chat with subagents or background tasks says what it's waiting for instead of «Done», and only notifies when everything has finished"
+        },
+        {
+          "kind": "fixed",
+          "es": "Los subagentes pueden trabajar en un worktree del mismo repositorio, y con «El orquestador decide» ya no te piden permisos",
+          "en": "Subagents can work in a worktree of the same repository, and with «The orchestrator decides» they no longer ask you for permissions"
+        },
+        {
+          "kind": "improved",
+          "es": "Estilo M3 Expressive: íconos Material Symbols, rueda que se abre en arco junto a las orillas y carruseles en Capturas y el Tablero",
+          "en": "M3 Expressive style: Material Symbols icons, a wheel that opens as an arc near the edges, and carousels in Captures and the Board"
+        },
+        {
+          "kind": "new",
+          "es": "En Copiar texto, mantén Shift para elegir una palabra o ⌘ para elegir todo; el código en línea del chat se lee mejor",
+          "en": "In Copy text, hold Shift to pick a word or ⌘ to pick everything; inline code in the chat is easier to read"
+        },
+        {
+          "kind": "improved",
+          "es": "Atic Code y la bienvenida se manejan con el teclado, y el Portapapeles y Uso de agentes estrenan diseño",
+          "en": "Atic Code and the welcome window work with the keyboard, and Clipboard and Agent usage get a new design"
+        }
+      ]
+    },
+    {
       "version": "0.7.1",
       "date": "2026-11-17",
       "items": [
