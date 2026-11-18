@@ -6,7 +6,8 @@ name: CI
 #   revisión de apps/atic/gpui-m3.rev: en PRs, en main y desde el release (un
 #   push a dev no los corre, para no compilar la pill dos veces por cambio);
 # - el agente de Atic Code (sidecar) y los scripts de release en Node.
-# El release (release.yml) llama a este mismo workflow antes de compilar.
+# El release (release.yml) llama a este mismo workflow en paralelo con sus
+# builds, salvo que este ya haya pasado en main para el mismo commit.
 # Ver docs/CI.md.
 
 on:

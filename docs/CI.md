@@ -81,18 +81,26 @@ desarrollo (y bajaría otra toolchain en cada uno).
 ## Release (`release.yml`)
 
 ```
-resolver ─► preflight ─► tests (ci.yml) ─┬─► macos (build + Verify arm64) ─► macos-x64 (Verify Intel) ─┐
-                                         └─► windows (build + Verify x64) ─────────────────────────────┴─► publicar
+resolver ─┬─► ci-previo ─► tests (ci.yml; se omite si el CI ya pasó) ────────────────────┐
+          └─► preflight ─┬─► macos-bin (arm64 ∥ x86_64) ─► macos-universal ─► macos-intel ─┤
+                         └─► windows (build + Verify x64) ──────────────────────────────────┴─► listo ─► publicar
 ```
+
+Los builds no esperan a los tests: arrancan apenas pasa el preflight y corren
+en paralelo con ellos. Lo que impide publicar algo sin tests es `listo`, la
+compuerta antes de la clave.
 
 | Job | Runner | Qué hace |
 | --- | --- | --- |
 | resolver | ubuntu | Commit (`github.sha`, el que usan todos los checkouts), versión de `apps/atic/Cargo.toml`, tag `vX.Y.Z` y si se publica (solo con un push de tag) |
 | preflight | ubuntu | Tag = versión; el commit del tag está en `main`; el release del tag no está publicado y, si hay borrador, su `latest.json` sirve para fusionar; la versión tiene su entrada en `changelog.json`; gpui-m3 en la revisión fijada existe y está en su `main`; tests de los scripts de release |
-| tests | — | Llama a `ci.yml` (los mismos jobs de arriba) |
-| macos | `macos-26` | Firma con «Atic Dev» (`.p12` de los secrets), `build-pill-mac.sh` (universal), `package-mac.sh` (`.app.tar.gz` y `.dmg`). **Verify**: desempaqueta el `.tar.gz`, `codesign --verify --deep --strict`, `hdiutil verify`, comprueba que el `.app` trae `Resources/sidecar/agent.mjs`, `MacOS/atic-mcp` y `MacOS/atic-apple`, que los tres binarios son universales (`lipo -verify_arch arm64 x86_64`), corre `scripts/selftest.sh` y anota el sha256 de lo verificado |
-| macos-x64 | `macos-15-intel` | **Verify** del mismo `.app.tar.gz` en un Mac Intel de verdad (la pill pide macOS 13 o más nuevo). Hace checkout solo de `scripts/`, así la autoprueba no puede usar el `agent.mjs` del repo |
+| ci-previo | ubuntu | Busca un run de `ci.yml` de un push a `main` para el mismo commit. Si terminó en verde (todos sus jobs, incluidas las dos pills), `ok=true`; si está corriendo, lo espera (hasta ~80 min, en ubuntu). Ante cualquier otra cosa (no hay, falló, se canceló, la API no responde), `ok=false` |
+| tests | — | Llama a `ci.yml` (los mismos jobs de arriba), salvo que ci-previo diga `ok=true` |
+| macos-bin | `macos-26` (×2, matriz `aarch64` / `x86_64`) | `build-pill-mac.sh` con `ATIC_MAC_ARCHS=<arch>` y `ATIC_MAC_BINS_OUT`: solo compila `pill-gpui`, `atic-mcp` y `atic-apple` de esa arquitectura (x86_64 cruzado desde arm64, como antes: atic-apple pide el SDK de macOS 26) y los sube como artefacto `bins-macos-<arch>` (1 día). Sin certificado. `rust-cache` con una clave por arquitectura |
+| macos-universal | `macos-26` | Baja los dos `bins-macos-*`, firma con «Atic Dev» (`.p12` de los secrets), `build-pill-mac.sh` con `ATIC_MAC_BINS_IN` (sin compilar: `lipo -create`, el agente, la `.app` y la firma), `package-mac.sh` (`.app.tar.gz` y `.dmg`). **Verify**: desempaqueta el `.tar.gz`, `codesign --verify --deep --strict`, `hdiutil verify`, comprueba que el `.app` trae `Resources/sidecar/agent.mjs`, `MacOS/atic-mcp` y `MacOS/atic-apple`, que los tres binarios son universales (`lipo -verify_arch arm64 x86_64`), corre `scripts/selftest.sh` y anota el sha256 de lo verificado |
+| macos-intel | `macos-15-intel` | **Verify** del mismo `.app.tar.gz` en un Mac Intel de verdad (la pill pide macOS 13 o más nuevo). Hace checkout solo de `scripts/`, así la autoprueba no puede usar el `agent.mjs` del repo |
 | windows | `windows-latest` | `win-env.ps1` y `build-installer.ps1` (NSIS en la versión fijada, por Chocolatey). **Verify**: instala en silencio (`/S /NORUN /D=…`; `/NORUN` no abre la pill) en una carpeta aparte esperando solo al instalador (5 min como mucho), comprueba los archivos, corre `scripts/selftest.ps1` con la pill instalada y anota el sha256 del instalador |
+| listo | ubuntu | La compuerta: preflight, `macos-universal`, `macos-intel` y `windows` en verde, y `tests` en verde u omitido **solo** si lo omitió ci-previo con `ok=true`. Con un tag deja un `::notice::` y un resumen con el enlace a la corrida: publicar queda esperando la aprobación del environment `release` (GitHub además avisa al revisor por correo o en su app) |
 | publicar | ubuntu; environment `release` solo con un tag | Comprueba que los archivos son los del Verify (sha256), compila `atic-sign` antes de que la clave toque el disco, firma para el updater el `.app.tar.gz` (`darwin`) y el instalador (`windows-x86_64`), verifica cada `.sig` (`atic-sign --verify`) contra la clave pública de la app (`PUBKEY` de `updater.rs`), arma `latest.json` con `darwin-aarch64`, `darwin-x86_64` y `windows-x86_64`, y con un tag deja todo en un release **borrador** |
 
 Lo que conserva de `release-macos.yml` y de los commits `1237d65` y `6634ffb`:
@@ -119,11 +127,11 @@ una vez con las tres plataformas, sin fusionar entre dos máquinas.
 
 ### Arquitecturas
 
-- **macOS**: un solo `.app` universal (Apple Silicon + Intel), compilado en
-  `macos-26` (arm64, con `lipo`), como hasta ahora. Las dos entradas del
-  updater (`darwin-aarch64` y `darwin-x86_64`) apuntan al mismo `.tar.gz`. No
-  se compila aparte para Intel: duplicaría la compilación más cara (LTO
-  completo) y el universal ya lo cubre. Sí se *verifica* en un runner Intel.
+- **macOS**: un solo `.app` universal (Apple Silicon + Intel), como hasta
+  ahora. Cada arquitectura se compila en su propio runner `macos-26` (x86_64
+  cruzado desde arm64) y `macos-universal` las une con `lipo`. Las dos
+  entradas del updater (`darwin-aarch64` y `darwin-x86_64`) apuntan al mismo
+  `.tar.gz`. Se *verifica* en Apple Silicon y en un runner Intel.
 - **Windows x64**: el instalador de siempre.
 - **Windows arm64**: todavía no. El instalador NSIS y `latest.json` son solo
   x64, el updater no tiene la entrada `windows-aarch64`, y los runners
@@ -178,7 +186,8 @@ una vez con las tres plataformas, sin fusionar entre dos máquinas.
 | `SELFTEST_OMITE_INTEL` | Opcional. Lo que no hace la autoprueba en el Mac Intel; `ventana` si ese runner no tiene Metal (gpui termina el proceso al abrir la ventana) |
 
 La clave del updater solo entra al job `publicar` de un tag, con la
-aprobación del revisor; el certificado de Mac, solo al job `macos`. Cómo
+aprobación del revisor; el certificado de Mac, solo al job `macos-universal`
+(los `macos-bin` compilan sin él). Cómo
 exportar el `.p12`: [`MACOS.md` §4](MACOS.md#4-release-desde-github-actions).
 
 ### Configurar en GitHub (una vez)
@@ -224,7 +233,7 @@ exportar el `.p12`: [`MACOS.md` §4](MACOS.md#4-release-desde-github-actions).
 
    *Pendiente opcional*: cuando exportes el `.p12`, moverlos a un environment
    propio (p. ej. `firma-mac`, solo `main` y tags `v*`, sin revisor para no
-   aprobar dos veces) y agregar `environment: firma-mac` al job `macos` de
+   aprobar dos veces) y agregar `environment: firma-mac` al job `macos-universal` de
    `release.yml`. Hoy ese job no declara environment.
 
 5. **Comprobar**: `gh api repos/chrx3/atic/environments/release` muestra el

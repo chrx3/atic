@@ -13,6 +13,13 @@
 #   bash scripts/build-pill-mac.sh                 # universal
 #   ATIC_MAC_ARCHS=aarch64 bash scripts/build-pill-mac.sh   # solo Apple Silicon (pruebas)
 #
+# En dos etapas (el release de GitHub Actions compila cada arquitectura en su
+# propio runner):
+#   ATIC_MAC_ARCHS=x86_64 ATIC_MAC_BINS_OUT=<dir> bash scripts/build-pill-mac.sh
+#     solo compila y deja pill-gpui, atic-mcp y atic-apple en <dir>/x86_64/
+#   ATIC_MAC_BINS_IN=<dir> bash scripts/build-pill-mac.sh
+#     no compila: arma y firma la .app con <dir>/<arquitectura>/
+#
 # Deja target/pill-mac/Atic.app. Compila en ~/Library/Caches/atic-gpui-target
 # (o $CARGO_TARGET_DIR), el mismo de `pill-dev-mac.sh`. Una arquitectura a la
 # vez y con -j 4 (PILL_JOBS): con LTO completo, en 8 GB no da para más.
@@ -23,8 +30,10 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pill="$repo/apps/atic"
 pill_target="${CARGO_TARGET_DIR:-$HOME/Library/Caches/atic-gpui-target}"
 jobs="${PILL_JOBS:-4}"
+bins_out="${ATIC_MAC_BINS_OUT:-}"
+bins_in="${ATIC_MAC_BINS_IN:-}"
 
-if [[ ! -d "$repo/../gpui-m3" ]]; then
+if [[ -z "$bins_in" && ! -d "$repo/../gpui-m3" ]]; then
   echo "Falta ../gpui-m3 (los componentes de Atic Code): git clone https://github.com/chrx3/gpui-m3.git $(cd "$repo/.." && pwd)/gpui-m3" >&2
   exit 1
 fi
@@ -37,6 +46,15 @@ mcps=()
 apples=()
 for arch in "${archs[@]}"; do
   triple="$arch-apple-darwin"
+  if [[ -n "$bins_in" ]]; then
+    for bin in pill-gpui atic-mcp atic-apple; do
+      [[ -s "$bins_in/$arch/$bin" ]] || { echo "Falta $bins_in/$arch/$bin" >&2; exit 1; }
+    done
+    pills+=("$bins_in/$arch/pill-gpui")
+    mcps+=("$bins_in/$arch/atic-mcp")
+    apples+=("$bins_in/$arch/atic-apple")
+    continue
+  fi
   rustup target add "$triple" > /dev/null
   echo "→ compilando la pill para $triple (release, varios minutos)…"
   CARGO_TARGET_DIR="$pill_target" cargo build --locked --manifest-path "$pill/Cargo.toml" --release --target "$triple" -j "$jobs"
@@ -51,7 +69,18 @@ for arch in "${archs[@]}"; do
   swiftc -parse-as-library -O -target "$swift_arch-apple-macos26.0" \
     "$pill/macos/apple/main.swift" -o "$pill_target/atic-apple-$swift_arch"
   apples+=("$pill_target/atic-apple-$swift_arch")
+  if [[ -n "$bins_out" ]]; then
+    mkdir -p "$bins_out/$arch"
+    cp "$pill_target/$triple/release/pill-gpui" "$bins_out/$arch/pill-gpui"
+    cp "$repo/target/$triple/release/atic-mcp" "$bins_out/$arch/atic-mcp"
+    cp "$pill_target/atic-apple-$swift_arch" "$bins_out/$arch/atic-apple"
+  fi
 done
+
+if [[ -n "$bins_out" ]]; then
+  echo "Binarios en $bins_out"
+  exit 0
+fi
 
 echo "→ empaquetando el agente de Atic Code…"
 # Instala solo si falta: pnpm 10 corta `install` por el script de esbuild

@@ -2,22 +2,32 @@ name: Release
 
 # El release de Atic para macOS y Windows, de punta a punta (ver docs/CI.md):
 #
-#   resolver ─► preflight ─► tests (ci.yml) ─┬─► macos ─► macos-x64 (Verify en Intel) ─┐
-#                                            └─► windows ───────────────────────────────┴─► publicar
+#   resolver ─┬─► ci-previo ─► tests (ci.yml; se omite si el CI ya pasó) ────────────────────┐
+#             └─► preflight ─┬─► macos-bin (arm64 ∥ x86_64) ─► macos-universal ─► macos-intel ─┤
+#                            └─► windows ───────────────────────────────────────────────────────┴─► listo ─► publicar
+#
+# Los builds no esperan a los tests: corren en paralelo y publicar (vía listo)
+# exige que todo haya pasado.
 #
 # - resolver: qué commit, versión y tag se compilan, y si se publica.
 # - preflight: tag = versión, el tag está en main, el release del tag no está
 #   publicado (y si hay borrador, su latest.json sirve), Novedades de la
 #   versión, gpui-m3 en la revisión fijada (apps/atic/gpui-m3.rev, en el main
 #   de gpui-m3) y los tests de los scripts de release.
-# - tests: los mismos jobs de ci.yml.
-# - macos: la pill universal (Apple Silicon + Intel) firmada con «Atic Dev»,
-#   el .app.tar.gz y el .dmg; «Verify» abre el .app empaquetado con
-#   PILL_SELFTEST=arranque (Apple Silicon). macos-x64 repite el Verify en un
-#   runner Intel con el mismo paquete.
+# - ci-previo: si el CI (ci.yml) de un push a main ya pasó para este mismo
+#   commit (o está corriendo, y lo espera), los tests no se repiten.
+# - tests: los mismos jobs de ci.yml, salvo que ci-previo diga que ya pasaron.
+# - macos-bin: compila pill, atic-mcp y atic-apple de una arquitectura, cada
+#   una en su runner. macos-universal los une con lipo, arma la .app firmada
+#   con «Atic Dev», el .app.tar.gz y el .dmg; «Verify» abre el .app
+#   empaquetado con PILL_SELFTEST=arranque (Apple Silicon). macos-intel
+#   repite el Verify en un runner Intel con el mismo paquete.
 # - windows: el instalador NSIS; «Verify» lo instala en silencio (/NORUN: sin
 #   abrir la pill) en una carpeta aparte y corre la pill instalada con
 #   PILL_SELFTEST=arranque.
+# - listo: la compuerta antes de la clave: todo pasó (tests en verde u
+#   omitidos por ci-previo) y, con un tag, avisa que publicar espera la
+#   aprobación del environment «release».
 # - publicar: comprueba que los archivos son los mismos que pasaron el Verify
 #   (sha256), los firma para el updater (atic-sign), verifica cada .sig contra
 #   la clave pública de la app, arma latest.json con las tres plataformas
@@ -169,23 +179,94 @@ jobs:
       - name: Tests de los scripts de release
         run: node --test scripts/*.test.mjs
 
+  # Si el CI de un push a main ya pasó para este commit, el release no repite
+  # los tests. Si está corriendo (el push a main y el tag suelen ir juntos),
+  # lo espera: en ubuntu sale más barato que repetirlos en macOS y Windows.
+  # Ante cualquier duda (no hay run, falló, se canceló, GitHub no responde),
+  # ok=false y los tests corren como siempre.
+  ci-previo:
+    name: CI previo del commit
+    needs: resolver
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      ok: ${{ steps.ci.outputs.ok }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.resolver.outputs.sha }}
+    steps:
+      - id: ci
+        run: |
+          api="repos/$GITHUB_REPOSITORY/actions"
+          runs() {
+            gh api "$api/workflows/ci.yml/runs?head_sha=$SHA&branch=main&event=push&per_page=20" "$@" 2>/dev/null || true
+          }
+          # Un run sirve si terminó en success con todos sus jobs en success,
+          # incluidas las dos pills (en main no se omiten; esto lo asegura).
+          sirve() {
+            [[ "$(gh api "$api/runs/$1/jobs?per_page=100" --jq '
+              (.jobs | length > 0)
+              and all(.jobs[]; .conclusion == "success")
+              and any(.jobs[]; .name | startswith("Pill (macOS)"))
+              and any(.jobs[]; .name | startswith("Pill (Windows)"))' 2>/dev/null)" == true ]]
+          }
+          ok=false
+          id="$(runs --jq '[.workflow_runs[] | select(.conclusion == "success")][0].id // empty')"
+          if [[ -z "$id" ]]; then
+            pending="$(runs --jq '[.workflow_runs[] | select(.status != "completed")][0].id // empty')"
+            if [[ -n "$pending" ]]; then
+              echo "El CI de este commit está corriendo (run $pending): lo espero."
+              # Hasta ~80 min (el job de la pill tiene 75); después, tests propios.
+              for _ in $(seq 160); do
+                status="$(gh api "$api/runs/$pending" --jq .status 2>/dev/null || true)"
+                [[ "$status" == completed ]] && break
+                sleep 30
+              done
+              if [[ "$(gh api "$api/runs/$pending" --jq .conclusion 2>/dev/null || true)" == success ]]; then
+                id="$pending"
+              fi
+            fi
+          fi
+          if [[ -n "$id" ]] && sirve "$id"; then
+            ok=true
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
+            echo "::notice::Los tests ya pasaron en el CI de main para $SHA ($url): no se repiten."
+            echo "Tests: ya pasaron en el CI de main para este commit ([run $id]($url)); no se repiten." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Tests: no hay un CI de main en verde para $SHA; corren en este release." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
   tests:
     name: Tests
-    needs: preflight
+    needs: [preflight, ci-previo]
+    # Corre salvo que ci-previo haya encontrado el CI en verde (si ci-previo
+    # falla por lo que sea, también corre).
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.ci-previo.outputs.ok != 'true' }}
     uses: ./.github/workflows/ci.yml
 
-  macos:
-    name: macOS universal (build + Verify arm64)
-    needs: [resolver, tests]
+  # Cada arquitectura en su runner, en paralelo; los dos en macos-26 (x86_64
+  # se compila cruzado, como siempre: atic-apple necesita el SDK de macOS 26,
+  # que el runner Intel no tiene). Solo compilan: sin certificado ni firma.
+  macos-bin:
+    name: macOS ${{ matrix.arch }} (build)
+    needs: [resolver, preflight]
     # Xcode 26: atic-apple se compila para macOS 26.
     runs-on: macos-26
-    timeout-minutes: 150
+    timeout-minutes: 120
+    strategy:
+      # Si una arquitectura falla, la otra no sigue gastando minutos de macOS.
+      fail-fast: true
+      matrix:
+        arch: [aarch64, x86_64]
     env:
       # El runner tiene 3 núcleos y 7 GB; con LTO completo no conviene más.
       PILL_JOBS: "3"
       CARGO_BUILD_JOBS: "3"
       CARGO_TARGET_DIR: ${{ github.workspace }}/../target-pill
-      VERSION: ${{ needs.resolver.outputs.version }}
       # El Xcode del build: el más nuevo 26.x del runner. Para fijar uno exacto,
       # pon la versión completa (p. ej. «26.1»); el paso lista los que hay.
       XCODE_VERSION: "26"
@@ -221,20 +302,65 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.arch }}-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             apps/atic -> ../../../target-pill
             . -> target
+          # Una caché por arquitectura: sin esto, las dos de la matriz
+          # comparten clave y una pisa a la otra.
+          key: ${{ matrix.arch }}
           # Solo main guarda: la caché de un tag no la reusa nadie y gasta la cuota.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Compilar pill, atic-mcp y atic-apple
+        env:
+          ATIC_MAC_ARCHS: ${{ matrix.arch }}
+          ATIC_MAC_BINS_OUT: ${{ runner.temp }}/bins
+        run: bash scripts/build-pill-mac.sh
+
+      - name: Binarios
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bins-macos-${{ matrix.arch }}
+          # La carpeta bins/ entera, para que el artefacto lleve <arch>/.
+          path: ${{ runner.temp }}/bins
+          retention-days: 1
+          if-no-files-found: error
+
+  macos-universal:
+    name: macOS universal (lipo + firma + Verify arm64)
+    needs: [resolver, macos-bin]
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.resolver.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolver.outputs.sha }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.8.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: bins-macos-*
+          path: ${{ runner.temp }}/bins
+          merge-multiple: true
+      # Los artefactos no guardan el bit de ejecución.
+      - name: Binarios de las dos arquitecturas
+        run: |
+          chmod 755 "$RUNNER_TEMP"/bins/*/*
+          ls -la "$RUNNER_TEMP"/bins/*
+          for arch in aarch64 x86_64; do
+            for bin in pill-gpui atic-mcp atic-apple; do
+              lipo -info "$RUNNER_TEMP/bins/$arch/$bin"
+            done
+          done
 
       - name: Certificado de firma «Atic Dev»
         env:
@@ -282,7 +408,9 @@ jobs:
           codesign --verify --strict "$RUNNER_TEMP/atic-signing-check"
           echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
 
-      - name: Compilar y firmar la .app
+      - name: Unir (lipo) y firmar la .app
+        env:
+          ATIC_MAC_BINS_IN: ${{ runner.temp }}/bins
         run: bash scripts/build-pill-mac.sh
 
       - name: Empaquetar (.app.tar.gz y .dmg)
@@ -327,9 +455,9 @@ jobs:
           rm -f "$RUNNER_TEMP/atic.p12" "$RUNNER_TEMP/atic.pem" "$RUNNER_TEMP/atic-signing-check"
           security delete-keychain "$RUNNER_TEMP/atic.keychain-db" 2>/dev/null || true
 
-  macos-x64:
+  macos-intel:
     name: macOS Intel (Verify)
-    needs: [resolver, macos]
+    needs: [resolver, macos-universal]
     # El .app universal en un Mac Intel de verdad, no con Rosetta.
     runs-on: macos-15-intel
     timeout-minutes: 20
@@ -372,7 +500,7 @@ jobs:
 
   windows:
     name: Windows x64 (build + Verify)
-    needs: [resolver, tests]
+    needs: [resolver, preflight]
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -468,9 +596,52 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # La compuerta antes de la clave. Los builds corren en paralelo con los
+  # tests: aquí se exige que todo haya pasado. Los tests valen omitidos solo
+  # si los omitió ci-previo por encontrar el CI en verde.
+  listo:
+    name: Listo para firmar
+    needs: [resolver, preflight, ci-previo, tests, macos-universal, macos-intel, windows]
+    if: >-
+      ${{ !cancelled()
+      && needs.resolver.result == 'success'
+      && needs.preflight.result == 'success'
+      && needs.macos-universal.result == 'success'
+      && needs.macos-intel.result == 'success'
+      && needs.windows.result == 'success'
+      && (needs.tests.result == 'success'
+          || (needs.tests.result == 'skipped' && needs.ci-previo.outputs.ok == 'true')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Con un tag, publicar queda esperando la aprobación del environment
+      # «release»: que se vea en la corrida (y en el correo o la app de GitHub
+      # del revisor, que avisa sola de los deployments pendientes).
+      - name: Aviso
+        env:
+          PUBLISH: ${{ needs.resolver.outputs.publish }}
+          TAG: ${{ needs.resolver.outputs.tag }}
+          TESTS: ${{ needs.tests.result }}
+        run: |
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          tests="pasaron en esta corrida"
+          if [[ "$TESTS" == skipped ]]; then tests="ya pasaron en el CI de main"; fi
+          if [[ "$PUBLISH" == true ]]; then
+            echo "::notice title=Falta aprobar $TAG::Builds y Verify en verde; los tests $tests. Firmar y publicar (borrador) espera la aprobación del environment «release»: $url"
+            {
+              echo "### $TAG espera tu aprobación"
+              echo
+              echo "Builds y Verify en verde; los tests $tests. **Firmar y publicar (borrador)** espera la aprobación del environment \`release\`."
+              echo
+              echo "Apruébalo en [la corrida]($url) → *Review deployments*."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Corrida de prueba: builds y Verify en verde; los tests $tests. Publicar firma con una clave de prueba, sin aprobación." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   publicar:
     name: Firmar y publicar (borrador)
-    needs: [resolver, macos, macos-x64, windows]
+    needs: [resolver, listo]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # La clave del updater solo vive en el environment «release» (revisor y
