@@ -270,7 +270,8 @@ fn pick(hits: &[serde_json::Value], duration: Option<f32>) -> Option<String> {
 }
 
 /// LRC: una o más marcas `[mm:ss.xx]` por verso. Las etiquetas de cabecera
-/// (`[ar:…]`, `[offset:…]`) no son marcas y se ignoran.
+/// (`[ar:…]`, `[offset:…]`) no son marcas y se ignoran. Las marcas por palabra
+/// del LRC extendido (`<mm:ss.xx>`) se quitan: se pinta el verso entero.
 pub fn parse(lrc: &str) -> Vec<Line> {
     let mut lines = Vec::new();
     for raw in lrc.lines() {
@@ -282,7 +283,7 @@ pub fn parse(lrc: &str) -> Vec<Line> {
             stamps.push(at);
             rest = body[close + 1..].trim_start();
         }
-        let text = rest.trim().to_string();
+        let text = without_word_stamps(rest);
         lines.extend(stamps.into_iter().map(|at| Line { at, text: text.clone() }));
     }
     lines.sort_by(|a, b| a.at.total_cmp(&b.at));
@@ -311,6 +312,26 @@ pub fn without_translation(lines: Vec<Line>) -> Vec<Line> {
     lines
 }
 
+fn without_word_stamps(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        match after.find('>') {
+            Some(close) if stamp(&after[..close]).is_some() => {
+                out.push_str(&rest[..open]);
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn stamp(tag: &str) -> Option<f32> {
     let (min, sec) = tag.split_once(':')?;
     let min: f32 = min.parse().ok()?;
@@ -334,6 +355,14 @@ mod tests {
         assert_eq!(at, vec![5.0, 12.5, 20.0, 60.0]);
         assert_eq!(lines[0].text, "Coro");
         assert_eq!(lines[2].text, "");
+    }
+
+    #[test]
+    fn quita_las_marcas_por_palabra_del_lrc_extendido() {
+        let lines = parse("[00:12.94]<00:12.94> Aí <00:13.19> que <00:13.42> ela <00:13.83> se\n[00:15.30]<00:15.30> vai, <00:15.68> é");
+        assert_eq!(lines[0].text, "Aí que ela se");
+        assert_eq!(lines[1].text, "vai, é");
+        assert_eq!(parse("[00:01.00]a <b> c")[0].text, "a <b> c");
     }
 
     #[test]
