@@ -3080,7 +3080,8 @@ impl MediaPanel {
     /// El nombre de la app que suena; en Windows, un botón que lleva a su ventana (y cierra
     /// el panel para dejarla a la vista).
     fn render_source_link(&self, source: &str, muted: Hsla, cx: &mut Context<Self>) -> AnyElement {
-        let label = div().text_size(px(11.)).child(SharedString::from(source.to_string()));
+        // Un nombre de app largo se corta: no empuja «Letra» fuera de la franja.
+        let label = div().min_w_0().truncate().text_size(px(11.)).child(SharedString::from(source.to_string()));
         if !cfg!(windows) {
             return label.text_color(muted).into_any_element();
         }
@@ -3088,6 +3089,7 @@ impl MediaPanel {
         let tip = crate::i18n::tf("pill.media.goToApp", &[("app", &source)]);
         div()
             .id("media-source")
+            .min_w_0()
             .h(px(24.))
             .pl(px(8.))
             .pr(px(6.))

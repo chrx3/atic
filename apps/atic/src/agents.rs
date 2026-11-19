@@ -3018,64 +3018,25 @@ impl AgentsPanel {
                     Some(s) => crate::hover::round_button_m3("phone-send", "icons/file.svg", send_tip, false, false, s, send),
                     None => crate::hover::round_button("phone-send", "icons/file.svg", send_tip, false, text, self.colors.faint, send),
                 })
-                .child(
-                    div()
-                        .id("phone-photo")
-                        .h(px(24.))
-                        .px(px(10.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(5.))
-                        .rounded(px(12.))
-                        .text_size(px(11.))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.take_photo(cx)))
-                        .fx("phone-photo", move |el, h| {
-                            // En M3, un botón tonal (contenedor secundario).
-                            let (fg, bg) = match m3 {
-                                Some(s) => (
-                                    s.on_secondary_container,
-                                    crate::hover::m3_layer(s.secondary_container, s.on_secondary_container, h),
-                                ),
-                                None => (h.mix(muted, text), h.mix(text.opacity(0.0), text.opacity(0.08))),
-                            };
-                            el.text_color(fg)
-                                .bg(bg)
-                                .child(svg().path("icons/image.svg").size(px(12.)).text_color(fg))
-                                .child(crate::i18n::t("pill.agentsList.takePhoto"))
-                        }),
-                )
-                .child(
-                    div()
-                        .id("phone-ring")
-                        .h(px(24.))
-                        .px(px(10.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(5.))
-                        .rounded(px(12.))
-                        .text_size(px(11.))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_ring(cx)))
-                        .fx("phone-ring", move |el, h| {
-                            // En M3, tonal; sonando, lleno en el terciario (algo pasa).
-                            let (fg, bg) = match m3 {
-                                Some(s) if ringing => (s.on_tertiary, crate::hover::m3_layer(s.tertiary, s.on_tertiary, h)),
-                                Some(s) => (
-                                    s.on_secondary_container,
-                                    crate::hover::m3_layer(s.secondary_container, s.on_secondary_container, h),
-                                ),
-                                None if ringing => (text, text.opacity(0.14 + 0.04 * h.t)),
-                                None => (h.mix(muted, text), h.mix(text.opacity(0.0), text.opacity(0.08))),
-                            };
-                            el.text_color(fg)
-                                .bg(bg)
-                                .child(svg().path("icons/smartphone.svg").size(px(12.)).text_color(fg))
-                                .child(if ringing { crate::i18n::t("pill.agentsList.stopRinging") } else { crate::i18n::t("pill.agentsList.findPhone") })
-                        }),
-                )
+                // Pedirle una foto y hacerlo sonar: solo íconos con su globito, para
+                // que quepan junto a Ajustes y el pin.
+                .child({
+                    let photo = cx.listener(|panel, _: &ClickEvent, _, cx| panel.take_photo(cx));
+                    let tip = crate::i18n::t("pill.agentsList.takePhoto");
+                    match m3 {
+                        Some(s) => crate::hover::round_button_m3("phone-photo", "icons/image.svg", tip, false, false, s, photo),
+                        None => crate::hover::round_button("phone-photo", "icons/image.svg", tip, false, text, self.colors.faint, photo),
+                    }
+                })
+                .child({
+                    let ring = cx.listener(|panel, _: &ClickEvent, _, cx| panel.toggle_ring(cx));
+                    let tip = if ringing { crate::i18n::t("pill.agentsList.stopRinging") } else { crate::i18n::t("pill.agentsList.findPhone") };
+                    // Sonando, se ve encendido (lleno en el acento).
+                    match m3 {
+                        Some(s) => crate::hover::round_button_m3("phone-ring", "icons/smartphone.svg", tip, ringing, ringing, s, ring),
+                        None => crate::hover::round_button("phone-ring", "icons/smartphone.svg", tip, ringing, text, self.colors.faint, ring),
+                    }
+                })
             })
             // «Vincular y permisos»: con algún celular vinculado se entra y se
             // sale con este botón (sin ninguno, el panel ya está ahí).
