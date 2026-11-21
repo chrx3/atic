@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.7.3",
+      "date": "2026-11-21",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Editar una captura abre un editor con fondo, margen, esquinas, sombra y proporción, y ahí mismo se anota",
+          "en": "Editing a capture opens an editor with background, padding, corners, shadow and aspect ratio, and you annotate right there"
+        },
+        {
+          "kind": "new",
+          "es": "La pestaña Texto del editor saca el texto de la captura y lo traduce lado a lado, con Apple Intelligence o tu proveedor de IA",
+          "en": "The editor's Text tab pulls the text out of a capture and translates it side by side, with Apple Intelligence or your AI provider"
+        },
+        {
+          "kind": "new",
+          "es": "Captura desplazable: aprieta L en la mira, desplaza la página y Atic la une en una imagen larga",
+          "en": "Scrolling capture: press L in the capture tool, scroll the page and Atic stitches it into one long image"
+        },
+        {
+          "kind": "improved",
+          "es": "En el portapapeles, las acciones de una imagen quedan ordenadas y Editar abre el editor nuevo",
+          "en": "In the clipboard, image actions are neatly arranged and Edit opens the new editor"
+        },
+        {
+          "kind": "fixed",
+          "es": "Las letras de canciones ya no muestran las marcas de tiempo de cada palabra",
+          "en": "Song lyrics no longer show each word's timestamps"
+        },
+        {
+          "kind": "fixed",
+          "es": "Los botones del panel Celular y de otros paneles ya no se salen por la derecha",
+          "en": "Buttons in the Phone panel and other panels no longer spill off the right edge"
+        }
+      ]
+    },
+    {
       "version": "0.7.2",
       "date": "2026-11-18",
       "items": [
