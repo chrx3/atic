@@ -294,7 +294,11 @@ impl CodeView {
             .tooltip(crate::i18n::t("pill.code.sidebar.newSpace"))
             .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.open_new_space(window, cx)));
         let actions = div().flex().items_center().child(layout).child(new_space);
-        let scroll = div().id("side-scroll").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        // Las cabeceras pegadas de las repisas se eligen antes de armar las listas.
+        let floats = &self.side_floats;
+        floats.list.begin();
+        floats.dock.begin();
+        let scroll = div().id("side-scroll").track_scroll(floats.list.scroll()).flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
         let scroll = match self.split_groups_m3(window, cx) {
             Some(groups) => scroll.child(groups),
             None => scroll,
@@ -351,11 +355,24 @@ impl CodeView {
             .child(crate::glide::indicator_marked(self.side_glide(cx), crate::glide::Look { fill, radius: 15., edge: None }))
             .child(top)
             .child(nav)
-            .child(scroll)
-            .children(bottom.map(|shelves| shelf_dock("side-shelves", shelves)))
+            .child(self.with_shelf_float(&self.side_floats.list, scroll, cx).flex_1().min_h(px(0.)))
+            .children(bottom.map(|shelves| self.with_shelf_float(&self.side_floats.dock, shelf_dock("side-shelves", shelves).track_scroll(self.side_floats.dock.scroll()), cx).flex_none()))
             .child(div().p(px(8.)).child(self.side_profile(cx)))
             .child(resize)
             .into_any_element()
+    }
+
+    /// Una lista con scroll de la barra con, encima, la cabecera pegada de la repisa abierta
+    /// cuya cabecera quedó arriba, fuera de la vista. Un clic la pliega.
+    fn with_shelf_float(&self, float: &super::shelf_float::ShelfFloat, list: gpui::Stateful<Div>, cx: &mut Context<Self>) -> Div {
+        let folding = float.clone();
+        let on_fold = cx.listener(move |view, _: &ClickEvent, _, cx| {
+            let Some((key, snoozed)) = folding.fold() else { return };
+            let set = if snoozed { &mut view.snoozed_open } else { &mut view.settled_open };
+            set.remove(&key);
+            cx.notify();
+        });
+        div().relative().flex().flex_col().child(list).child(float.check()).children(float.bar(on_fold, cx))
     }
 
     /// Las claves de las conversaciones que están en una vista dividida (la de ahora o una
@@ -922,7 +939,7 @@ impl CodeView {
     /// Una repisa plegada al final de un espacio («Hechas (n)» o «Pospuestas (n)»): al abrirla
     /// muestra sus filas. `key` dice de qué espacio es (o `ALL_KEY` en la barra sin carpetas).
     #[allow(clippy::too_many_arguments)]
-    fn shelf(&self, mut list: Div, key: u64, items: Vec<Conv<'_>>, snoozed: bool, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn shelf(&self, list: Div, key: u64, items: Vec<Conv<'_>>, snoozed: bool, listed: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         if items.is_empty() {
             return list;
         }
@@ -957,8 +974,10 @@ impl CodeView {
         } else {
             super::view::flat_more(id.clone(), label, toggle)
         };
+        // La cabecera y sus filas van juntas: abierta, la caja se anota para la cabecera
+        // pegada (`shelf_float.rs`). El mismo espacio entre filas que la lista.
         // Soltar una conversación sobre «Hechas» la marca como hecha.
-        list = list.child(if snoozed {
+        let mut block = div().flex().flex_col().gap(px(1.)).child(if snoozed {
             header
         } else {
             div()
@@ -969,10 +988,14 @@ impl CodeView {
         });
         if open {
             for (shown, (workspace, info, chat)) in items.into_iter().enumerate() {
-                list = list.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+                block = block.child(self.session_row(workspace, info, chat, shown, listed, window, cx));
+            }
+            if super::view::expressive() {
+                let float = if key == ALL_KEY { &self.side_floats.dock } else { &self.side_floats.list };
+                block = block.relative().child(float.probe(key, snoozed, SharedString::from(crate::i18n::t(hide_label).to_string())));
             }
         }
-        list
+        list.child(block)
     }
 
     /// Las conversaciones de un proyecto: primero las abiertas sin guardar, luego el historial.
@@ -1339,6 +1362,8 @@ impl CodeView {
             // Encoge y corta con «…»: «Esperando a 2 subagentes» se salía de la tarjeta.
             div()
                 .min_w(px(0.))
+                // En espera son solo íconos con su número: no se achica, se corta la rama.
+                .when(pending.is_some(), |el| el.flex_none())
                 .flex()
                 .items_center()
                 .gap(px(5.))

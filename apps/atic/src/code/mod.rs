@@ -61,6 +61,7 @@ mod settings_flat;
 mod settings_m3;
 mod settings_search;
 mod setup;
+mod shelf_float;
 mod shortcuts;
 mod sidebar;
 pub(crate) mod sidecar;
@@ -855,6 +856,8 @@ pub struct CodeView {
     settled_open: HashSet<u64>,
     /// Lo mismo para la repisa «Pospuestas».
     snoozed_open: HashSet<u64>,
+    /// El scroll de la barra y la cabecera pegada de una repisa abierta (`shelf_float.rs`).
+    side_floats: shelf_float::SideFloats,
     /// Al arrastrar una conversación por la barra: la fila sobre la que está y si cae antes
     /// (`true`) o después de ella.
     side_drop: Option<(String, bool)>,
@@ -1538,6 +1541,7 @@ impl CodeView {
             loose_all: false,
             settled_open: HashSet::new(),
             snoozed_open: HashSet::new(),
+            side_floats: Default::default(),
             side_drop: None,
             undo: None,
             session_menu: None,
