@@ -142,15 +142,17 @@ update_pill() {
     # suelta) y abre la nueva. Si queda una viva, la nueva ve el candado de
     # instancia única y se cierra sola.
     pattern='\.app/Contents/MacOS/atic-pill( |$)|atic-gpui-target/.*/pill-gpui( |$)'
-    pkill -f "$pattern" 2>/dev/null || true
+    # `-a`: sin él, pgrep y pkill se saltan sus ancestros, y desde Atic Code
+    # (un agente que corre bajo la pill) la pill abierta no se ve.
+    pkill -a -f "$pattern" 2>/dev/null || true
     for _ in {1..20}; do
-      pgrep -f "$pattern" >/dev/null || break
+      pgrep -a -f "$pattern" >/dev/null || break
       sleep 0.25
     done
-    pkill -9 -f "$pattern" 2>/dev/null || true
+    pkill -a -9 -f "$pattern" 2>/dev/null || true
     sleep 0.25
-    if pgrep -f "$pattern" >/dev/null; then
-      echo "✗ no se pudo cerrar la pill abierta (pid $(pgrep -f "$pattern" | tr '\n' ' ')); ciérrala y abre: $app" >&2
+    if pgrep -a -f "$pattern" >/dev/null; then
+      echo "✗ no se pudo cerrar la pill abierta (pid $(pgrep -a -f "$pattern" | tr '\n' ' ')); ciérrala y abre: $app" >&2
       return 1
     fi
     # `open` no hereda el entorno de la terminal: las variables de la pill
