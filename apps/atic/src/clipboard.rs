@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context, Div, Stateful,
+    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context,
     Entity, EventEmitter, FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyBinding,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
     RenderImage, ScrollHandle, SharedString, StyledImage, Subscription, Window,
@@ -41,12 +41,17 @@ pub const PANEL_H: f32 = 460.0;
 pub const BAND_H: f32 = 40.0;
 /// Hueco a la izquierda del buscador donde el notch pinta su marca.
 pub(crate) const MARK_GAP: f32 = 40.0;
-const STRIP_H: f32 = 52.0;
+/// Alto de las miniaturas de la tira: con el borde de 2 px quedan 52 por
+/// dentro, lo justo para dos filas de acciones con aire arriba y abajo.
+const STRIP_H: f32 = 56.0;
 const STRIP_PAD: f32 = 10.0;
 /// Un texto más largo que esto merece vista previa: en la fila no cabe.
 const PREVIEW_MIN_CHARS: usize = 56;
-const THUMB_W: f32 = 78.0;
-const SWATCH_W: f32 = 52.0;
+const THUMB_W: f32 = 84.0;
+const SWATCH_W: f32 = 56.0;
+/// Las acciones sobre una imagen de la tira: blanco de 22 px, separados por 4.
+const TILE_ACTION: f32 = 22.0;
+const TILE_ACTION_GAP: f32 = 4.0;
 const HEADER_H: f32 = 22.0;
 const ROW_H: f32 = 30.0;
 const FOOTER_H: f32 = 26.0;
@@ -154,6 +159,53 @@ impl Picture {
             },
         }
     }
+}
+
+impl crate::Pill {
+    /// «Editar» (Ctrl+E) de una imagen del historial: el mismo editor que
+    /// «Editar» del estante, la Pizarra con el panel Estilo (`edit_capture`).
+    pub(crate) fn edit_entry(&mut self, entry: &Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let Content::Image(picture) = &entry.content else {
+            return;
+        };
+        let Some(capture) = edit_target(picture) else {
+            tracing::warn!("portapapeles: sin carpeta de capturas para editar la imagen");
+            return;
+        };
+        let image = match picture.load() {
+            Ok(image) => image,
+            Err(error) => return tracing::warn!(%error, "portapapeles: no se pudo leer la imagen para editarla"),
+        };
+        // El editor lee PNG; lo que llegó en otro formato se pasa a PNG.
+        let png = if image.format == ImageFormat::Png {
+            std::borrow::Cow::Borrowed(image.bytes())
+        } else {
+            let mut png = Vec::new();
+            let encoded = image::load_from_memory(image.bytes())
+                .and_then(|decoded| decoded.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png));
+            if let Err(error) = encoded {
+                return tracing::warn!(%error, "portapapeles: no se pudo preparar la imagen para editarla");
+            }
+            std::borrow::Cow::Owned(png)
+        };
+        self.edit_capture(&capture, &png, window, cx);
+    }
+}
+
+/// A nombre de qué captura se edita una imagen del historial: Guardar deja
+/// la editada junto a ella (`photo_editor::finish`). Si ya es una captura de
+/// Atic, ella misma (así vuelven sus figuras editables); si no, un nombre
+/// nuevo en la carpeta de capturas, para no escribir en la del historial. El
+/// archivo no tiene que existir: solo se usa su carpeta y su nombre.
+fn edit_target(picture: &Picture) -> Option<PathBuf> {
+    let dir = crate::paths::captures_dir()?;
+    if let Picture::File(path) = picture {
+        if path.parent() == Some(dir.as_path()) {
+            return Some(path.to_path_buf());
+        }
+    }
+    let name = atic_capture::naming::unique_capture_filename(&dir);
+    Some(dir.join(name))
 }
 
 /// Una imagen grande mostrada en chico (las capturas de los vistazos y del
@@ -314,7 +366,7 @@ enum Filter {
 pub enum PanelEvent {
     Paste(Entry),
     Drag(Entry),
-    /// Dibujar sobre una imagen en la pizarra.
+    /// Editar una imagen: la Pizarra con el panel Estilo.
     Draw(Entry),
     /// Una imagen, adjunta en la conversación abierta de Atic Code.
     ToCode(PathBuf),
@@ -946,6 +998,8 @@ impl ClipboardPanel {
         .detach();
     }
 
+    /// Editar la imagen: la pill la abre en el editor con el panel Estilo
+    /// (`Pill::edit_entry`).
     fn draw(&mut self, index: usize, cx: &mut Context<Self>) {
         if let Some(entry) = self.entries.get(index).filter(|e| matches!(e.content, Content::Image(_))) {
             cx.emit(PanelEvent::Draw(entry.clone()));
@@ -1337,61 +1391,111 @@ impl ClipboardPanel {
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };
-                // Con el cursor encima, uno en cada esquina (en fila no caben en
-                // 78 px: se salían del cuadro y el hover parpadeaba): leer el texto
-                // (Ctrl+T), al celular (o abrir en el visor, Ctrl+O, sin celular),
-                // favorito (Ctrl+D) y dibujar en la pizarra (Ctrl+E); al centro, mandarla a
-                // la conversación abierta de Atic Code (Ctrl+K).
-                let button = |id: &'static str, icon: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
+                // Un enlace o un color: a lo más dos botones, en sus esquinas.
+                let button = |id: &'static str, icon: &'static str, tip: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
                     div()
                         .id((id, entry.id))
                         .absolute()
-                        .size(px(22.))
+                        .size(px(TILE_ACTION))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(11.))
+                        .rounded(px(TILE_ACTION / 2.))
                         .bg(gpui::black().opacity(0.6))
                         .hover(|style| style.bg(gpui::black().opacity(0.85)))
+                        .tooltip(crate::hover::tip(tip))
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             action(panel, index, cx)
                         }))
                         .child(svg().path(crate::icons::themed(icon)).size(px(12.)).text_color(gpui::white()))
                 };
-                let corner = if crate::phone::can_send_files() {
-                    button("clip-phone", "icons/smartphone.svg", Self::send_to_phone)
-                } else {
-                    button("clip-open", "icons/external-link.svg", Self::open_image)
+                // Una imagen: con el cursor encima se oscurece entera (los íconos
+                // se leen sobre una foto clara o una oscura) y las acciones van en
+                // una grilla centrada de 3 + 2, con el mismo blanco y el mismo aire
+                // entre todas. Antes iban sueltas en las esquinas y al centro, con
+                // posiciones a mano que no contaban el borde: quedaban corridas y
+                // se pisaban.
+                let action = |id: &'static str, icon: &'static str, tip: &'static str, key: Option<&'static str>, on: bool, action: fn(&mut Self, usize, &mut Context<Self>)| {
+                    div()
+                        .id((id, entry.id))
+                        .size(px(TILE_ACTION))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(TILE_ACTION / 2.))
+                        // Encendida (la favorita), rellena como un botón de alternar de M3.
+                        .when(on, |el| el.bg(gpui::white().opacity(0.92)))
+                        .hover(move |style| style.bg(if on { gpui::white() } else { gpui::white().opacity(0.22) }))
+                        .tooltip(crate::hover::tip_keyed(tip, key.map(crate::keymap::hint)))
+                        .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            action(panel, index, cx)
+                        }))
+                        .child(
+                            svg()
+                                .path(crate::icons::styled(icon, crate::icons::expressive(), on))
+                                .size(px(13.))
+                                .text_color(if on { gpui::black() } else { gpui::white() }),
+                        )
                 };
+                let pinned = entry.pinned;
+                let favorite_tip = if pinned { t("pill.clipboard.tileUnfavorite") } else { t("pill.clipboard.tileFavorite") };
+                let overlay = is_image.then(|| {
+                    let corner = if crate::phone::can_send_files() {
+                        action("clip-phone", "icons/smartphone.svg", t("pill.clipboard.tileToPhone"), None, false, Self::send_to_phone)
+                    } else {
+                        action("clip-open", "icons/external-link.svg", t("pill.clipboard.tileOpen"), Some("Ctrl+O"), false, Self::open_image)
+                    };
+                    let row = || div().flex().gap(px(TILE_ACTION_GAP));
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(TILE_ACTION_GAP))
+                        .bg(gpui::black().opacity(0.5))
+                        .child(
+                            row()
+                                .child(action("clip-text", "icons/scan-text.svg", t("pill.clipboard.tileReadText"), Some("Ctrl+T"), false, Self::read_text))
+                                .child(action("clip-draw", "icons/pencil.svg", t("pill.clipboard.tileEdit"), Some("Ctrl+E"), false, Self::draw))
+                                .child(action("clip-code", "icons/code.svg", t("pill.clipboard.tileToCode"), Some("Ctrl+K"), false, Self::to_code)),
+                        )
+                        .child(
+                            row()
+                                .child(corner)
+                                .child(action("clip-tile-star", "icons/star.svg", favorite_tip, Some("Ctrl+D"), pinned, Self::toggle_favorite)),
+                        )
+                });
                 // Un enlace, con un celular que sabe abrirlos: al navegador de él.
                 let link = phone_links && matches!(&entry.content, Content::Text(text) if atic_sync::is_web_url(text.trim()));
-                let buttons: Vec<Stateful<Div>> = if is_image {
-                    vec![
-                        button("clip-text", "icons/scan-text.svg", Self::read_text).top(px(4.)).left(px(4.)),
-                        corner.top(px(4.)).right(px(4.)),
-                        button("clip-draw", "icons/pencil.svg", Self::draw).bottom(px(4.)).right(px(4.)),
-                        // Al centro: las esquinas ya están tomadas.
-                        button("clip-code", "icons/code.svg", Self::to_code).top(px((STRIP_H - 22.) / 2.)).left(px((THUMB_W - 22.) / 2.)),
-                    ]
-                } else if link {
-                    vec![button("clip-link-phone", "icons/smartphone.svg", Self::open_on_phone).top(px(4.)).right(px(4.))]
-                } else {
-                    Vec::new()
-                };
-                // Una favorita deja la estrella siempre a la vista.
-                let pinned = entry.pinned;
-                let star = button("clip-tile-star", "icons/star.svg", Self::toggle_favorite).bottom(px(4.)).left(px(4.));
+                let link_button = (!is_image && link).then(|| {
+                    button("clip-link-phone", "icons/smartphone.svg", t("pill.clipboard.tileLinkToPhone"), Self::open_on_phone)
+                        .top(px(4.))
+                        .right(px(4.))
+                });
+                // Una favorita deja la estrella siempre a la vista (en una imagen,
+                // hasta que el cursor muestra la grilla, que ya la trae).
+                let star = button("clip-tile-star", "icons/star.svg", favorite_tip, Self::toggle_favorite).bottom(px(4.)).left(px(4.));
                 let tile = tile.relative();
                 // Los botones siguen el mismo hover que el borde (`fx`): el
                 // `group_hover` de GPUI no veía el cursor dentro de él.
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
                         let show = h.over;
+                        let hovering = show > 0.01;
                         // Elegida, borde lleno; con el cursor encima, a medias.
                         el.border_color(if is_selected { ring.opacity(0.9) } else { text.opacity(0.35 * show) })
-                            .when(show > 0.01, |el| el.children(buttons.into_iter().map(|b| b.opacity(show))))
-                            .when(pinned || show > 0.01, |el| el.child(star.opacity(if pinned { 1.0 } else { show })))
+                            .when_some(overlay.filter(|_| hovering), |el, overlay| el.child(overlay.opacity(show)))
+                            .when_some(link_button.filter(|_| hovering), |el, b| el.child(b.opacity(show)))
+                            .when(if is_image { pinned && !hovering } else { pinned || hovering }, |el| {
+                                el.child(star.opacity(if pinned { 1.0 } else { show }))
+                            })
                     })
                     .into_any_element()
             })

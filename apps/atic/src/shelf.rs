@@ -3,7 +3,7 @@
 //!
 //! La captura vuela desde donde se tomó hasta su lugar. Las nuevas entran
 //! abajo y empujan a las anteriores hacia arriba. Con el cursor encima de una
-//! aparecen sus opciones: descartar, carpeta, Copiar, Dibujar y Texto. Clic en
+//! aparecen sus opciones: descartar, carpeta, Copiar, Editar y Texto. Clic en
 //! la foto la abre; arrastrarla la suelta en otra app. Las grabaciones de
 //! pantalla llegan igual, con su primer cuadro y solo Copiar (el archivo). Cada una se
 //! achica en dos pasos durante sus 20 s y al vencer hace «pop»; con el cursor
@@ -23,7 +23,6 @@ use crate::anim::{ease_island, ease_smooth_out, lerp, segment, Tween};
 use crate::capture::Saved;
 use crate::geometry::Rect;
 use crate::hover::HoverExt;
-use crate::i18n::t;
 
 const THUMB_W: f32 = 192.0;
 const THUMB_H: f32 = 120.0;
@@ -50,6 +49,8 @@ const POP: Duration = Duration::from_millis(200);
 const POP_GROW: f32 = 0.18;
 /// Mover esto con el botón apretado sobre la miniatura es arrastrarla.
 const DRAG_START: f32 = 6.0;
+/// El ancho del consejo de la primera vez, al lado de la foto.
+const TIP_W: f32 = 260.0;
 /// Lo que se ve un aviso («Texto copiado») antes de volver a los botones.
 const NOTE_FOR: Duration = Duration::from_millis(1600);
 
@@ -60,7 +61,7 @@ pub struct Shelf {
     /// PNG), GPUI la decodificaba y la subía a la GPU a tamaño de pantalla, y
     /// la guardaba en su caché para siempre: ~40 MB por captura.
     photo: Arc<RenderImage>,
-    /// La captura, comprimida: Copiar, Dibujar y Texto la decodifican al
+    /// La captura, comprimida: Copiar, Editar y Texto la decodifican al
     /// usarse. Guardarla en BGRA los 20 s que vive eran ~20 MB por foto.
     png: Arc<Vec<u8>>,
     path: PathBuf,
@@ -90,8 +91,11 @@ pub struct Shelf {
     note: Option<(SharedString, Instant)>,
     busy: bool,
     /// Una grabación de pantalla: la foto es su primer cuadro; Copiar copia
-    /// el archivo y no hay Dibujar ni Texto.
+    /// el archivo y no hay Texto.
     video: bool,
+    /// La primera foto del estante: al lado lleva el consejo de Editar y
+    /// Texto (`coach::first_time`), hasta que se usa uno o la foto se va.
+    tip: bool,
 }
 
 /// El tamaño de la fase en que va, por tercios de su vida: entera,
@@ -140,6 +144,7 @@ impl crate::Pill {
         let on_left = cfg.is_some_and(|cfg| cfg.capture_shelf_side == "left");
         self.shelf_seq += 1;
         let video = saved.path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"));
+        let tip = !video && crate::coach::first_time("shelf");
         self.shelves.insert(
             0,
             Shelf {
@@ -163,6 +168,7 @@ impl crate::Pill {
                 note: None,
                 busy: false,
                 video,
+                tip,
             },
         );
         // Las que no caben en la altura de la pantalla se van.
@@ -302,7 +308,7 @@ impl crate::Pill {
                 cx.notify();
             }
             // Apretar en cualquier parte de la foto, también sobre Copiar,
-            // Dibujar o Texto, que tapan casi todo el centro: esos botones
+            // Editar o Texto, que tapan casi todo el centro: esos botones
             // detienen el evento y la foto nunca se enteraba.
             if over && button_down && !shelf.was_down && shelf.press.is_none() {
                 shelf.press = cursor;
@@ -414,59 +420,14 @@ impl crate::Pill {
         .detach();
     }
 
-    fn shelf_draw(&mut self, id: u64, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let Some(index) = self.shelves.iter().position(|shelf| shelf.id == id) else {
-            return;
-        };
-        let shelf = self.shelves.remove(index);
-        self.restack(Instant::now());
-        // Si salió de la pizarra, vuelve limpia y con sus figuras editables.
-        if self.reopen_edit(&shelf.path, window, cx) {
-            return;
-        }
-        let previous = crate::paste::foreground_target();
-        match Frame::from_png(0, 0, &shelf.png) {
-            Ok(frame) => self.open_board_centered(frame, previous, window, cx),
-            Err(error) => eprintln!("estante: no se pudo abrir la captura: {error}"),
-        }
-    }
-
+    /// Abre la ventana «Texto»: lee la captura ahí y deja copiar o traducir.
     fn shelf_text(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(shelf) = self.shelf_mut(id) else {
-            return;
-        };
-        if shelf.busy {
-            return;
+        if let Some(shelf) = self.shelf_mut(id) {
+            shelf.tip = false;
         }
-        shelf.busy = true;
-        shelf.note = Some((t("shelf.reading").into(), Instant::now()));
-        let png = shelf.png.clone();
-        cx.spawn(async move |this, cx| {
-            let text = cx
-                .background_spawn(async move {
-                    let frame = Frame::from_png(0, 0, &png).map_err(|error| error.to_string())?;
-                    crate::ocr::recognize(frame.width(), frame.height(), &frame.bgra)
-                })
-                .await;
-            let _ = this.update(cx, |pill, cx| {
-                if let Some(shelf) = pill.shelf_mut(id) {
-                    shelf.busy = false;
-                }
-                match text {
-                    Ok(text) if !text.trim().is_empty() => {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        pill.shelf_note(id, t("toast.textCopied"), cx);
-                    }
-                    Ok(_) => pill.shelf_note(id, t("pill.shelf.noText"), cx),
-                    Err(error) => {
-                        eprintln!("estante: OCR: {error}");
-                        pill.shelf_note(id, t("pill.clipboard.readFailed"), cx);
-                    }
-                }
-            });
-        })
-        .detach();
-        cx.notify();
+        if let Some(png) = self.shelf_mut(id).map(|shelf| shelf.png.clone()) {
+            crate::text_window::open(png, cx);
+        }
     }
 
     fn shelf_open(&mut self, id: u64) {
@@ -475,10 +436,25 @@ impl crate::Pill {
         }
     }
 
-    /// Abre la grabación en el editor, en su propia ventana.
-    fn shelf_edit(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(path) = self.shelf_mut(id).map(|shelf| shelf.path.clone()) {
+    /// Abre la grabación en su editor, en su propia ventana; la foto, en la
+    /// Pizarra con el panel de estilo (`photo_editor/`): se anota y se le da
+    /// estilo en la misma pantalla.
+    fn shelf_edit(&mut self, id: u64, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(shelf) = self.shelf_mut(id) else {
+            return;
+        };
+        if shelf.video {
+            let path = shelf.path.clone();
             crate::recording_editor::open(path, cx);
+            return;
+        }
+        let (path, png) = (shelf.path.clone(), shelf.png.clone());
+        // Abierta en la Pizarra, sale del estante (sigue en su carpeta).
+        if self.edit_capture(&path, &png, window, cx) {
+            if let Some(index) = self.shelves.iter().position(|shelf| shelf.id == id) {
+                self.shelves.remove(index);
+                self.restack(Instant::now());
+            }
         }
     }
 
@@ -625,9 +601,11 @@ impl crate::Pill {
                         .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
                 )
             });
-        // Un video tiene Copiar y Editar (`recording_editor/`).
-        let editable = shelf.video;
-        let actions = if editable { 2.0 } else if shelf.video { 1.0 } else { 3.0 };
+        // Un video tiene Copiar y Editar (`recording_editor/`); una foto, además
+        // Texto, y su Editar abre la Pizarra con el panel de estilo
+        // (`photo_editor/`): anotar y dar estilo en la misma pantalla.
+        let editable = true;
+        let actions = if shelf.video { 2.0 } else { 3.0 };
 
         let overlay = div()
             .absolute()
@@ -672,19 +650,12 @@ impl crate::Pill {
                             .when(editable, |el| {
                                 el.child(
                                     action("shelf-edit", "icons/pencil.svg", crate::i18n::t("shelf.edit"))
-                                        .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_edit(id, cx)))
+                                        .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| pill.shelf_edit(id, window, cx)))
                                         .hover_bg(("shelf-edit-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                                 )
                             })
                             .when(!shelf.video, |el| {
                                 el.child(
-                                    action("shelf-draw", "icons/pencil.svg", crate::i18n::t("shelf.draw"))
-                                        .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| {
-                                            pill.shelf_draw(id, window, cx)
-                                        }))
-                                        .hover_bg(("shelf-draw-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
-                                )
-                                .child(
                                     action("shelf-text", "icons/scan-text.svg", crate::i18n::t("shelf.text"))
                                         .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_text(id, cx)))
                                         .hover_bg(("shelf-text-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
@@ -707,7 +678,24 @@ impl crate::Pill {
         // La ayuda, al lado de la foto que da a la pantalla: arriba la taparía
         // la de encima.
         let on_left = shelf.on_left;
-        let tip = veil.then(|| {
+        // La primera vez, el consejo de Editar y Texto en lugar de la ayuda:
+        // sin el cursor encima invita a pasarlo; con él, dice qué hace cada uno.
+        let first = (shelf.tip && t >= 1.0 && shelf.popped.is_none() && note.is_none()).then(|| {
+            let text = if veil { crate::i18n::t("pill.shelf.tipHover") } else { crate::i18n::t("pill.shelf.tipIdle") };
+            let scheme = crate::board::Colors::current().scheme;
+            div()
+                .absolute()
+                .left(px(if on_left { thumb.right() + 10.0 } else { thumb.x - 10.0 - TIP_W }))
+                .top(px(thumb.y))
+                .w(px(TIP_W))
+                .h(px(thumb.h))
+                .flex()
+                .items_center()
+                .when(on_left, |el| el.justify_start())
+                .when(!on_left, |el| el.justify_end())
+                .child(crate::coach::tip_chip(scheme.as_ref(), None, text))
+        });
+        let tip = (veil && first.is_none()).then(|| {
             div()
                 .absolute()
                 .left(px(if on_left { thumb.right() + 8.0 } else { thumb.x - 178.0 }))
@@ -736,6 +724,7 @@ impl crate::Pill {
             .child(photo)
             .when(t >= 1.0 && shelf.popped.is_none(), |el| el.child(overlay))
             .children(tip)
+            .children(first)
             .into_any_element()
     }
 }

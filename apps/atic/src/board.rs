@@ -28,6 +28,7 @@ use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 use crate::capture::{self, Frozen, Saved};
 use crate::hover::{tool_tip as tip, HoverExt, M3Tone};
 use crate::i18n::{t, tf};
+use crate::photo_editor::{self, compose as photo, StyleEvent, StylePanel};
 use crate::text_area::TextArea;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
@@ -123,6 +124,22 @@ static GUIDE: crate::coach::Guide = crate::coach::Guide {
         crate::coach::Mark { anchor: "board.tools", title: "pill.coach.board.tools.title", body: "pill.coach.board.tools.body" },
         crate::coach::Mark { anchor: "board.hide", title: "pill.coach.board.hide.title", body: "pill.coach.board.hide.body" },
         crate::coach::Mark { anchor: "board.done", title: "pill.coach.board.done.title", body: "pill.coach.board.done.body" },
+    ],
+};
+
+/// La guía de primera vez del editor de capturas (Editar del estante): la
+/// Pizarra con el panel de estilo (`photo_editor/`).
+static PHOTO_GUIDE: crate::coach::Guide = crate::coach::Guide {
+    id: "photo",
+    marks: &[
+        crate::coach::Mark { anchor: "photo.style", title: "pill.coach.photo.style.title", body: "pill.coach.photo.style.body" },
+        crate::coach::Mark { anchor: "board.tools", title: "pill.coach.photo.tools.title", body: "pill.coach.photo.tools.body" },
+        crate::coach::Mark {
+            anchor: "photo.text",
+            title: "pill.coach.photo.text.title",
+            body: if cfg!(target_os = "macos") { "pill.coach.photo.text.bodyMac" } else { "pill.coach.photo.text.body" },
+        },
+        crate::coach::Mark { anchor: "photo.finish", title: "pill.coach.photo.finish.title", body: "pill.coach.photo.finish.body" },
     ],
 };
 
@@ -1412,7 +1429,7 @@ pub fn frozen_for(frame: Frame, scale: f32, offset: (f32, f32)) -> Option<Frozen
 actions!(
     board,
     [
-        Close, Done, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
+        Close, Done, Save, Undo, Redo, Clear, PickPen, PickHighlight, PickLine, PickArrow, PickCurve,
         PickRect, PickEllipse, PickStep, PickPixelate, PickFocus, PickGrab, PickText, PickEraser,
         PickBubble, PickMagnify, PickRuler, PickPicker, PickEmoji, ToggleDashed, ToggleShadow,
         PickSelect, PickCrop, Duplicate, NudgeLeft, NudgeRight, NudgeUp, NudgeDown, ZoomIn, ZoomOut,
@@ -1431,7 +1448,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Close, context),
         KeyBinding::new("enter", Done, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-c"), Done, context),
-        KeyBinding::new(&crate::keymap::primary("ctrl-s"), Done, context),
+        KeyBinding::new(&crate::keymap::primary("ctrl-s"), Save, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-z"), Undo, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-y"), Redo, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-shift-z"), Redo, context),
@@ -1792,6 +1809,112 @@ pub struct BoardView {
     live: bool,
     /// Esperando la foto que se le pidió a la pill.
     snapping: bool,
+    /// Editando una captura del estante: el panel de estilo a la derecha.
+    polish: Option<Polish>,
+    /// El alto de la barra al editar una captura (en una pantalla angosta, o
+    /// con el panel ancho, salta a dos filas): la foto va debajo.
+    polish_bar_h: f32,
+}
+
+/// «Editar» del estante: la pizarra sobre la captura con el panel de estilo
+/// (`photo_editor/`). Se anota y se le da estilo en la misma pantalla: la
+/// barra arriba, la foto sobre su fondo al centro y el panel a la derecha,
+/// con Copiar y Guardar.
+///
+/// Al cambiar el lienzo (margen, proporción) o el ancho del panel (la pestaña
+/// Texto), la foto y el panel se reacomodan con el mismo resorte espacial
+/// (`motion`): un solo dueño, la Pizarra, que en cada cuadro lleva la escala
+/// y el origen de la foto a lo que dicen los resortes (`step_polish`).
+struct Polish {
+    panel: Entity<StylePanel>,
+    /// La captura que se edita: Guardar deja la editada a su lado.
+    capture: std::path::PathBuf,
+    /// El tamaño del monitor, en lógico.
+    monitor: (f32, f32),
+    /// La escala de 1:1 (un píxel de la captura por píxel de la pantalla): la
+    /// foto nunca se agranda más que eso.
+    min_scale: f32,
+    motion: PolishMotion,
+    _events: Subscription,
+}
+
+/// Los resortes del reacomodo: el tamaño de la foto (1 / escala), su origen y
+/// el ancho del panel. Van juntos: se fijan a la vez y con el mismo resorte.
+struct PolishMotion {
+    size: crate::anim::SpringTrack,
+    x: crate::anim::SpringTrack,
+    y: crate::anim::SpringTrack,
+    panel_w: crate::anim::SpringTrack,
+    /// Moviéndose: la Pizarra sigue a los resortes. Al acercar o alejar a mano
+    /// se suelta (si no, los resortes la devolverían).
+    moving: bool,
+}
+
+impl PolishMotion {
+    fn new(panel_w: f32) -> Self {
+        let track = |value| crate::anim::SpringTrack::new(value, crate::anim::SpringKind::Spatial);
+        Self { size: track(1.0), x: track(0.0), y: track(0.0), panel_w: track(panel_w), moving: false }
+    }
+
+    /// Hacia `scale`, `origin` y `panel_w`; sin `animate`, salta.
+    fn set(&mut self, scale: f32, origin: (f32, f32), panel_w: f32, animate: bool, now: Instant) {
+        let size = 1.0 / scale.max(1e-4);
+        if animate {
+            self.size.set(size, now);
+            self.x.set(origin.0, now);
+            self.y.set(origin.1, now);
+            self.panel_w.set(panel_w, now);
+        } else {
+            self.size.snap(size);
+            self.x.snap(origin.0);
+            self.y.snap(origin.1);
+            self.panel_w.snap(panel_w);
+        }
+        self.moving = true;
+    }
+
+    fn running(&self, now: Instant) -> bool {
+        self.size.is_running(now) || self.x.is_running(now) || self.y.is_running(now) || self.panel_w.is_running(now)
+    }
+}
+
+/// La distancia del panel de estilo a los bordes del monitor.
+const POLISH_INSET: f32 = 12.0;
+/// El aire alrededor de la foto con su fondo, como parte del espacio libre:
+/// la foto nunca llena todo, y en una pantalla grande el aire crece.
+const POLISH_AIR: f32 = 0.08;
+const POLISH_AIR_MIN: f32 = 40.0;
+const POLISH_AIR_MAX: f32 = 96.0;
+
+/// Dónde va el panel de estilo en el monitor con ancho `w`: x, y, ancho, alto (lógico).
+fn polish_panel_rect(monitor: (f32, f32), w: f32) -> (f32, f32, f32, f32) {
+    (monitor.0 - w - POLISH_INSET, POLISH_INSET, w, (monitor.1 - 2.0 * POLISH_INSET).max(200.0))
+}
+
+/// El ancho del panel en el monitor: el que pide, sin pasar de la mitad.
+fn polish_panel_w(monitor: (f32, f32), wanted: f32) -> f32 {
+    wanted.min(monitor.0 * 0.5).max(photo_editor::PANEL_W.min(wanted))
+}
+
+/// El espacio libre para la foto con su fondo: a la izquierda del panel (de
+/// ancho `panel_w`) y bajo la barra (y su aviso). x, y, ancho, alto.
+fn polish_stage(monitor: (f32, f32), bar_h: f32, panel_w: f32) -> (f32, f32, f32, f32) {
+    let top = POLISH_INSET + bar_h + 44.0;
+    let right = monitor.0 - panel_w - 2.0 * POLISH_INSET;
+    let w = (right - POLISH_INSET).max(120.0);
+    let h = (monitor.1 - top - POLISH_INSET).max(120.0);
+    (POLISH_INSET, top, w, h)
+}
+
+/// Cómo cabe un lienzo de `canvas` píxeles en `stage`: la escala (píxeles de
+/// la captura por punto) y la esquina del lienzo. Entero y centrado, con aire
+/// alrededor, y nunca más grande que 1:1 (`min_scale`).
+fn polish_fit(canvas: (f32, f32), stage: (f32, f32, f32, f32), min_scale: f32) -> (f32, (f32, f32)) {
+    let (sx, sy, sw, sh) = stage;
+    let air = (sw.min(sh) * POLISH_AIR).clamp(POLISH_AIR_MIN, POLISH_AIR_MAX);
+    let (aw, ah) = ((sw - 2.0 * air).max(80.0), (sh - 2.0 * air).max(80.0));
+    let scale = (canvas.0 / aw).max(canvas.1 / ah).max(min_scale);
+    (scale, (sx + (sw - canvas.0 / scale) / 2.0, sy + (sh - canvas.1 / scale) / 2.0))
 }
 
 impl EventEmitter<BoardEvent> for BoardView {}
@@ -1871,6 +1994,8 @@ impl BoardView {
             other: None,
             live: false,
             snapping: false,
+            polish: None,
+            polish_bar_h: 0.0,
         }
     }
 
@@ -2204,7 +2329,22 @@ impl BoardView {
             }
             return;
         }
+        // Editando una captura, Enter y Ctrl+C copian la editada.
+        if self.polish.is_some() {
+            self.polish_finish(photo_editor::Finish::Copy, cx);
+            return;
+        }
         self.finish(cx);
+    }
+
+    /// Ctrl+S: editando una captura, guarda la editada junto a la original;
+    /// si no, es «Listo».
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        if self.polish.is_some() && self.tool != Tool::SelectText {
+            self.polish_finish(photo_editor::Finish::Save, cx);
+            return;
+        }
+        self.done(&Done, window, cx);
     }
 
     fn finish(&mut self, cx: &mut Context<Self>) {
@@ -2408,28 +2548,174 @@ impl BoardView {
             self.notify_user(t("pill.board.zoomOnlyCaptures"), cx);
             return;
         }
+        // Acercar a mano suelta el reacomodo: si no, los resortes la devolverían.
+        if let Some(polish) = self.polish.as_mut() {
+            polish.motion.moving = false;
+        }
         // Entre la cuarta parte y cuatro veces lo de al abrir.
         let new = target.clamp(self.base_scale / 4.0, self.base_scale * 4.0);
-        let old = self.frozen.scale;
-        if (new - old).abs() < f32::EPSILON {
+        if (new - self.frozen.scale).abs() < f32::EPSILON {
             return;
         }
+        let k = self.rescale(new, cx);
+        let focus = self.cursor;
+        self.origin = zoom_origin(self.origin, focus, k);
+        self.cursor = (focus.0 * k, focus.1 * k);
+        self.rebuild_layer();
+        let percent = (self.base_scale / new * 100.0).round();
+        self.notify_user(crate::keymap::hint_owned(tf("pill.board.zoomed", &[("percent", &percent)])), cx);
+    }
+
+    /// Cambia la escala de la vista a `new` y lleva lo dibujado a ella (las
+    /// figuras van en lógico). Devuelve cuánto crece lo de la pantalla.
+    fn rescale(&mut self, new: f32, cx: &mut Context<Self>) -> f32 {
         self.end_text(cx);
         self.dragging = None;
         crate::release::maybe(self.drag_layer.take());
-        let k = old / new;
+        let k = self.frozen.scale / new;
         self.shapes = scale_shapes(&self.shapes, k);
         self.past = self.past.iter().map(|state| scale_shapes(state, k)).collect();
         self.future = self.future.iter().map(|state| scale_shapes(state, k)).collect();
         self.current = None;
         self.crop = self.crop.map(|(x0, y0, x1, y1)| (x0 * k, y0 * k, x1 * k, y1 * k));
-        let focus = self.cursor;
-        self.origin = zoom_origin(self.origin, focus, k);
-        self.cursor = (focus.0 * k, focus.1 * k);
         self.frozen.scale = new;
-        self.rebuild_layer();
-        let percent = (self.base_scale / new * 100.0).round();
-        self.notify_user(crate::keymap::hint_owned(tf("pill.board.zoomed", &[("percent", &percent)])), cx);
+        k
+    }
+
+    // --- Editar una captura (con el panel de estilo) ------------------------
+
+    /// Pone el panel de estilo: la pizarra pasa a ser el editor de la captura
+    /// `capture`. `monitor` es el tamaño del monitor en lógico y
+    /// `device_scale`, su escala.
+    pub(crate) fn start_polish(&mut self, capture: std::path::PathBuf, monitor: (f32, f32), device_scale: f32, cx: &mut Context<Self>) {
+        let panel = cx.new(|cx| StylePanel::new(&self.frozen.frame, cx));
+        let events = cx.subscribe(&panel, |board, _, event: &StyleEvent, cx| {
+            match event {
+                StyleEvent::Changed => board.fit_polish(true, cx),
+                StyleEvent::Finish(finish) => board.polish_finish(*finish, cx),
+            }
+            cx.notify();
+        });
+        let panel_w = polish_panel_w(monitor, photo_editor::PANEL_W);
+        self.polish = Some(Polish { panel, capture, monitor, min_scale: device_scale, motion: PolishMotion::new(panel_w), _events: events });
+        self.fit_polish(false, cx);
+        cx.notify();
+    }
+
+    /// La foto con su fondo, entera y centrada a la izquierda del panel
+    /// (`polish_fit`). Se rehace al cambiar el estilo (el margen o la
+    /// proporción cambian el lienzo) o el ancho del panel; con `animate`, se
+    /// llega con el resorte. Ctrl+0 vuelve a la escala de aquí.
+    fn fit_polish(&mut self, animate: bool, cx: &mut Context<Self>) {
+        let Some(polish) = self.polish.as_mut() else {
+            return;
+        };
+        let panel = polish.panel.read(cx);
+        let (style, wanted) = (panel.style(), panel.width());
+        let (monitor, min_scale) = (polish.monitor, polish.min_scale);
+        let panel_w = polish_panel_w(monitor, wanted);
+        let colors = Colors::current();
+        let stage = polish_stage(monitor, (BAR_H + colors.button() - BUTTON).max(self.polish_bar_h), panel_w);
+        // Siempre sobre la captura entera: recortar no la mueve.
+        let layout = photo::layout((self.frozen.frame.width(), self.frozen.frame.height()), &style);
+        let (fit, corner) = polish_fit((layout.canvas.0 as f32, layout.canvas.1 as f32), stage, min_scale);
+        // De la esquina del lienzo a la de la captura dentro de él.
+        let origin = (corner.0 + layout.at.0 as f32 / fit, corner.1 + layout.at.1 as f32 / fit);
+        self.base_scale = fit;
+        let now = Instant::now();
+        let animate = animate && !crate::anim::reduced_motion();
+        if animate && !polish.motion.moving {
+            // Parte de lo que se ve ahora (quizá acercado a mano).
+            polish.motion.set(self.frozen.scale, self.origin, polish.motion.panel_w.value(now), false, now);
+        }
+        polish.motion.set(fit, origin, panel_w, animate, now);
+        self.step_polish(now, cx);
+    }
+
+    /// Lleva la foto a lo que dicen los resortes del reacomodo. Devuelve si
+    /// siguen moviéndose (hay que pedir otro cuadro).
+    fn step_polish(&mut self, now: Instant, cx: &mut Context<Self>) -> bool {
+        let Some(motion) = self.polish.as_mut().map(|polish| &mut polish.motion).filter(|motion| motion.moving) else {
+            return false;
+        };
+        let running = motion.running(now);
+        motion.moving = running;
+        let scale = 1.0 / motion.size.value(now).max(1e-4);
+        let origin = (motion.x.value(now), motion.y.value(now));
+        if (scale - self.frozen.scale).abs() > 1e-6 {
+            // Lo de la capa ya está en píxeles de la foto: no hace falta rehacerla.
+            let k = self.rescale(scale, cx);
+            self.cursor = (self.cursor.0 * k, self.cursor.1 * k);
+        }
+        // Nunca (0, 0): ese origen es el de la pantalla entera.
+        self.origin = (origin.0.max(1.0), origin.1.max(1.0));
+        running
+    }
+
+    /// El ancho del panel que se ve ahora (crece o se achica con el resorte).
+    fn polish_panel_shown(&self, now: Instant) -> Option<f32> {
+        self.polish.as_ref().map(|polish| polish.motion.panel_w.value(now).max(1.0))
+    }
+
+    /// El recorte en píxeles de la foto (como lo corta `export_frame`).
+    fn crop_area(&self) -> Option<photo_editor::Area> {
+        let (x0, y0, x1, y1) = self.crop?;
+        let (w, h) = (self.frozen.frame.width(), self.frozen.frame.height());
+        let scale = self.frozen.scale;
+        let clamp = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as u32;
+        let (x0, y0, x1, y1) = (clamp(x0, w), clamp(y0, h), clamp(x1, w), clamp(y1, h));
+        (x1 >= x0 + 2 && y1 >= y0 + 2).then_some((x0, y0, x1 - x0, y1 - y0))
+    }
+
+    /// El fondo de la vista previa va alrededor de lo que sale: el recorte o
+    /// la foto entera.
+    fn sync_polish_area(&mut self, cx: &mut Context<Self>) {
+        let area = self.crop_area();
+        if let Some(polish) = self.polish.as_ref() {
+            polish.panel.update(cx, |panel, cx| panel.set_area(area, cx));
+        }
+    }
+
+    /// Copiar o Guardar del panel (o Enter, Ctrl+C, Ctrl+S): la captura con
+    /// lo dibujado, el recorte y el estilo, armada en otro hilo. Copiar cierra
+    /// la pizarra; Guardar la deja abierta y avisa en el panel.
+    fn polish_finish(&mut self, finish: photo_editor::Finish, cx: &mut Context<Self>) {
+        self.end_text(cx);
+        let Some(polish) = self.polish.as_ref() else {
+            return;
+        };
+        let panel = polish.panel.clone();
+        if !panel.update(cx, |panel, cx| panel.begin_finish(cx)) {
+            return;
+        }
+        let style = panel.read(cx).style();
+        let capture = polish.capture.clone();
+        let (frame, shapes, scale, crop) = (self.frozen.frame.clone(), self.shapes.clone(), self.frozen.scale, self.crop);
+        let suffix = t("pill.photoEditor.editedSuffix");
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_spawn(async move {
+                    let annotated = export_frame(&frame, &shapes, scale, Export::default(), crop)?;
+                    let saved = photo_editor::finish(&annotated, &style, finish, &capture, suffix)?;
+                    // Para seguir editando la guardada: la foto limpia y sus figuras.
+                    if let Some(path) = saved.as_ref() {
+                        if let Err(error) = save_edit(path, &frame, &shapes, scale) {
+                            tracing::warn!(%error, "pizarra: no se guardó la edición");
+                        }
+                    }
+                    Ok::<_, String>(saved)
+                })
+                .await;
+            let _ = this.update(cx, |_, cx| {
+                let copied = matches!(done, Ok(None));
+                panel.update(cx, |panel, cx| panel.finished(done, cx));
+                // Copiar es lo último que se hace: copia y se va, como en el estante.
+                if copied {
+                    cx.emit(BoardEvent::Closed);
+                }
+            });
+        })
+        .detach();
     }
 
     /// La rueda mueve la imagen (si quedó más grande que la ventana); con
@@ -2653,6 +2939,7 @@ impl BoardView {
                 } else if self.crop.take().is_some() {
                     self.notify_user(t("pill.board.cropRemoved"), cx);
                 }
+                self.sync_polish_area(cx);
                 cx.notify();
                 return;
             }
@@ -3212,16 +3499,22 @@ impl BoardView {
                     .child(svg().path("icons/check.svg").size(px(16.)).text_color(text))
                     .child(t("pill.board.done")),
             });
+        // Editando una captura, exportar y terminar están en el panel de estilo
+        // (Copiar y Guardar): aquí quedan recortar y cerrar.
+        let polish = self.polish.is_some();
+        let guide_id = if polish { PHOTO_GUIDE.id } else { GUIDE.id };
         let output = bar_of("board-output")
             // Recortar no dibuja: decide qué sale al exportar.
             .child(self.button(tool_id(Tool::Crop), "icons/crop.svg", self.tool == Tool::Crop, |view, cx| {
                 view.menu = None;
                 view.set_tool(Tool::Crop, cx)
             }, cx))
-            .child(export)
-            .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
-            .child(Self::separator(colors))
-            .child(done)
+            .when(!polish, |el| {
+                el.child(export)
+                    .child(self.button("board-flip", "icons/flip.svg", false, |view, cx| view.finish_to(Some(SendTo::Flip), cx), cx))
+                    .child(Self::separator(colors))
+                    .child(done)
+            })
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx));
         let view = self.can_snap.then(|| {
             bar_of("board-view")
@@ -3270,7 +3563,7 @@ impl BoardView {
             .child(bar_of("board-ink").child(style))
             .child(history)
             .child(crate::coach::anchor("board.done", output))
-            .child(bar_of("board-help-island").child(self.button("board-help", "icons/circle-help.svg", false, |_, cx| crate::coach::replay(GUIDE.id, cx), cx)))
+            .child(bar_of("board-help-island").child(self.button("board-help", "icons/circle-help.svg", false, move |_, cx| crate::coach::replay(guide_id, cx), cx)))
     }
 
     /// Color, grosor y estilo, bajo su botón: una fila por cosa.
@@ -3629,6 +3922,13 @@ impl Render for BoardView {
         let viewport = window.viewport_size();
         self.viewport = (f32::from(viewport.width), f32::from(viewport.height));
         let (screen_w, screen_h) = (f32::from(viewport.width), f32::from(viewport.height));
+        // Editando una captura: la foto y el panel se reacomodan con sus resortes.
+        let now = Instant::now();
+        self.step_polish(now, cx);
+        if self.polish.as_ref().is_some_and(|polish| polish.motion.running(now)) {
+            window.request_animation_frame();
+        }
+        let panel_shown = self.polish_panel_shown(now);
         let scale = self.frozen.scale;
         let (w, h) = (
             self.frozen.frame.width() as f32 / scale,
@@ -3644,7 +3944,7 @@ impl Render for BoardView {
             let (x0, y0, x1, y1) = shape.bounds();
             (x0 + delta.0 - 4.0, y0 + delta.1 - 4.0, x1 + delta.0 + 4.0, y1 + delta.1 + 4.0)
         });
-        let crop = self.crop;
+        let mut crop = self.crop;
         // El pincel bajo el cursor: el tamaño real de lo que va a pintar.
         let brush = match self.tool {
             Tool::Pen => Some(WIDTHS[self.width]),
@@ -3659,6 +3959,58 @@ impl Render for BoardView {
         );
         // Sobre una captura, lo de alrededor se oscurece: se dibuja en ella.
         let framed = self.origin != (0.0, 0.0);
+        // Editando una captura: su fondo detrás (la vista previa del panel,
+        // alrededor de lo que sale), las esquinas del estilo y, fuera de la
+        // herramienta Recortar, solo lo recortado, como va a salir.
+        let polish = self.polish.as_ref().map(|polish| {
+            let panel = polish.panel.read(cx);
+            let backdrop = panel.preview().map(|preview| {
+                let (ax, ay, aw, ah) = preview.area;
+                let layout = photo::layout((aw, ah), &preview.style);
+                let left = offset.0 + (ax as f32 - layout.at.0 as f32) / scale;
+                let top = offset.1 + (ay as f32 - layout.at.1 as f32) / scale;
+                (preview.image.clone(), left, top, layout.canvas.0 as f32 / scale, layout.canvas.1 as f32 / scale)
+            });
+            let clip = if self.tool == Tool::Crop { None } else { self.crop };
+            let (aw, ah) = clip.map_or((w * scale, h * scale), |(x0, y0, x1, y1)| ((x1 - x0) * scale, (y1 - y0) * scale));
+            let radius = photo::layout((aw.round() as u32, ah.round() as u32), &panel.style()).radius / scale;
+            (polish.panel.clone(), polish.monitor, backdrop, clip, radius)
+        });
+        let clip = polish.as_ref().and_then(|(_, _, _, clip, _)| *clip);
+        // Recortada se ve solo lo que sale: el oscurecido de afuera sobraría.
+        if clip.is_some() {
+            crop = None;
+        }
+        // Las esquinas redondeadas en la foto y en lo dibujado (con recorte no
+        // se puede: GPUI recorta en rectángulo).
+        let corner = polish.as_ref().filter(|_| clip.is_none()).map_or(0.0, |(.., radius)| *radius);
+        // Dónde van la foto y sus capas: en la pantalla, o dentro del recorte.
+        let (base_x, base_y) = clip.map_or(offset, |(x0, y0, ..)| (-x0, -y0));
+        let mut pictures: Vec<gpui::AnyElement> = Vec::new();
+        if !self.live {
+            pictures.push(img(self.frozen.image.clone()).absolute().left(px(base_x)).top(px(base_y)).w(px(w)).h(px(h)).rounded(px(corner)).into_any_element());
+        }
+        if let Some(layer) = layer {
+            pictures.push(img(layer).absolute().left(px(base_x)).top(px(base_y)).w(px(w)).h(px(h)).rounded(px(corner)).into_any_element());
+        }
+        if let Some(layer) = drag_layer {
+            pictures.push(img(layer).absolute().left(px(base_x + delta.0)).top(px(base_y + delta.1)).w(px(w)).h(px(h)).into_any_element());
+        }
+        let pictures: Vec<gpui::AnyElement> = match clip {
+            Some((x0, y0, x1, y1)) => vec![div()
+                .absolute()
+                .left(px(offset.0 + x0))
+                .top(px(offset.1 + y0))
+                .w(px(x1 - x0))
+                .h(px(y1 - y0))
+                .overflow_hidden()
+                .children(pictures)
+                .into_any_element()],
+            None => pictures,
+        };
+        let backdrop = polish.as_ref().and_then(|(_, _, backdrop, ..)| backdrop.clone()).map(|(image, left, top, bw, bh)| {
+            img(image).absolute().left(px(left)).top(px(top)).w(px(bw)).h(px(bh))
+        });
         let brush_color = if self.tool == Tool::Eraser {
             gpui::white()
         } else {
@@ -3773,22 +4125,32 @@ impl Render for BoardView {
                 )
         });
         let m3_scope = crate::theme::scope_m3(cx);
-        let coach = crate::coach::overlay(&GUIDE, window, cx);
+        let coach = crate::coach::overlay(if self.polish.is_some() { &PHOTO_GUIDE } else { &GUIDE }, window, cx);
         // M3: la barra entra con un resorte desde arriba (de la pill); el
         // recorte y la figura elegida van en `primary`.
         let colors = Colors::current();
         let bar_in = colors.scheme.map_or(1.0, |_| crate::hover::m3_bar_entrance("board-bar-in", window, cx));
         let edge = colors.scheme.map_or(gpui::white(), |s| s.primary);
         let bar_h = BAR_H + colors.button() - BUTTON;
+        // Escribiendo en la pestaña Texto del panel: las letras son suyas, no atajos.
+        let panel_typing = self.polish.as_ref().is_some_and(|polish| polish.panel.read(cx).has_text_focus(window, cx));
 
         div()
             .id("board")
             .track_focus(&self.focus)
-            .key_context(if self.typing.is_some() { TYPING_CONTEXT } else { KEY_CONTEXT })
-            .on_action(cx.listener(|v, _: &EndText, _, cx| v.end_text(cx)))
+            .key_context(if self.typing.is_some() || panel_typing { TYPING_CONTEXT } else { KEY_CONTEXT })
+            .on_action(cx.listener(|v, _: &EndText, _, cx| {
+                // Escribiendo en la pestaña Texto del panel, Esc vuelve a la Pizarra.
+                if v.typing.is_none() {
+                    v.refocus = true;
+                    cx.notify();
+                }
+                v.end_text(cx)
+            }))
             .on_action(cx.listener(|v, _: &PickText, _, cx| v.set_tool(Tool::Text, cx)))
             .on_action(cx.listener(Self::close))
             .on_action(cx.listener(Self::done))
+            .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::clear))
@@ -3840,7 +4202,11 @@ impl Render for BoardView {
             .cursor(text_cursor.unwrap_or(if self.tool == Tool::Text { CursorStyle::IBeam } else { CursorStyle::Crosshair }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                    // Un clic en la foto saca el foco de la pestaña Texto del panel.
+                    if view.typing.is_none() && !view.focus.is_focused(window) {
+                        window.focus(&view.focus);
+                    }
                     if view.tool == Tool::SelectText && view.typing.is_none() {
                         view.close_armed = None;
                         let map = view.text_map();
@@ -3891,36 +4257,8 @@ impl Render for BoardView {
             .when(framed, |el| {
                 el.child(div().absolute().size_full().bg(gpui::black().opacity(0.7)))
             })
-            .when(!self.live, |el| {
-                el.child(
-                    img(self.frozen.image.clone())
-                        .absolute()
-                        .left(px(offset.0))
-                        .top(px(offset.1))
-                        .w(px(w))
-                        .h(px(h)),
-                )
-            })
-            .when_some(layer, |el, layer| {
-                el.child(
-                    img(layer)
-                        .absolute()
-                        .left(px(offset.0))
-                        .top(px(offset.1))
-                        .w(px(w))
-                        .h(px(h)),
-                )
-            })
-            .when_some(drag_layer, |el, layer| {
-                el.child(
-                    img(layer)
-                        .absolute()
-                        .left(px(offset.0 + delta.0))
-                        .top(px(offset.1 + delta.1))
-                        .w(px(w))
-                        .h(px(h)),
-                )
-            })
+            .children(backdrop)
+            .children(pictures)
             // El recorte oscurece lo que no sale; la selección, su recuadro.
             .child(
                 canvas(
@@ -4016,7 +4354,37 @@ impl Render for BoardView {
                 // En una pantalla angosta la barra salta a dos filas.
                 let bar_w = TOOLBAR_W.min(screen_w - 16.0);
                 let emojis = (self.tool == Tool::Emoji).then(|| self.emoji_panel(cx));
-                if framed {
+                if let Some((_, monitor, ..)) = polish.as_ref() {
+                    // Editando una captura: arriba, sobre lo que queda a la
+                    // izquierda del panel de estilo.
+                    let (panel_x, ..) = polish_panel_rect(*monitor, panel_shown.unwrap_or(photo_editor::PANEL_W));
+                    let bar_w = (panel_x - 16.0).max(120.0);
+                    // Se mide la barra: si cambia de alto (salta a dos filas), la foto se reacomoda.
+                    let board = cx.entity().downgrade();
+                    let measure = canvas(
+                        move |bounds, _, cx| {
+                            let h = f32::from(bounds.size.height);
+                            let _ = board.update(cx, |board, cx| {
+                                if (board.polish_bar_h - h).abs() > 0.5 {
+                                    // La primera medida (al abrir) no se anima.
+                                    let animate = board.polish_bar_h > 0.0;
+                                    board.polish_bar_h = h;
+                                    board.fit_polish(animate, cx);
+                                    cx.notify();
+                                }
+                            });
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full();
+                    bar.left(px(self.frozen.offset.0 + 8.0))
+                        .top(px(self.frozen.offset.1 + POLISH_INSET + rise))
+                        .w(px(bar_w))
+                        .child(div().relative().child(self.toolbar(true, bar_w.min(TOOLBAR_W), cx)).child(measure))
+                        .children(emojis)
+                        .children(hint.map(chip))
+                } else if framed {
                     let left = (offset.0 + w / 2.0 - bar_w / 2.0)
                         .clamp(8.0, (screen_w - bar_w - 8.0).max(8.0));
                     let below = offset.1 + h + 10.0;
@@ -4039,6 +4407,17 @@ impl Render for BoardView {
                         .children(hint.map(chip))
                 }
             })
+            // El panel de estilo, a la derecha y de alto entero.
+            .children(polish.map(|(panel, monitor, ..)| {
+                let (x, y, pw, ph) = polish_panel_rect(monitor, panel_shown.unwrap_or(photo_editor::PANEL_W));
+                div()
+                    .absolute()
+                    .left(px(self.frozen.offset.0 + x))
+                    .top(px(self.frozen.offset.1 + y))
+                    .w(px(pw))
+                    .h(px(ph))
+                    .child(panel)
+            }))
             .children(coach)
             .children(m3_scope)
     }
@@ -4588,22 +4967,6 @@ impl crate::Pill {
         cx.notify();
     }
 
-    /// Una imagen del historial, en la pizarra: centrada en el monitor y
-    /// achicada si no cabe. Al terminar se copia y se guarda como una captura.
-    pub(crate) fn draw_entry(&mut self, entry: &crate::clipboard::Entry, window: &mut Window, cx: &mut Context<Self>) {
-        let crate::clipboard::Content::Image(picture) = &entry.content else {
-            return;
-        };
-        if self.board.is_some() || self.capture.is_some() {
-            return;
-        }
-        let decoded = picture
-            .load()
-            .map_err(|error| error.to_string())
-            .and_then(|image| image::load_from_memory(&image.bytes).map_err(|error| error.to_string()));
-        self.draw_image(decoded, window, cx);
-    }
-
     /// Una imagen guardada (la última captura, desde el vistazo de la Pizarra).
     pub(crate) fn draw_file(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
         if self.board.is_some() || self.capture.is_some() {
@@ -4613,6 +4976,47 @@ impl crate::Pill {
             return;
         }
         self.draw_image(image::open(path).map_err(|error| error.to_string()), window, cx);
+    }
+
+    /// «Editar» del estante: la pizarra sobre `capture` con el panel de
+    /// estilo (`photo_editor/`), para anotarla y darle estilo en la misma
+    /// pantalla. Si salió de la pizarra, vuelve limpia y con sus figuras
+    /// editables. `png` son sus bytes (el estante los tiene). `false` si no se
+    /// abrió (ya había una pizarra o una mira, o no se pudo leer).
+    pub(crate) fn edit_capture(&mut self, capture: &std::path::Path, png: &[u8], window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.board.is_some() || self.capture.is_some() {
+            return false;
+        }
+        if !self.reopen_edit(capture, window, cx) {
+            match Frame::from_png(0, 0, png) {
+                Ok(frame) => {
+                    let previous = crate::paste::foreground_target();
+                    self.close_panel(false, cx);
+                    self.open_board_centered(frame, previous, window, cx);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "pizarra: no se pudo abrir la captura para editarla");
+                    return false;
+                }
+            }
+        }
+        let Some(board) = self.board.clone() else {
+            return false;
+        };
+        let monitor = self.board_monitor();
+        let scale = self.scale_factor;
+        let capture = capture.to_path_buf();
+        board.update(cx, |board, cx| board.start_polish(capture, (monitor.w, monitor.h), scale, cx));
+        true
+    }
+
+    /// El monitor de la pill en la ventana de ahora (lógico): tras la mira
+    /// puede seguir estirada a todas las pantallas.
+    fn board_monitor(&self) -> crate::geometry::Rect {
+        match (self.overlay.as_ref(), self.screen.as_ref()) {
+            (Some(overlay), Some((screen, _, _))) => overlay.to_logical(&screen.monitor, self.scale_factor).unwrap_or(self.monitor),
+            _ => self.monitor,
+        }
     }
 
     /// Si `capture` salió de la pizarra, la abre limpia y con sus figuras
@@ -4678,12 +5082,7 @@ impl crate::Pill {
         const FILL: f32 = 0.8;
         const MAX_ZOOM: f32 = 3.0;
         let scale = self.scale_factor;
-        // El monitor de la pill en la ventana de ahora: tras la mira puede
-        // seguir estirada a todas las pantallas.
-        let monitor = match (self.overlay.as_ref(), self.screen.as_ref()) {
-            (Some(overlay), Some((screen, _, _))) => overlay.to_logical(&screen.monitor, scale).unwrap_or(self.monitor),
-            _ => self.monitor,
-        };
+        let monitor = self.board_monitor();
         let (w, h) = (frame.width() as f32 / scale, frame.height() as f32 / scale);
         if w <= 0.0 || h <= 0.0 {
             return;
@@ -4709,6 +5108,7 @@ impl crate::Pill {
             return;
         };
         crate::coach::close(GUIDE.id);
+        crate::coach::close(PHOTO_GUIDE.id);
         self.board_events = None;
         // Si venía de la mira con todas las pantallas, la ventana vuelve.
         self.end_span();
@@ -4785,6 +5185,41 @@ impl crate::Pill {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editando_una_captura_la_foto_no_pisa_el_panel_ni_la_barra() {
+        for monitor in [(1280.0, 800.0), (1512.0, 982.0), (2560.0, 1440.0)] {
+            for wanted in [photo_editor::PANEL_W, photo_editor::TEXT_PANEL_W] {
+                let bar_h = BAR_H;
+                let panel_w = polish_panel_w(monitor, wanted);
+                assert!(panel_w <= monitor.0 * 0.5 && panel_w >= photo_editor::PANEL_W);
+                let (px_, py, pw, ph) = polish_panel_rect(monitor, panel_w);
+                let stage = polish_stage(monitor, bar_h, panel_w);
+                let (sx, sy, sw, sh) = stage;
+                assert!(sx + sw + POLISH_INSET <= px_, "{monitor:?}: el espacio de la foto llega al panel");
+                assert!(sy >= POLISH_INSET + bar_h, "{monitor:?}: la foto queda bajo la barra");
+                assert!(sy + sh <= monitor.1 && px_ + pw <= monitor.0 && py + ph <= monitor.1);
+                // Una pantalla entera de Retina: cabe con aire a los lados.
+                let (scale, corner) = polish_fit((monitor.0 * 2.0, monitor.1 * 2.0), stage, 2.0);
+                let (w, h) = (monitor.0 * 2.0 / scale, monitor.1 * 2.0 / scale);
+                assert!(corner.0 >= sx + POLISH_AIR_MIN - 0.5 && corner.0 + w <= sx + sw - POLISH_AIR_MIN + 0.5, "{monitor:?}: sin aire a los lados");
+                assert!(corner.1 >= sy - 0.5 && corner.1 + h <= sy + sh + 0.5, "{monitor:?}: se sale arriba o abajo");
+            }
+        }
+    }
+
+    #[test]
+    fn una_captura_chica_no_se_agranda_mas_que_1_a_1_y_queda_centrada() {
+        let stage = (12.0, 100.0, 1000.0, 700.0);
+        // 300 × 200 px de una pantalla Retina: 150 × 100 puntos, como se veía.
+        let (scale, corner) = polish_fit((300.0, 200.0), stage, 2.0);
+        assert_eq!(scale, 2.0);
+        assert_eq!(corner, (12.0 + (1000.0 - 150.0) / 2.0, 100.0 + (700.0 - 100.0) / 2.0));
+        // Una grande se achica: deja el aire (8 % del lado corto, entre 40 y 96).
+        let (scale, _) = polish_fit((4000.0, 1000.0), stage, 2.0);
+        let air = 700.0 * POLISH_AIR;
+        assert!((4000.0 / scale - (1000.0 - 2.0 * air)).abs() < 0.01);
+    }
 
     #[test]
     fn suavizar_conserva_los_extremos() {

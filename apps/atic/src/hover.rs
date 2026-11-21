@@ -1211,7 +1211,8 @@ pub fn m3_hint(s: &gpui_m3::Scheme, text: impl Into<gpui::SharedString>) -> gpui
                 .text_color(s.on_surface)
                 .child(title),
         )
-        .children(rest.map(|rest| div().type_style(BODY_SMALL).text_color(s.on_surface_variant).child(rest)))
+        // A lo ancho del globito: así una explicación larga parte en líneas y no se sale.
+        .children(rest.map(|rest| div().w_full().type_style(BODY_SMALL).text_color(s.on_surface_variant).child(rest)))
 }
 
 /// Un dato corto sobre la pantalla (el tamaño de lo elegido, un color) en un

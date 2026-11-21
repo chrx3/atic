@@ -523,7 +523,7 @@ struct ChatRequest<'a> {
 /// Qwen en Groq razona antes de responder y el razonamiento se come el tope
 /// de salida: volvía sin texto («only internal reasoning»). Un resumen no lo
 /// necesita, así que va sin razonar.
-fn reasoning_effort(provider_id: &str, model: &str) -> Option<&'static str> {
+pub(crate) fn reasoning_effort(provider_id: &str, model: &str) -> Option<&'static str> {
     (provider_id == "groq" && model.to_ascii_lowercase().contains("qwen")).then_some("none")
 }
 

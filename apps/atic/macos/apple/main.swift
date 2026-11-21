@@ -10,6 +10,15 @@
 //              f32 LE mono) y va emitiendo lo reconocido; al cerrarse el stdin,
 //              el texto final.
 // - polish     pule un texto dictado con el modelo de Apple Intelligence.
+// - translate  traduce un texto (stdin o argumento) en el equipo, con el
+//              framework Translation. `--to es` es el idioma de destino (por
+//              defecto, el del sistema); `--or en` es otro por si el texto ya
+//              está en el primero. El origen se detecta con NaturalLanguage,
+//              salvo que venga `--from en`. `--ui es`: el idioma de los nombres
+//              de idioma que devuelve. Con `--engine ai` traduce con Apple
+//              Intelligence en vez de Translation, con las instrucciones de
+//              `--instructions` (las arma la pill; `{from}` y `{to}` se
+//              reemplazan por los idiomas, en inglés).
 //
 // La pill lo lanza por cada pedido (`src/platform/macos/apple.rs`) y lee un JSON
 // por línea en la salida. Los errores salen como {"error": "..."} y código 1.
@@ -17,7 +26,9 @@
 import AVFoundation
 import Foundation
 import FoundationModels
+import NaturalLanguage
 import Speech
+import Translation
 
 func emit(_ object: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
@@ -38,6 +49,12 @@ struct Args {
     var mode = "dictation"
     var context: [String] = []
     var file = ""
+    var to = ""
+    var or = ""
+    var from = ""
+    var ui = ""
+    var engine = ""
+    var instructions = ""
 
     init(_ argv: [String]) {
         var rest = argv.dropFirst()
@@ -46,6 +63,12 @@ struct Args {
             switch arg {
             case "--lang": lang = rest.popFirst() ?? ""
             case "--mode": mode = rest.popFirst() ?? mode
+            case "--to": to = rest.popFirst() ?? ""
+            case "--or": or = rest.popFirst() ?? ""
+            case "--from": from = rest.popFirst() ?? ""
+            case "--ui": ui = rest.popFirst() ?? ""
+            case "--engine": engine = rest.popFirst() ?? ""
+            case "--instructions": instructions = rest.popFirst() ?? ""
             case "--context":
                 context = (rest.popFirst() ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             default: file = arg
@@ -430,6 +453,156 @@ func polish(_ args: Args) async {
     }
 }
 
+// --- Traducir ----------------------------------------------------------------------
+
+/// Como `fail`, con un `code` que la pill entiende (y muestra en su idioma) y los
+/// idiomas del par, ya con su nombre.
+func failTranslate(_ message: String, code: String, from: Locale.Language? = nil, to: Locale.Language? = nil, ui: Locale) -> Never {
+    var out: [String: Any] = ["error": message, "code": code]
+    if let from {
+        out["from"] = from.minimalIdentifier
+        out["from_name"] = languageName(from, in: ui)
+    }
+    if let to {
+        out["to"] = to.minimalIdentifier
+        out["to_name"] = languageName(to, in: ui)
+    }
+    emit(out)
+    exit(1)
+}
+
+/// «inglés», «English»: el nombre del idioma en el idioma `ui`.
+func languageName(_ language: Locale.Language, in ui: Locale) -> String {
+    let code = language.languageCode?.identifier ?? language.minimalIdentifier
+    return ui.localizedString(forLanguageCode: code) ?? code
+}
+
+func sameLanguage(_ a: Locale.Language, _ b: Locale.Language) -> Bool {
+    a.languageCode == b.languageCode
+}
+
+/// «Spanish»: el nombre en inglés, para las instrucciones del modelo.
+func englishName(_ language: Locale.Language) -> String {
+    languageName(language, in: Locale(identifier: "en"))
+}
+
+/// Traduce con Apple Intelligence: entiende las etiquetas por el contexto
+/// («Fondos» en una lista de ajustes es «Backgrounds», no «Funds»). Errores con
+/// `code`: `aiUnavailable` (apagado o sin modelo), `aiUnsupported` (no habla
+/// uno de los idiomas) o `aiFailed`; la pill entonces traduce con Translation.
+func translateWithModel(_ input: String, source: Locale.Language, target: Locale.Language, instructions: String, ui: Locale) async {
+    let (state, _) = intelligenceState()
+    guard state == "available" else {
+        failTranslate("Apple Intelligence no está disponible (\(state)).", code: "aiUnavailable", from: source, to: target, ui: ui)
+    }
+    let model = SystemLanguageModel.default
+    let speaks = { (language: Locale.Language) in model.supportedLanguages.contains { sameLanguage($0, language) } }
+    guard speaks(source), speaks(target) else {
+        failTranslate("Apple Intelligence no traduce entre estos idiomas.", code: "aiUnsupported", from: source, to: target, ui: ui)
+    }
+    guard !instructions.isEmpty else { failTranslate("Faltan las instrucciones.", code: "aiFailed", ui: ui) }
+    let filled = instructions
+        .replacingOccurrences(of: "{from}", with: englishName(source))
+        .replacingOccurrences(of: "{to}", with: englishName(target))
+    do {
+        let session = LanguageModelSession(instructions: filled)
+        let response = try await session.respond(to: input, options: GenerationOptions(temperature: 0.1))
+        var text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("«") && text.hasSuffix("»") || text.hasPrefix("\"") && text.hasSuffix("\"") {
+            text = String(text.dropFirst().dropLast())
+        }
+        guard !text.isEmpty else {
+            failTranslate("Apple Intelligence no devolvió texto.", code: "aiFailed", from: source, to: target, ui: ui)
+        }
+        emit(["text": text, "from": source.minimalIdentifier, "to": target.minimalIdentifier,
+              "from_name": languageName(source, in: ui), "to_name": languageName(target, in: ui), "engine": "ai"])
+    } catch {
+        failTranslate("Apple Intelligence no pudo traducir: \(error.localizedDescription)", code: "aiFailed", from: source, to: target, ui: ui)
+    }
+}
+
+/// Traduce en el equipo. Necesita el par de idiomas bajado (Ajustes del Sistema →
+/// General → Idioma y región → Idiomas de traducción): sin ventana no se puede
+/// pedir la descarga, así que se avisa con `code: notInstalled`.
+///
+/// Salida: `{"text", "from", "to", "from_name", "to_name"}`. Errores con `code`:
+/// `empty`, `unknownLanguage`, `unsupported`, `notInstalled` o `failed`.
+func translate(_ args: Args) async {
+    let input: String
+    if !args.file.isEmpty {
+        input = args.file
+    } else {
+        input = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+    let wanted = args.to.isEmpty ? (Locale.current.language.languageCode?.identifier ?? "en") : args.to
+    var target = Locale.Language(identifier: wanted)
+    // Los nombres de los idiomas van en el de la interfaz (`--ui`) o en el de destino.
+    let ui = Locale(identifier: args.ui.isEmpty ? wanted : args.ui)
+    guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        failTranslate("No hay texto que traducir.", code: "empty", ui: ui)
+    }
+
+    // El origen elegido (`--from`) o el que detecta NaturalLanguage.
+    let source: Locale.Language
+    if !args.from.isEmpty {
+        source = Locale.Language(identifier: args.from)
+    } else {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(input)
+        guard let detected = recognizer.dominantLanguage, detected != .undetermined else {
+            failTranslate("No se reconoce el idioma del texto.", code: "unknownLanguage", ui: ui)
+        }
+        source = Locale.Language(identifier: detected.rawValue)
+    }
+    if sameLanguage(source, target), !args.or.isEmpty {
+        target = Locale.Language(identifier: args.or)
+    }
+    if sameLanguage(source, target) {
+        // Ya está en ese idioma: tal cual.
+        emit(["text": input, "from": source.minimalIdentifier, "to": target.minimalIdentifier,
+              "from_name": languageName(source, in: ui), "to_name": languageName(target, in: ui)])
+        return
+    }
+    if args.engine == "ai" {
+        await translateWithModel(input, source: source, target: target, instructions: args.instructions, ui: ui)
+        return
+    }
+
+    switch await LanguageAvailability().status(from: source, to: target) {
+    case .installed: break
+    case .supported:
+        failTranslate("Falta bajar los idiomas para traducir en Ajustes del Sistema.", code: "notInstalled", from: source, to: target, ui: ui)
+    case .unsupported:
+        failTranslate("El Mac no traduce entre estos idiomas.", code: "unsupported", from: source, to: target, ui: ui)
+    @unknown default:
+        failTranslate("El Mac no traduce entre estos idiomas.", code: "unsupported", from: source, to: target, ui: ui)
+    }
+
+    // Línea por línea, para que el texto traducido conserve los saltos del
+    // original (Translation los duplica si van en un solo pedido). La pill ya
+    // unió las líneas cortadas de un mismo párrafo: cada una lleva su contexto.
+    let lines = input.components(separatedBy: "\n")
+    let requests = lines.enumerated().compactMap { index, line -> TranslationSession.Request? in
+        line.trimmingCharacters(in: .whitespaces).isEmpty ? nil : TranslationSession.Request(sourceText: line, clientIdentifier: String(index))
+    }
+    let session = TranslationSession(installedSource: source, target: target)
+    do {
+        let responses = try await session.translations(from: requests)
+        var out = lines
+        for response in responses {
+            if let index = response.clientIdentifier.flatMap(Int.init), out.indices.contains(index) {
+                out[index] = response.targetText
+            }
+        }
+        emit(["text": out.joined(separator: "\n"), "from": source.minimalIdentifier, "to": target.minimalIdentifier,
+              "from_name": languageName(source, in: ui), "to_name": languageName(target, in: ui)])
+    } catch let error where TranslationError.notInstalled ~= error {
+        failTranslate("Falta bajar los idiomas para traducir en Ajustes del Sistema.", code: "notInstalled", from: source, to: target, ui: ui)
+    } catch {
+        failTranslate("No se pudo traducir: \(error.localizedDescription)", code: "failed", from: source, to: target, ui: ui)
+    }
+}
+
 @main
 struct AticApple {
     static func main() async {
@@ -440,7 +613,8 @@ struct AticApple {
         case "transcribe": await transcribe(args)
         case "polish": await polish(args)
         case "stream": await stream(args)
-        default: fail("Uso: atic-apple status|install|transcribe|stream|polish")
+        case "translate": await translate(args)
+        default: fail("Uso: atic-apple status|install|transcribe|stream|polish|translate")
         }
     }
 }

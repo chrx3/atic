@@ -29,6 +29,7 @@ mod computers;
 mod computers_notch;
 mod computers_settings;
 mod capture;
+mod scroll_capture;
 #[cfg_attr(target_os = "macos", path = "clip_image_macos.rs")]
 mod clip_image;
 mod clipboard;
@@ -71,6 +72,7 @@ mod pomodoro;
 mod pomodoro_panel;
 mod phone_settings;
 mod phone_setup;
+mod photo_editor;
 use hover::HoverExt;
 use theme::SmallText;
 mod pill_look;
@@ -113,6 +115,7 @@ mod updater;
 mod usage;
 mod whats_new;
 mod text_area;
+mod text_window;
 mod text_select;
 mod text_input;
 mod paste_queue;
@@ -665,6 +668,7 @@ impl AssetSource for Assets {
             "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
             "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
             "icons/languages.svg" => include_bytes!("../assets/icons/languages.svg"),
+            "icons/arrow-left-right.svg" => include_bytes!("../assets/icons/arrow-left-right.svg"),
             "icons/scissors.svg" => include_bytes!("../assets/icons/scissors.svg"),
             "icons/cursor-fill.svg" => include_bytes!("../assets/icons/cursor-fill.svg"),
             "icons/cursor-edge.svg" => include_bytes!("../assets/icons/cursor-edge.svg"),
@@ -1451,7 +1455,7 @@ impl Pill {
             cx.subscribe_in(&panel, window, |pill, _, event: &PanelEvent, window, cx| match event {
                 PanelEvent::Paste(entry) => pill.paste(entry.clone(), cx),
                 PanelEvent::Drag(entry) => pill.begin_drag(entry.clone(), cx),
-                PanelEvent::Draw(entry) => pill.draw_entry(entry, window, cx),
+                PanelEvent::Draw(entry) => pill.edit_entry(entry, window, cx),
                 PanelEvent::ToCode(path) => {
                     pill.close_panel(false, cx);
                     pill.open_code(cx);
@@ -5005,8 +5009,10 @@ impl Pill {
         // lo demás espera.
         if self.capture.is_some() || self.board.is_some() || self.flip.is_some() || self.color.is_some() {
             self.calm = false;
+            // La captura desplazable deja pasar la rueda a la página, salvo sobre su barra.
+            let passthrough = self.capture_passes_mouse(cx);
             if let Some(overlay) = self.overlay.as_mut() {
-                overlay.set_passthrough(false);
+                overlay.set_passthrough(passthrough);
             }
             return;
         }

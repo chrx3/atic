@@ -130,6 +130,21 @@ pub fn bring_to_front(window: &Window) {
     }
 }
 
+/// «Fijar»: deja `window` siempre visible, encima de las demás, o la devuelve
+/// al orden normal.
+pub fn set_always_on_top(window: &Window, on: bool) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+        let hwnd = HWND(win32.hwnd.get() as *mut _);
+        let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        unsafe {
+            let _ = SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+
 pub struct Overlay {
     hwnd: HWND,
     passthrough: Option<bool>,

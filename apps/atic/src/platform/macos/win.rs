@@ -373,6 +373,17 @@ pub fn bring_to_front(window: &Window) {
     }
 }
 
+/// «Fijar»: deja `window` encima de las ventanas de todas las apps (el nivel
+/// flotante de AppKit) o la devuelve al nivel normal.
+pub fn set_always_on_top(window: &Window, on: bool) {
+    let Some(ns) = ns_window(window) else {
+        return;
+    };
+    // NSFloatingWindowLevel y NSNormalWindowLevel.
+    let level: isize = if on { 3 } else { 0 };
+    later(move || ns.setLevel(level));
+}
+
 /// El marco de `window` en puntos, con el origen arriba a la izquierda de la
 /// pantalla principal (como `window_list`): (x, y, ancho, alto).
 pub fn frame(window: &Window) -> Option<(f64, f64, f64, f64)> {

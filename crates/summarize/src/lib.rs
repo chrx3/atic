@@ -2,6 +2,7 @@
 
 mod chunk;
 mod claude;
+mod complete;
 mod error;
 mod models;
 mod ollama;
@@ -11,6 +12,7 @@ mod providers;
 mod thinking;
 
 pub use claude::ClaudeSummarizer;
+pub use complete::complete;
 pub use error::{Result, SummarizeError};
 pub use models::{list_remote_models, order_models, pick_available_model};
 pub use ollama::OllamaSummarizer;

@@ -213,6 +213,14 @@ impl TextArea {
         self.reveal_cursor = true;
     }
 
+    /// Cambia los colores (al pasar de tema claro a oscuro); sin cambios no redibuja.
+    pub fn set_colors(&mut self, text_color: Hsla, placeholder_color: Hsla, accent: Hsla, cx: &mut Context<Self>) {
+        if (self.text_color, self.placeholder_color, self.accent) != (text_color, placeholder_color, accent) {
+            (self.text_color, self.placeholder_color, self.accent) = (text_color, placeholder_color, accent);
+            cx.notify();
+        }
+    }
+
     pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.placeholder = placeholder.into();
         cx.notify();

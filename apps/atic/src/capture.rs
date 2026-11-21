@@ -27,6 +27,7 @@ use gpui::{
 use crate::geometry::Rect;
 use crate::hover::HoverExt;
 use crate::live_loupe::LiveLoupe;
+use crate::scroll_capture::{Step, Stitcher};
 use crate::screen_recording::RecordOptions;
 use crate::text_select::{self, Mapping, TextHost, TextLayer};
 
@@ -281,6 +282,9 @@ pub struct Session {
     /// D: al soltar, la región se queda y se abre la pizarra encima en vez de
     /// copiar al tiro (como Flameshot). Shift al soltar hace lo mismo.
     pub draw: bool,
+    /// L: al elegir, la mira se quita y lo elegido se va uniendo mientras se
+    /// desplaza la página (`scroll_capture.rs`).
+    pub scroll: bool,
     /// La foto congelada muestra la pill tal como estaba (se abrió con el
     /// atajo). P la vuelve a congelar sin ella.
     pub pill_shown: bool,
@@ -321,6 +325,23 @@ fn remember_live(live: bool) {
     }
 }
 
+/// Si la mira abre con «Desplazable» prendido: como quedó la última vez.
+fn scroll_file() -> Option<PathBuf> {
+    crate::paths::file("capture-scroll.txt")
+}
+
+pub fn remembered_scroll() -> bool {
+    scroll_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|mode| mode.trim() == "on")
+}
+
+fn remember_scroll(scroll: bool) {
+    if let Some(path) = scroll_file() {
+        let _ = std::fs::write(path, if scroll { "on" } else { "off" });
+    }
+}
+
 impl Session {
     /// La mira pasa a grabar, con las opciones de la última vez.
     pub fn enter_record(&mut self) {
@@ -336,6 +357,7 @@ impl Session {
             previous,
             live: false,
             draw: false,
+            scroll: false,
             pill_shown: false,
             record: false,
             record_options: RecordOptions::default(),
@@ -692,7 +714,7 @@ pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
 
 actions!(
     capture,
-    [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem, ToggleText, ToggleRecord, SelectAllText, CopyText]
+    [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem, ToggleText, ToggleRecord, ToggleScroll, SelectAllText, CopyText]
 );
 
 const KEY_CONTEXT: &str = "Capture";
@@ -713,6 +735,8 @@ pub fn bind_keys(cx: &mut App) {
         // G (como en la Pizarra) o T: elegir texto sobre la foto (`text_select.rs`).
         KeyBinding::new("g", ToggleText, context),
         KeyBinding::new("t", ToggleText, context),
+        // L: al elegir, captura desplazable (`scroll_capture.rs`).
+        KeyBinding::new("l", ToggleScroll, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-a"), SelectAllText, context),
         KeyBinding::new(&crate::keymap::primary("ctrl-c"), CopyText, context),
     ]);
@@ -742,6 +766,9 @@ pub enum CaptureEvent {
     },
     /// Grabar lo elegido, en físico.
     Record { region: PhysRect, options: RecordOptions },
+    /// Empezó la captura desplazable: la mira sigue abierta, pero ya no tapa
+    /// la pantalla (las ventanas espejo se cierran).
+    Scrolling,
     Cancelled,
 }
 
@@ -760,6 +787,10 @@ pub struct CaptureView {
     sources_open: bool,
     /// El cursor está sobre ese menú (que sale de la barra): sin cruz ni lupa.
     over_menu: bool,
+    /// La captura desplazable en curso: la mira ya no se ve.
+    scrolling: Option<Scrolling>,
+    /// El tamaño lógico de la ventana del overlay (la desplazable va solo en ella).
+    viewport: (f32, f32),
 }
 
 impl EventEmitter<CaptureEvent> for CaptureView {}
@@ -787,6 +818,8 @@ impl CaptureView {
             over_bar: false,
             sources_open: false,
             over_menu: false,
+            scrolling: None,
+            viewport: (0.0, 0.0),
         }
     }
 
@@ -813,7 +846,7 @@ impl CaptureView {
         cx.spawn(async move |view, cx| loop {
             cx.background_executor().timer(std::time::Duration::from_millis(8)).await;
             let alive = view.update(cx, |view, cx| {
-                if view.text_mode {
+                if view.text_mode || view.scrolling.is_some() {
                     return;
                 }
                 let session = &mut view.session;
@@ -905,6 +938,17 @@ impl CaptureView {
     }
 
     fn choose(&mut self, pick: Pick, draw: bool, cx: &mut Context<Self>) {
+        // L: lo elegido se va uniendo mientras se desplaza la página. «Toda la
+        // pantalla» es la del cursor.
+        if self.session.scroll && !self.session.record {
+            let rect = match pick {
+                Pick::Screen => self.session.cursor_screen(),
+                ref other => self.session.pick_rect(other),
+            };
+            if self.start_scroll(rect, cx) {
+                return;
+            }
+        }
         let rect = self.session.pick_rect(&pick);
         let region = self.session.physical(&rect);
         if self.session.record {
@@ -1108,6 +1152,10 @@ impl CaptureView {
 
     /// Esc: en modo texto borra la selección y, sin ella, vuelve a la mira.
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.scrolling.is_some() {
+            self.cancel_scroll(cx);
+            return;
+        }
         // Con el menú de fuentes abierto, Esc solo lo cierra.
         if self.sources_open {
             self.close_sources(cx);
@@ -1125,6 +1173,11 @@ impl CaptureView {
     }
 
     fn whole_screen(&mut self, _: &WholeScreen, _: &mut Window, cx: &mut Context<Self>) {
+        // En la desplazable, Enter es «Listo».
+        if self.scrolling.is_some() {
+            self.finish_scroll(cx);
+            return;
+        }
         // En modo texto, Enter copia lo elegido.
         if self.text_mode {
             text_select::copy(self, false, cx);
@@ -1273,6 +1326,8 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 
 impl Render for CaptureView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        self.viewport = (f32::from(viewport.width), f32::from(viewport.height));
         self.render_shifted((0.0, 0.0), window, cx)
     }
 }
@@ -1281,7 +1336,7 @@ impl crate::spread::Spread for CaptureView {
     /// Las otras pantallas dibujan lo mismo con la foto corrida. El modo
     /// texto queda solo en la del overlay.
     fn render_at(&mut self, shift: (f32, f32), window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        if shift != (0.0, 0.0) && self.text_mode {
+        if shift != (0.0, 0.0) && (self.text_mode || self.scrolling.is_some()) {
             return div().into_any_element();
         }
         let home = self.session.frozen.offset;
@@ -1300,6 +1355,9 @@ impl CaptureView {
         }
         if self.text_mode {
             return self.text_view(window, cx);
+        }
+        if self.scrolling.is_some() {
+            return self.scroll_view(cx);
         }
         let session = &self.session;
         let screen = session.screen();
@@ -1360,6 +1418,15 @@ impl CaptureView {
             _ => 1.0,
         };
         let toolbar = session.press.is_none().then(|| self.toolbar(help, offset, bar_in, cx));
+        // Consejo de primera vez: la captura desplazable (`coach::tip`).
+        let scroll_tip = if session.scroll {
+            crate::coach::tip_done("capture.scroll");
+            None
+        } else if !session.record && session.press.is_none() && crate::coach::tip("capture.scroll") {
+            Some(crate::coach::tip_chip(scheme.as_ref(), Some("L"), crate::i18n::t("pill.capture.tipScroll")))
+        } else {
+            None
+        };
         let label = selection.map(|rect| {
             let phys = session.physical(&rect);
             let dims = format!("{} × {}", phys.width, phys.height);
@@ -1369,6 +1436,12 @@ impl CaptureView {
                     format!("{title} · {dims}")
                 }
                 _ => dims,
+            };
+            // Desplazable: que se note sobre lo elegido.
+            let text = if session.scroll && !session.record {
+                format!("{} · {text}", crate::i18n::t("pill.capture.tool.scroll"))
+            } else {
+                text
             };
             let below = rect.bottom() + 28.0 < screen.bottom();
             let y = if below {
@@ -1397,10 +1470,8 @@ impl CaptureView {
             .on_action(cx.listener(|view, _: &ToggleSystem, _, cx| {
                 view.toggle_option(|options| options.system = !options.system, cx)
             }))
-            .on_action(cx.listener(|view, _: &ToggleDraw, _, cx| {
-                view.session.draw = !view.session.draw;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|view, _: &ToggleDraw, _, cx| view.toggle_draw(cx)))
+            .on_action(cx.listener(|view, _: &ToggleScroll, _, cx| view.toggle_scroll(cx)))
             .on_action(cx.listener(|view, _: &ToggleRecord, _, cx| {
                 let record = !view.session.record;
                 view.set_mode(record, cx);
@@ -1477,7 +1548,9 @@ impl CaptureView {
                     .top(px(help.y + 10.0 + offset.1))
                     .w(px(help.w))
                     .flex()
-                    .justify_center()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.))
                     .child(hint(if session.record {
                         let yes = |on: bool| if on { crate::i18n::t("pill.capture.yes") } else { crate::i18n::t("pill.capture.no") };
                         let options = session.record_options;
@@ -1485,6 +1558,9 @@ impl CaptureView {
                             "pill.capture.recordBar",
                             &[("mic", &yes(options.mic)), ("system", &yes(options.system)), ("pill", &yes(options.show_pill))],
                         )
+                    } else if session.scroll {
+                        // Desplazable: la ayuda dice qué hacer ahora.
+                        crate::i18n::t("pill.capture.scrollOn").to_string()
                     } else {
                         let mode = if session.live {
                             crate::i18n::t("pill.capture.live").to_string()
@@ -1504,7 +1580,8 @@ impl CaptureView {
                             crate::i18n::t("pill.capture.showPill")
                         };
                         crate::i18n::tf("pill.capture.bar", &[("mode", &mode), ("pill", &pill), ("draw", &draw)])
-                    })),
+                    }))
+                    .children(scroll_tip),
             )
             .children(toolbar)
             .into_any_element()
@@ -1516,6 +1593,8 @@ impl CaptureView {
 enum Tool {
     Mode(bool),
     Draw,
+    /// Captura desplazable (`scroll_capture.rs`).
+    Scroll,
     Text,
     Mic,
     System,
@@ -1540,10 +1619,10 @@ const OPTIONS_W: f32 = 404.0;
 #[cfg(not(target_os = "macos"))]
 const OPTIONS_W: f32 = 428.0;
 const PRIMARY_W: f32 = 150.0;
-/// En M3, la isla de opciones de Captura (Pizarra y Texto, la más ancha): en
+/// En M3, la isla de opciones de Captura (Pizarra, Desplazable y Texto, la más ancha): en
 /// Grabar las fuentes van en el menú del split button, que le quita su mitad
 /// angosta, y la barra entera mide lo mismo en los dos modos.
-const M3_OPTIONS_W: f32 = 232.0;
+const M3_OPTIONS_W: f32 = 372.0;
 #[cfg(not(target_os = "macos"))]
 const BAR_BOTTOM: f32 = 64.0;
 
@@ -1736,6 +1815,16 @@ impl CaptureView {
                     Some(t("pill.capture.tool.draw")),
                     t("pill.capture.tip.draw"),
                     session.draw,
+                    None,
+                    cx,
+                ))
+                .child(button(
+                    ("capture-opt", 6),
+                    Tool::Scroll,
+                    "icons/arrow-down.svg",
+                    Some(t("pill.capture.tool.scroll")),
+                    t("pill.capture.tip.scroll"),
+                    session.scroll,
                     None,
                     cx,
                 ))
@@ -2001,10 +2090,8 @@ impl CaptureView {
         }
         match tool {
             Tool::Mode(record) => self.set_mode(record, cx),
-            Tool::Draw => {
-                self.session.draw = !self.session.draw;
-                cx.notify();
-            }
+            Tool::Draw => self.toggle_draw(cx),
+            Tool::Scroll => self.toggle_scroll(cx),
             Tool::Text => {
                 self.over_bar = false;
                 self.enter_text(cx);
@@ -2222,6 +2309,629 @@ impl CaptureView {
                     .child(hint(crate::i18n::t("pill.capture.recordSoon"))),
             )
             .into_any_element()
+    }
+}
+
+// --- La captura desplazable -------------------------------------------------
+//
+// Con L (o «Desplazable» en la barra) lo elegido no se fotografía al tiro: la
+// mira deja de tapar la pantalla, queda un marco alrededor y una barra con
+// «Listo» y «Cancelar», y la ventana deja pasar el mouse (salvo sobre la
+// barra) para que la rueda desplace la página. Mientras, en segundo plano se
+// toman cuadros de la región y se unen (`scroll_capture.rs`). El overlay está
+// excluido de las capturas: el marco y la barra no salen en los cuadros.
+
+/// La pausa entre un cuadro y el siguiente. Corta: mientras menos se desplace
+/// la página entre dos cuadros, más comparten y mejor calzan.
+const SCROLL_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+/// El alto máximo de lo unido, en píxeles del cuadro (con 1600 de ancho, ~130 MB).
+const SCROLL_MAX: u32 = 20_000;
+/// La barra de la desplazable y la miniatura, en lógico.
+const SCROLL_BAR_W: f32 = 440.0;
+const SCROLL_THUMB_W: f32 = 88.0;
+const SCROLL_GAP: f32 = 12.0;
+/// El grosor del marco, por fuera de lo elegido.
+const SCROLL_EDGE: f32 = 2.0;
+/// La barra de desplazamiento de la página, a la derecha: se mueve con ella y
+/// no cuenta al calzar los cuadros (en lógico).
+const SCROLLBAR_SKIP: f32 = 18.0;
+/// Cada cuántos cuadros va un resumen al log.
+const SCROLL_LOG_EVERY: u32 = 25;
+
+/// La captura desplazable en curso.
+struct Scrolling {
+    /// Lo elegido, en coordenadas de la foto.
+    rect: Rect,
+    /// Lo mismo en coordenadas de pantalla: lo que se fotografía.
+    region: PhysRect,
+    /// La barra, en coordenadas de la foto: con el cursor encima la ventana
+    /// recibe el mouse.
+    bar: Rect,
+    /// El hueco de la miniatura junto a lo elegido, si cabe.
+    thumb: Option<Rect>,
+    /// Lo que la miniatura puede medir, en píxeles.
+    thumb_pixels: (u32, u32),
+    /// La unión. `None` mientras un cuadro se procesa en segundo plano.
+    stitcher: Option<Stitcher>,
+    /// La miniatura de lo unido y su tamaño lógico.
+    preview: Option<(Arc<RenderImage>, (f32, f32))>,
+    height: u32,
+    /// El último cuadro no calzó con lo anterior.
+    lost: bool,
+    full: bool,
+    /// Se apretó «Listo» con un cuadro en proceso: se termina al volver.
+    finish: bool,
+    /// Para el log: qué pasó con los cuadros.
+    tally: ScrollTally,
+}
+
+/// Cuántos cuadros se tomaron y qué pasó con cada uno (para el log).
+#[derive(Default, Debug)]
+struct ScrollTally {
+    frames: u32,
+    /// Con filas nuevas, abajo o arriba; `above`: los de arriba.
+    added: u32,
+    above: u32,
+    same: u32,
+    /// Desplazados por lo que ya estaba unido.
+    seen: u32,
+    lost: u32,
+    errors: u32,
+}
+
+/// Con `PILL_SCROLL_DEBUG` cada cuadro de la desplazable se guarda como PNG,
+/// para ver qué se fotografía y repetir la unión
+/// (`scroll_capture::tests::cuadros_guardados_se_unen`). `1`: una carpeta
+/// nueva en la temporal del sistema; otro valor: esa carpeta.
+fn scroll_debug_dir() -> Option<PathBuf> {
+    let value = std::env::var("PILL_SCROLL_DEBUG").ok().filter(|value| !value.is_empty() && value != "0")?;
+    let dir = if value == "1" {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        std::env::temp_dir().join(format!("atic-scroll-{stamp}"))
+    } else {
+        PathBuf::from(value)
+    };
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        Err(error) => {
+            tracing::warn!(%error, carpeta = %dir.display(), "captura desplazable: no se pudo crear la carpeta de depuración");
+            None
+        }
+    }
+}
+
+/// Un cuadro de la desplazable, ya procesado en segundo plano.
+struct ScrollSample {
+    step: Step,
+    /// El tamaño del cuadro, en píxeles.
+    size: (u32, u32),
+    thumb: Option<(u32, u32, Vec<u8>)>,
+    error: Option<String>,
+    /// Lo que tardó la foto, y la foto más la unión.
+    shot: std::time::Duration,
+    took: std::time::Duration,
+}
+
+impl Default for ScrollSample {
+    fn default() -> Self {
+        Self {
+            step: Step::Lost,
+            size: (0, 0),
+            thumb: None,
+            error: None,
+            shot: std::time::Duration::ZERO,
+            took: std::time::Duration::ZERO,
+        }
+    }
+}
+
+impl Drop for Scrolling {
+    fn drop(&mut self) {
+        if let Some((image, _)) = self.preview.take() {
+            crate::release::image(image);
+        }
+    }
+}
+
+impl CaptureView {
+    /// D: la pizarra al soltar. No va junto con la desplazable.
+    fn toggle_draw(&mut self, cx: &mut Context<Self>) {
+        self.session.draw = !self.session.draw;
+        if self.session.draw && self.session.scroll {
+            self.session.scroll = false;
+            remember_scroll(false);
+        }
+        cx.notify();
+    }
+
+    /// L: lo próximo que se elija se captura desplazando.
+    fn toggle_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.session.record || self.text_mode || self.scrolling.is_some() {
+            return;
+        }
+        self.session.scroll = !self.session.scroll;
+        if self.session.scroll {
+            self.session.draw = false;
+        }
+        remember_scroll(self.session.scroll);
+        tracing::info!(prendido = self.session.scroll, "captura desplazable: modo");
+        cx.notify();
+    }
+
+    /// Si la ventana debe dejar pasar el mouse: en la desplazable, salvo con
+    /// el cursor (lógico de la ventana) sobre la barra.
+    pub fn passes_mouse(&self, cursor: Option<(f32, f32)>) -> bool {
+        let Some(scrolling) = self.scrolling.as_ref() else {
+            return false;
+        };
+        let offset = self.session.frozen.offset;
+        let bar = Rect::new(scrolling.bar.x + offset.0, scrolling.bar.y + offset.1, scrolling.bar.w, scrolling.bar.h);
+        !cursor.is_some_and(|cursor| bar.contains(cursor, 4.0))
+    }
+
+    /// Empieza a unir lo elegido. `false` si no se puede (la mira sigue y se
+    /// captura como siempre): en macOS, con varias pantallas, solo en la de
+    /// la pill, que es la que tiene la ventana del overlay.
+    fn start_scroll(&mut self, rect: Rect, cx: &mut Context<Self>) -> bool {
+        let offset = self.session.frozen.offset;
+        let (vw, vh) = self.viewport;
+        let inside = rect.x + offset.0 >= -0.5
+            && rect.y + offset.1 >= -0.5
+            && rect.right() + offset.0 <= vw + 0.5
+            && rect.bottom() + offset.1 <= vh + 0.5;
+        if rect.w < 16.0 || rect.h < 16.0 || !inside {
+            tracing::warn!(
+                elegido = ?rect,
+                ventana = ?self.viewport,
+                desplazamiento = ?offset,
+                "captura desplazable: lo elegido no cabe en la pantalla del overlay; va como captura normal"
+            );
+            return false;
+        }
+        let session = &self.session;
+        let region = session.frozen.to_screen(session.physical(&rect));
+        let screen = session.screen_at((rect.x + rect.w / 2.0, rect.y + rect.h / 2.0));
+        let bar_h = crate::board::Colors::current().button() + 2.0 * crate::hover::M3_TOOLBAR_PAD;
+        let bar_w = SCROLL_BAR_W.min(screen.w - 16.0);
+        let bar_x = (rect.x + rect.w / 2.0 - bar_w / 2.0).clamp(screen.x + 8.0, (screen.right() - bar_w - 8.0).max(screen.x + 8.0));
+        // Debajo de lo elegido, o encima; si no cabe, adentro, abajo.
+        let bar_y = if rect.bottom() + SCROLL_GAP + bar_h + 8.0 <= screen.bottom() {
+            rect.bottom() + SCROLL_GAP
+        } else if rect.y - SCROLL_GAP - bar_h >= screen.y + 8.0 {
+            rect.y - SCROLL_GAP - bar_h
+        } else {
+            rect.bottom() - SCROLL_GAP - bar_h
+        };
+        let thumb_h = rect.h.min(screen.bottom() - 8.0 - rect.y).max(48.0);
+        let thumb_x = if rect.right() + SCROLL_GAP + SCROLL_THUMB_W + 8.0 <= screen.right() {
+            Some(rect.right() + SCROLL_GAP)
+        } else if rect.x - SCROLL_GAP - SCROLL_THUMB_W >= screen.x + 8.0 {
+            Some(rect.x - SCROLL_GAP - SCROLL_THUMB_W)
+        } else {
+            None
+        };
+        let scale = session.frozen.scale;
+        self.scrolling = Some(Scrolling {
+            rect,
+            region,
+            bar: Rect::new(bar_x, bar_y, bar_w, bar_h),
+            thumb: thumb_x.map(|x| Rect::new(x, rect.y, SCROLL_THUMB_W, thumb_h)),
+            thumb_pixels: ((SCROLL_THUMB_W * scale) as u32, (thumb_h * scale) as u32),
+            stitcher: Some(Stitcher::new(SCROLL_MAX, (SCROLLBAR_SKIP * scale).round() as u32)),
+            preview: None,
+            height: 0,
+            lost: false,
+            full: false,
+            finish: false,
+            tally: ScrollTally::default(),
+        });
+        tracing::info!(
+            region = ?region,
+            elegido = ?rect,
+            escala = scale,
+            vivo = session.live,
+            "captura desplazable: empieza; desplaza la página bajo el marco"
+        );
+        let debug = scroll_debug_dir();
+        if let Some(dir) = debug.as_ref() {
+            tracing::info!(carpeta = %dir.display(), "captura desplazable: los cuadros se guardan (PILL_SCROLL_DEBUG)");
+        }
+        self.session.press = None;
+        self.over_bar = false;
+        self.sources_open = false;
+        self.over_menu = false;
+        cx.emit(CaptureEvent::Scrolling);
+        self.sample_scroll(debug, cx);
+        cx.notify();
+        true
+    }
+
+    /// Toma cuadros en segundo plano hasta que la desplazable termine. La
+    /// vista se redibuja solo cuando cambia lo que muestra.
+    fn sample_scroll(&mut self, debug: Option<PathBuf>, cx: &mut Context<Self>) {
+        cx.spawn(async move |view, cx| {
+            let mut index = 0u32;
+            loop {
+                let job = view
+                    .update(cx, |view, _| {
+                        let scrolling = view.scrolling.as_mut()?;
+                        let stitcher = scrolling.stitcher.take()?;
+                        Some((stitcher, scrolling.region, scrolling.thumb_pixels))
+                    })
+                    .ok()
+                    .flatten();
+                let Some((mut stitcher, region, (thumb_w, thumb_h))) = job else {
+                    break;
+                };
+                let dump = debug.as_ref().map(|dir| dir.join(format!("{index:05}.png")));
+                index += 1;
+                let (stitcher, sample) = cx
+                    .background_spawn(async move {
+                        let started = std::time::Instant::now();
+                        let mut sample = ScrollSample::default();
+                        match atic_capture::engine::capture_rect(region, false) {
+                            Ok(frame) => {
+                                sample.size = (frame.width(), frame.height());
+                                sample.shot = started.elapsed();
+                                sample.step = stitcher.push(frame.width(), frame.height(), &frame.bgra);
+                                if let Some(path) = dump {
+                                    if let Ok(png) = atic_capture::encoding::bgra_to_png(frame.width(), frame.height(), &frame.bgra) {
+                                        let _ = std::fs::write(path, png);
+                                    }
+                                }
+                            }
+                            Err(error) => sample.error = Some(error.to_string()),
+                        }
+                        if let Step::First | Step::Added(_) | Step::AddedAbove(_) = sample.step {
+                            sample.thumb = stitcher.thumbnail(thumb_w, thumb_h);
+                        }
+                        sample.took = started.elapsed();
+                        (stitcher, sample)
+                    })
+                    .await;
+                let go_on = view.update(cx, |view, cx| view.scroll_step(stitcher, sample, cx)).unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+                cx.background_executor().timer(SCROLL_EVERY).await;
+            }
+        })
+        .detach();
+    }
+
+    /// Vuelve un cuadro procesado. `false`: no hay que tomar más.
+    fn scroll_step(&mut self, stitcher: Stitcher, sample: ScrollSample, cx: &mut Context<Self>) -> bool {
+        let scale = self.session.frozen.scale;
+        let Some(scrolling) = self.scrolling.as_mut() else {
+            return false;
+        };
+        let ScrollSample { step, size, thumb, error, shot, took } = sample;
+        let tally = &mut scrolling.tally;
+        tally.frames += 1;
+        if tally.frames == 1 {
+            // El tamaño del cuadro contra la región dice a qué escala
+            // fotografía esa pantalla.
+            tracing::info!(
+                cuadro = ?size,
+                region = ?scrolling.region,
+                foto_ms = shot.as_millis() as u64,
+                total_ms = took.as_millis() as u64,
+                "captura desplazable: primer cuadro"
+            );
+        }
+        // Solo al perder el hilo, no en cada cuadro perdido.
+        if error.is_none() && step == Step::Lost && !scrolling.lost {
+            tracing::info!(cuadro = tally.frames, alto = stitcher.height(), calce = ?stitcher.detail(), "captura desplazable: no calza");
+        }
+        match (&error, step) {
+            (Some(error), _) => {
+                tally.errors += 1;
+                // Solo el primero: con el permiso faltando, fallan todos.
+                if tally.errors == 1 {
+                    tracing::warn!(%error, region = ?scrolling.region, "captura desplazable: no se pudo tomar el cuadro");
+                }
+            }
+            (None, Step::First | Step::Added(_)) => tally.added += 1,
+            (None, Step::AddedAbove(_)) => {
+                // La primera vez, para ver en el log que se subió de más.
+                if tally.above == 0 {
+                    tracing::info!(cuadro = tally.frames, alto = stitcher.height(), "captura desplazable: agrega hacia arriba");
+                }
+                tally.added += 1;
+                tally.above += 1;
+            }
+            (None, Step::Same) => tally.same += 1,
+            (None, Step::Seen) => tally.seen += 1,
+            (None, Step::Lost) => tally.lost += 1,
+            (None, Step::Full) => {}
+        }
+        if tally.frames % SCROLL_LOG_EVERY == 0 {
+            tracing::info!(
+                cuadros = tally.frames,
+                unidos = tally.added,
+                arriba = tally.above,
+                iguales = tally.same,
+                ya_vistos = tally.seen,
+                sin_calzar = tally.lost,
+                errores = tally.errors,
+                alto = stitcher.height(),
+                total_ms = took.as_millis() as u64,
+                calce = ?stitcher.detail(),
+                "captura desplazable: resumen"
+            );
+        }
+        let before = (scrolling.height, scrolling.lost, scrolling.full);
+        scrolling.height = stitcher.height();
+        scrolling.full = stitcher.is_full();
+        scrolling.stitcher = Some(stitcher);
+        match step {
+            Step::First | Step::Added(_) | Step::AddedAbove(_) | Step::Same | Step::Seen => scrolling.lost = false,
+            Step::Lost => scrolling.lost = true,
+            Step::Full => {}
+        }
+        let mut changed = before != (scrolling.height, scrolling.lost, scrolling.full);
+        if let Some((w, h, bgra)) = thumb {
+            if let Some(image) = image_of_owned(Frame::new(PhysRect::new(0, 0, w, h), bgra)) {
+                if let Some((old, _)) = scrolling.preview.replace((image, (w as f32 / scale, h as f32 / scale))) {
+                    crate::release::image(old);
+                }
+                changed = true;
+            }
+        }
+        let (finish, full) = (scrolling.finish, scrolling.full);
+        if finish {
+            self.finish_scroll(cx);
+            return false;
+        }
+        if changed {
+            cx.notify();
+        }
+        !full
+    }
+
+    /// «Listo» o Enter: lo unido sigue el camino de una captura normal.
+    fn finish_scroll(&mut self, cx: &mut Context<Self>) {
+        let Some(scrolling) = self.scrolling.as_mut() else {
+            return;
+        };
+        // Un cuadro en proceso: se termina cuando vuelva.
+        if scrolling.stitcher.is_none() {
+            scrolling.finish = true;
+            return;
+        }
+        let Some(mut scrolling) = self.scrolling.take() else {
+            return;
+        };
+        let rect = scrolling.rect;
+        let tally = std::mem::take(&mut scrolling.tally);
+        match scrolling.stitcher.take().and_then(Stitcher::into_image) {
+            Some((width, height, bgra)) => {
+                tracing::info!(
+                    ancho = width,
+                    alto = height,
+                    cuadros = tally.frames,
+                    unidos = tally.added,
+                    arriba = tally.above,
+                    iguales = tally.same,
+                    ya_vistos = tally.seen,
+                    sin_calzar = tally.lost,
+                    errores = tally.errors,
+                    "captura desplazable: lista"
+                );
+                let frame = Frame::new(PhysRect::new(0, 0, width, height), bgra);
+                let region = frame.bounds;
+                cx.emit(CaptureEvent::Chosen {
+                    frame,
+                    region,
+                    rect,
+                    draw: false,
+                });
+            }
+            None => {
+                tracing::warn!(?tally, "captura desplazable: terminó sin ningún cuadro");
+                cx.emit(CaptureEvent::Cancelled);
+            }
+        }
+    }
+
+    /// «Cancelar» o Esc en la desplazable.
+    fn cancel_scroll(&mut self, cx: &mut Context<Self>) {
+        if let Some(scrolling) = self.scrolling.as_ref() {
+            tracing::info!(alto = scrolling.height, tally = ?scrolling.tally, "captura desplazable: cancelada");
+        }
+        cx.emit(CaptureEvent::Cancelled);
+    }
+
+    /// Lo que se ve mientras tanto: lo de afuera apenas oscuro, el marco, la
+    /// miniatura y la barra. Sin la foto: la pantalla es la de verdad.
+    fn scroll_view(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(scrolling) = self.scrolling.as_ref() else {
+            return div().into_any_element();
+        };
+        let t = crate::i18n::t;
+        let offset = self.session.frozen.offset;
+        let screen = self.session.screen();
+        let colors = crate::board::Colors::current();
+        let ink: Hsla = rgb(crate::board::INK).into();
+        let (edge, muted) = match colors.scheme {
+            Some(s) => (s.primary, s.on_surface_variant),
+            None => (gpui::white().opacity(0.95), ink.opacity(0.72)),
+        };
+        let at = move |r: Rect| bounds(&Rect::new(r.x + offset.0, r.y + offset.1, r.w, r.h));
+        let r = scrolling.rect;
+        let e = SCROLL_EDGE;
+        let paint = move |window: &mut Window| {
+            let shade: Hsla = gpui::black().opacity(DIM * 0.5);
+            let s = screen;
+            let outer = Rect::new(r.x - e, r.y - e, r.w + 2.0 * e, r.h + 2.0 * e);
+            for band in [
+                Rect::new(s.x, s.y, s.w, (outer.y - s.y).max(0.0)),
+                Rect::new(s.x, outer.bottom(), s.w, (s.bottom() - outer.bottom()).max(0.0)),
+                Rect::new(s.x, outer.y, (outer.x - s.x).max(0.0), outer.h),
+                Rect::new(outer.right(), outer.y, (s.right() - outer.right()).max(0.0), outer.h),
+            ] {
+                window.paint_quad(fill(at(band), shade));
+            }
+            // El marco va por fuera: lo elegido queda entero a la vista.
+            for side in [
+                Rect::new(outer.x, outer.y, outer.w, e),
+                Rect::new(outer.x, r.bottom(), outer.w, e),
+                Rect::new(outer.x, r.y, e, r.h),
+                Rect::new(r.right(), r.y, e, r.h),
+            ] {
+                window.paint_quad(fill(at(side), edge));
+            }
+        };
+
+        // Arriba qué hacer (o qué pasó); abajo cuánto va y cómo terminar.
+        let (title, warn) = if scrolling.full {
+            (t("pill.capture.scroll.full"), true)
+        } else if scrolling.lost {
+            (t("pill.capture.scroll.lost"), true)
+        } else {
+            (t("pill.capture.scroll.start"), false)
+        };
+        let progress: SharedString = crate::i18n::tf("pill.capture.scroll.height", &[("px", &scrolling.height)]).into();
+        let title_ink = match (colors.scheme, warn) {
+            (Some(s), true) => s.error,
+            (Some(s), false) => s.on_surface,
+            (None, _) => ink,
+        };
+
+        let thumb = scrolling.thumb.zip(scrolling.preview.clone()).map(|(slot, (image, (w, h)))| {
+            let fit = (slot.w / w.max(1.0)).min(slot.h / h.max(1.0)).min(1.0);
+            div()
+                .absolute()
+                .left(px(slot.x + offset.0))
+                .top(px(slot.y + offset.1))
+                .w(px(w * fit))
+                .h(px(h * fit))
+                .rounded(px(6.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(edge)
+                .child(img(image).size_full())
+        });
+
+        let b = scrolling.bar;
+        let bar = match colors.scheme {
+            Some(s) => crate::hover::m3_toolbar("capture-scroll-bar", &s),
+            None => crate::board::island("capture-scroll-bar"),
+        }
+        .absolute()
+        .left(px(b.x + offset.0))
+        .top(px(b.y + offset.1))
+        .w(px(b.w))
+        .h(px(b.h))
+        .cursor(CursorStyle::Arrow)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .pl(px(12.))
+                .pr(px(6.))
+                .flex()
+                .flex_col()
+                .font_family(crate::fonts::UI)
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(12.5))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(title_ink)
+                        .child(title),
+                )
+                .child(div().truncate().text_size(px(11.)).text_color(muted).child(progress)),
+        )
+        .child(self.scroll_button("capture-scroll-cancel", "icons/x.svg", None, t("pill.capture.scroll.tipCancel"), false, Self::cancel_scroll, cx))
+        .child(self.scroll_button(
+            "capture-scroll-done",
+            "icons/check.svg",
+            Some(t("pill.capture.scroll.done")),
+            t("pill.capture.scroll.tipDone"),
+            true,
+            Self::finish_scroll,
+            cx,
+        ));
+
+        div()
+            .id("capture")
+            .track_focus(&self.focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::whole_screen))
+            .size_full()
+            .relative()
+            .child(canvas(|_, _, _| {}, move |_, _, window, _| paint(window)).absolute().size_full())
+            .children(thumb)
+            .child(bar)
+            .into_any_element()
+    }
+
+    /// Un botón de la barra de la desplazable, como los de la mira. `filled`:
+    /// la acción principal.
+    #[allow(clippy::too_many_arguments)]
+    fn scroll_button(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        label: Option<&'static str>,
+        tip: &'static str,
+        filled: bool,
+        run: fn(&mut Self, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        use crate::hover::M3Tone;
+        let colors = crate::board::Colors::current();
+        let side = colors.button();
+        let text: Hsla = rgb(crate::board::INK).into();
+        let el = div()
+            .id(id)
+            .h(px(side))
+            .min_w(px(side))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .gap(px(6.))
+            .when(label.is_some(), |el| el.pl(px(10.)).pr(px(13.)))
+            .rounded(px(side / 2.0))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_family(crate::fonts::UI)
+            .tooltip(crate::hover::tool_tip(tip))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    run(view, cx);
+                }),
+            );
+        let fx = SharedString::from(format!("{id}-fx"));
+        if let Some(s) = colors.scheme {
+            return el
+                .fx_cx(fx, move |el, h, window, cx| {
+                    let tone = if filled { M3Tone::Filled } else { M3Tone::Standard };
+                    let (el, fg) = crate::hover::m3_tool(el, h, tone, side, &s, window, cx);
+                    el.font_weight(gpui::FontWeight::MEDIUM)
+                        .child(svg().path(icon).flex_none().size(px(18.)).text_color(fg))
+                        .when_some(label, |el, label| el.child(label))
+                })
+                .into_any_element();
+        }
+        el.fx(fx, move |el, h| {
+            let bg = if filled {
+                text.opacity(0.14 + 0.06 * h.t + 0.04 * h.press)
+            } else {
+                h.mix(text.opacity(0.0), text.opacity(0.08 + 0.05 * h.press))
+            };
+            el.bg(bg)
+                .text_color(text)
+                .child(svg().path(icon).flex_none().size(px(17.)).text_color(text))
+                .when_some(label, |el, label| el.child(label))
+        })
+        .into_any_element()
     }
 }
 
@@ -2559,6 +3269,7 @@ impl crate::Pill {
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
         session.live = remembered_live();
+        session.scroll = remembered_scroll();
         if std::mem::take(&mut self.screen_rec.requested) {
             session.enter_record();
         }
@@ -2596,7 +3307,19 @@ impl crate::Pill {
         cx.notify();
     }
 
+    /// Captura desplazable: la ventana deja pasar el mouse (la rueda llega a
+    /// la página), salvo sobre su barra.
+    pub(crate) fn capture_passes_mouse(&self, cx: &App) -> bool {
+        self.capture.as_ref().is_some_and(|view| view.read(cx).passes_mouse(self.cursor))
+    }
+
     fn end_capture(&mut self, event: &CaptureEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // La mira sigue abierta, pero ya no tapa la pantalla: las otras
+        // pantallas quedan libres.
+        if let CaptureEvent::Scrolling = event {
+            self.mirrors.close(cx);
+            return;
+        }
         let Some(view) = self.capture.take() else {
             return;
         };

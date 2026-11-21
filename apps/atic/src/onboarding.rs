@@ -2959,6 +2959,7 @@ impl Onboarding {
                     .child(svg().path("icons/mic.svg").size(px(16.)).text_color(hsla(TEXT)))
                     .child(div().flex_1().min_w_0().type_style(type_scale::BODY_MEDIUM).text_color(hsla(MUTED)).child(voice)),
             )
+            .child(capture_card())
             .child(code_card(cfg))
             .child(div().flex_1())
             .child(footer(
@@ -2968,6 +2969,56 @@ impl Onboarding {
             ))
             .into_any_element()
     }
+}
+
+/// En «Listo»: lo que hace una captura además de la foto, en tres fichas.
+/// Cada cosa se enseña después en su lugar: el consejo del estante, el de la
+/// mira y la guía del editor (`coach.rs`).
+fn capture_card() -> impl IntoElement {
+    let (soft, on_soft) = crate::theme::expressive().map_or((hsla(TEXT).opacity(0.08), hsla(TEXT)), |t| (t.accent_soft, t.on_accent_soft));
+    let text_body = if cfg!(target_os = "macos") {
+        t("pill.onboarding.finish.captures.textBodyMac")
+    } else {
+        t("pill.onboarding.finish.captures.textBody")
+    };
+    let tiles = [
+        ("icons/pencil.svg", t("pill.onboarding.finish.captures.editTitle"), t("pill.onboarding.finish.captures.editBody")),
+        ("icons/scan-text.svg", t("pill.onboarding.finish.captures.textTitle"), text_body),
+        ("icons/arrow-down.svg", t("pill.onboarding.finish.captures.scrollTitle"), t("pill.onboarding.finish.captures.scrollBody")),
+    ];
+    div().flex().gap(px(8.)).children(tiles.into_iter().map(move |(icon, name, body)| {
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(gpui_m3::corner::M)
+            .bg(box_bg())
+            .child(
+                div()
+                    .size(px(32.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(soft)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(svg().path(icon).size(px(16.)).text_color(on_soft)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().type_style(type_scale::LABEL_LARGE).text_color(hsla(TEXT)).child(name))
+                    .child(div().type_style(type_scale::BODY_SMALL).text_color(hsla(MUTED)).child(body)),
+            )
+    }))
 }
 
 /// En «Listo»: Atic Code, la ventana de agentes, que no está a la vista en la

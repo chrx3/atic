@@ -1,5 +1,6 @@
 //! Lo que la pill le pide a macOS en Swift: el reconocimiento de voz en el
-//! equipo (SpeechAnalyzer) y Apple Intelligence (Foundation Models).
+//! equipo (SpeechAnalyzer), Apple Intelligence (Foundation Models) y la
+//! traducción (Translation).
 //!
 //! Esas APIs no existen en Objective-C, así que van en un ayudante aparte,
 //! `atic-apple` (`macos/apple/main.swift`), que viaja junto al ejecutable en la
@@ -87,7 +88,12 @@ fn missing() -> String {
 }
 
 /// Corre un comando y devuelve las líneas JSON; la última con `error` es el fallo.
-fn run(args: &[&str], input: Option<&str>, mut on_line: impl FnMut(&Value)) -> Result<Value, String> {
+fn run(args: &[&str], input: Option<&str>, on_line: impl FnMut(&Value)) -> Result<Value, String> {
+    reply(last_line(args, input, on_line)?)
+}
+
+/// Corre un comando y devuelve su última línea JSON, sea o no un error.
+fn last_line(args: &[&str], input: Option<&str>, mut on_line: impl FnMut(&Value)) -> Result<Value, String> {
     let helper = helper().ok_or_else(missing)?;
     let mut child = Command::new(&helper)
         .args(args)
@@ -108,7 +114,7 @@ fn run(args: &[&str], input: Option<&str>, mut on_line: impl FnMut(&Value)) -> R
         }
     }
     let _ = child.wait();
-    reply(last)
+    Ok(last)
 }
 
 fn reply(last: Value) -> Result<Value, String> {
@@ -378,6 +384,148 @@ fn same_text(original: &str, polished: &str) -> bool {
     kept * 100 >= before.len() * 85 && after.len() <= before.len() + before.len() / 4 + 2
 }
 
+/// Un texto traducido en el equipo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Translation {
+    pub text: String,
+    /// Los idiomas, con su nombre según el Mac («inglés»).
+    pub from: String,
+    pub to: String,
+    /// Sus códigos («en», «zh-TW»).
+    pub from_code: String,
+    pub to_code: String,
+}
+
+/// Por qué no se tradujo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TranslateError {
+    /// El par se puede traducir, pero sus idiomas no están bajados.
+    NotInstalled { from: String, to: String },
+    /// El Mac no traduce entre esos idiomas.
+    Unsupported { from: String, to: String },
+    /// No se reconoce en qué idioma está el texto.
+    UnknownLanguage,
+    /// El ayudante no contestó a tiempo.
+    TimedOut,
+    /// Apple Intelligence no pudo (apagado, no habla el idioma o falló): la
+    /// pill traduce entonces con Translation.
+    Model(String),
+    Failed(String),
+}
+
+/// Traduce `text` en el equipo (framework Translation) del idioma `from`
+/// (`None`: lo detecta el Mac) a `to` («es»), o a `or` si el texto ya está
+/// en `to`.
+pub fn translate(text: &str, from: Option<&str>, to: &str, or: Option<&str>) -> Result<Translation, TranslateError> {
+    run_translate(text, from, to, or, &[], TRANSLATE_WAIT)
+}
+
+/// Como [`translate`], con Apple Intelligence: `instructions` son las de la
+/// pill, con `{from}` y `{to}` para los nombres de los idiomas.
+pub fn translate_with_model(
+    text: &str,
+    from: Option<&str>,
+    to: &str,
+    or: Option<&str>,
+    instructions: &str,
+) -> Result<Translation, TranslateError> {
+    run_translate(text, from, to, or, &["--engine", "ai", "--instructions", instructions], MODEL_WAIT)
+}
+
+fn run_translate(
+    text: &str,
+    from: Option<&str>,
+    to: &str,
+    or: Option<&str>,
+    extra: &[&str],
+    wait: std::time::Duration,
+) -> Result<Translation, TranslateError> {
+    // Los nombres de los idiomas, en el de Atic.
+    let ui = if crate::i18n::english() { "en" } else { "es" };
+    let mut args = vec!["translate", "--to", to, "--ui", ui];
+    if let Some(from) = from {
+        args.extend(["--from", from]);
+    }
+    if let Some(or) = or {
+        args.extend(["--or", or]);
+    }
+    args.extend_from_slice(extra);
+    let helper = helper().ok_or_else(|| TranslateError::Failed(missing()))?;
+    let value = last_line_within(&helper, &args, text, wait)?;
+    parse_translation(&value)
+}
+
+/// Lo más que se espera una traducción. Sin esto, un ayudante que no contesta
+/// (el framework esperando algo que nunca llega) deja «Traduciendo…» para siempre.
+const TRANSLATE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Apple Intelligence escribe más lento que Translation: una captura llena
+/// puede tomar unos segundos más.
+const MODEL_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Como `last_line`, pero si el ayudante (`helper`) no termina en `wait` se
+/// cierra y vuelve `TimedOut`.
+fn last_line_within(helper: &Path, args: &[&str], input: &str, wait: std::time::Duration) -> Result<Value, TranslateError> {
+    let mut child = Command::new(helper)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| TranslateError::Failed(crate::i18n::tf("pill.platform.appleOpenFailed", &[("error", &e)])))?;
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let input = input.to_string();
+    let (tx, done) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("apple-traducir".into())
+        .spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            let mut last = Value::Null;
+            if let Some(stdout) = stdout {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                        last = value;
+                    }
+                }
+            }
+            let _ = tx.send(last);
+        })
+        .map_err(|e| TranslateError::Failed(e.to_string()))?;
+    let result = done.recv_timeout(wait).map_err(|_| {
+        let _ = child.kill();
+        TranslateError::TimedOut
+    });
+    let _ = child.wait();
+    result
+}
+
+fn parse_translation(value: &Value) -> Result<Translation, TranslateError> {
+    let field = |key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    // El nombre del idioma; sin él, su código.
+    let name = |key: &str| Some(field(&format!("{key}_name"))).filter(|n| !n.is_empty()).unwrap_or_else(|| field(key));
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        return Err(match value.get("code").and_then(Value::as_str) {
+            Some("notInstalled") => TranslateError::NotInstalled { from: name("from"), to: name("to") },
+            Some("unsupported") => TranslateError::Unsupported { from: name("from"), to: name("to") },
+            Some("unknownLanguage" | "empty") => TranslateError::UnknownLanguage,
+            Some("aiUnavailable" | "aiUnsupported" | "aiFailed") => TranslateError::Model(error.to_string()),
+            _ => TranslateError::Failed(error.to_string()),
+        });
+    }
+    if value.is_null() {
+        return Err(TranslateError::Failed(crate::i18n::t("pill.platform.appleNoReply").into()));
+    }
+    Ok(Translation { text: field("text"), from: name("from"), to: name("to"), from_code: field("from"), to_code: field("to") })
+}
+
+/// Ajustes del Sistema en «Idioma y región», donde se bajan los idiomas para
+/// traducir («Idiomas de traducción», al final).
+pub fn open_translation_settings() {
+    let _ = Command::new("open").arg("x-apple.systempreferences:com.apple.Localization-Settings.extension").spawn();
+}
+
 /// Ajustes del Sistema en «Apple Intelligence y Siri».
 pub fn open_intelligence_settings() {
     let _ = Command::new("open").arg("x-apple.systempreferences:com.apple.Siri-Settings.extension").spawn();
@@ -386,6 +534,25 @@ pub fn open_intelligence_settings() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn una_traduccion_que_no_contesta_se_corta_a_tiempo() {
+        let dir = std::env::temp_dir().join(format!("atic-apple-espera-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("atic-apple");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let result = last_line_within(&script, &["translate"], "hola", std::time::Duration::from_millis(300));
+        assert_eq!(result, Err(TranslateError::TimedOut));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "no esperó a que terminara el ayudante");
+        let quick = dir.join("rapido");
+        std::fs::write(&quick, "#!/bin/sh\ncat >/dev/null\necho '{\"text\":\"hi\",\"from\":\"es\",\"to\":\"en\"}'\n").unwrap();
+        std::fs::set_permissions(&quick, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let value = last_line_within(&quick, &["translate"], "hola", std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(parse_translation(&value).unwrap().text, "hi");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn lee_el_estado() {
@@ -464,6 +631,31 @@ mod tests {
         assert_eq!(downmix(&[0.25, 0.5], 1), vec![0.25, 0.5]);
         // Un bloque cortado a medio cuadro descarta lo que sobra.
         assert_eq!(downmix(&[1.0, 1.0, 1.0], 2), vec![1.0]);
+    }
+
+    #[test]
+    fn lee_la_traduccion_y_sus_errores() {
+        let ok: Value = serde_json::from_str(r#"{"text":"Hola","from":"en","from_name":"inglés","to":"es","to_name":"español"}"#).unwrap();
+        assert_eq!(
+            parse_translation(&ok),
+            Ok(Translation {
+                text: "Hola".into(),
+                from: "inglés".into(),
+                to: "español".into(),
+                from_code: "en".into(),
+                to_code: "es".into()
+            })
+        );
+        let missing: Value = serde_json::from_str(r#"{"error":"x","code":"notInstalled","from":"ko","from_name":"coreano","to":"es"}"#).unwrap();
+        assert_eq!(parse_translation(&missing), Err(TranslateError::NotInstalled { from: "coreano".into(), to: "es".into() }));
+        let unsupported: Value = serde_json::from_str(r#"{"error":"x","code":"unsupported","from":"en","to":"la"}"#).unwrap();
+        assert!(matches!(parse_translation(&unsupported), Err(TranslateError::Unsupported { .. })));
+        let unknown: Value = serde_json::from_str(r#"{"error":"x","code":"unknownLanguage"}"#).unwrap();
+        assert_eq!(parse_translation(&unknown), Err(TranslateError::UnknownLanguage));
+        let model: Value = serde_json::from_str(r#"{"error":"no habla coreano","code":"aiUnsupported"}"#).unwrap();
+        assert_eq!(parse_translation(&model), Err(TranslateError::Model("no habla coreano".into())));
+        let failed: Value = serde_json::from_str(r#"{"error":"se cayó","code":"failed"}"#).unwrap();
+        assert_eq!(parse_translation(&failed), Err(TranslateError::Failed("se cayó".into())));
     }
 
     #[test]

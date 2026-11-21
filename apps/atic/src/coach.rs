@@ -13,15 +13,18 @@
 //!   la ventana se redibuja entera y se borran las anclas que ya no están.
 //! - Mientras se ve, la capa tapa la ventana: ni clics ni teclas llegan abajo
 //!   (Esc salta la guía; Enter o → avanza; ← vuelve).
+//! - Lo que no es ventana (la mira, el estante) no se tapa: lleva un consejo
+//!   de primera vez al lado ([`first_time`], [`tip`], [`tip_chip`]), con las
+//!   mismas reglas de visto y apagado.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, Config};
 use gpui::{
-    canvas, deferred, div, fill, point, prelude::*, px, quad, size, transparent_black, AnyElement, App, BorderStyle, Bounds,
+    canvas, deferred, div, fill, point, prelude::*, px, quad, size, svg, transparent_black, AnyElement, App, BorderStyle, Bounds,
     Corners, Edges, Element, ElementId, GlobalElementId, Hsla, InspectorElementId, LayoutId, MouseButton, Pixels, SharedString,
     Window, WindowId,
 };
@@ -237,6 +240,7 @@ pub fn replay(id: &str, cx: &mut App) {
 /// Vuelve a mostrar todas las guías (Ajustes → General).
 pub fn reset_all(cx: &mut App) {
     DISMISSED.with(|dismissed| dismissed.borrow_mut().clear());
+    TIPS.with(|tips| tips.borrow_mut().clear());
     edit_config(|cfg| cfg.coach_seen.clear());
     cx.refresh_windows();
 }
@@ -263,6 +267,87 @@ pub fn help_button(guide: &'static Guide, size: Pixels) -> AnyElement {
         .size(size)
         .tooltip(t("pill.coach.replay"))
         .on_click(move |_, _, cx| replay(id, cx))
+        .into_any_element()
+}
+
+// --- Consejos de primera vez ------------------------------------------------------
+
+/// Lo que sigue a la vista un consejo desde que salió: una o dos capturas
+/// seguidas, no para siempre.
+const TIP_FOR: Duration = Duration::from_secs(90);
+
+thread_local! {
+    /// Los consejos de esta sesión: desde cuándo se ven (`None`: ya terminó).
+    static TIPS: RefCell<HashMap<&'static str, Option<Instant>>> = RefCell::default();
+}
+
+/// Un consejo de primera vez para lo que no es ventana (la mira, el estante):
+/// `true` solo la primera vez. Queda anotado como visto (`coach_seen`), se
+/// apaga con las guías (`coach_off`) y no sale antes de la bienvenida.
+pub fn first_time(id: &'static str) -> bool {
+    if TIPS.with(|tips| tips.borrow().contains_key(id)) || !wanted(id) {
+        return false;
+    }
+    TIPS.with(|tips| tips.borrow_mut().insert(id, Some(Instant::now())));
+    mark_seen(id);
+    true
+}
+
+/// Como [`first_time`], pero sigue a la vista `TIP_FOR` desde que salió: para
+/// lo que se dibuja de nuevo en cada cuadro, como la mira.
+pub fn tip(id: &'static str) -> bool {
+    match TIPS.with(|tips| tips.borrow().get(id).copied()) {
+        Some(since) => since.is_some_and(|at| at.elapsed() < TIP_FOR),
+        None => first_time(id),
+    }
+}
+
+/// Ya se usó lo que decía el consejo: no hace falta (ni ahora ni después).
+pub fn tip_done(id: &'static str) {
+    let known = TIPS.with(|tips| tips.borrow_mut().insert(id, None)).is_some();
+    if !known && wanted(id) {
+        mark_seen(id);
+    }
+}
+
+/// El globito de un consejo sobre la pantalla: `tertiary_container`, el rol de
+/// lo nuevo que conviene mirar, con su tecla (si tiene) en una tecla rellena.
+pub fn tip_chip(scheme: Option<&gpui_m3::Scheme>, key: Option<&'static str>, text: impl Into<SharedString>) -> AnyElement {
+    let (bg, fg, key_bg, key_fg) = match scheme {
+        Some(s) => (s.tertiary_container, s.on_tertiary_container, s.tertiary, s.on_tertiary),
+        None => (gpui::black().opacity(0.82), gpui::white(), gpui::white(), gpui::black()),
+    };
+    div()
+        .max_w(px(420.))
+        .min_h(px(32.))
+        .pl(px(10.))
+        .pr(px(14.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(corner::L)
+        .bg(bg)
+        .when_some(scheme, |el, s| el.shadow(Elevation::Level2.shadow(s)))
+        .font_family(crate::fonts::UI)
+        .text_color(fg)
+        .child(svg().path("icons/sparkles.svg").size(px(16.)).flex_none().text_color(fg))
+        .children(key.map(|key| {
+            div()
+                .flex_none()
+                .min_w(px(22.))
+                .h(px(22.))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(corner::S)
+                .bg(key_bg)
+                .text_color(key_fg)
+                .type_emphasized(type_scale::LABEL_LARGE)
+                .child(key)
+        }))
+        .child(div().min_w_0().type_style(type_scale::BODY_MEDIUM).child(text.into()))
         .into_any_element()
 }
 
