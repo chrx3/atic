@@ -642,6 +642,10 @@ jobs:
   publicar:
     name: Firmar y publicar (borrador)
     needs: [resolver, listo]
+    # Explícito: sin `if`, GitHub salta este job si algún job anterior de la
+    # cadena quedó omitido (los tests, cuando el CI de main ya pasó), aunque
+    # «listo» haya dado verde.
+    if: ${{ !cancelled() && needs.resolver.result == 'success' && needs.listo.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # La clave del updater solo vive en el environment «release» (revisor y
