@@ -100,6 +100,11 @@ impl AticServer {
         }
     }
 
+    /// Lo que se publica en `tools/list`, con esquemas que acepta cualquier proveedor.
+    fn listado(&self) -> Vec<rmcp::model::Tool> {
+        self.rutas().list_all().into_iter().map(crate::esquema::portatil).collect()
+    }
+
     /// Nombre del cliente: `_meta.clientInfo` (spec nueva) o el `initialize`
     /// legacy vía el peer. Para el presupuesto sin `--host`.
     fn cliente(ctx: &rmcp::service::RequestContext<RoleServer>) -> Option<String> {
@@ -811,8 +816,7 @@ pub fn router_editor() -> (AticServer, ToolRouter<AticServer>) {
 
 /// Las herramientas que lista el servidor, para los tests.
 pub fn herramientas(modo: ModoServidor) -> Vec<rmcp::model::Tool> {
-    let servidor = AticServer::con_modo(None, None, modo);
-    servidor.rutas().list_all()
+    AticServer::con_modo(None, None, modo).listado()
 }
 
 /// El handler vive acá (y no en `main.rs`) porque el router generado es
@@ -850,7 +854,7 @@ impl rmcp::ServerHandler for AticServer {
         // La lista es estática: el hub se consulta recién en `tools/call`,
         // porque OpenCode corta el listado a los 5 s.
         Ok(rmcp::model::ListToolsResult {
-            tools: self.rutas().list_all(),
+            tools: self.listado(),
             ..Default::default()
         })
     }

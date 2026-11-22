@@ -270,10 +270,25 @@ pub struct Editar {
     #[serde(default)]
     pub video: Option<String>,
     /// Operaciones a aplicar, en orden; cada una es un objeto con `op` (catálogo en la descripción de la herramienta).
+    #[schemars(schema_with = "esquema_ops")]
     pub ops: Vec<serde_json::Value>,
     /// Nombre corto del paso de deshacer (por defecto «Cambios del asistente»).
     #[serde(default)]
     pub label: Option<String>,
+}
+
+// Gemini (Antigravity) rechaza un arreglo sin `items` y un objeto sin `properties`:
+// `Vec<Value>` saldría como `items: true`.
+fn esquema_ops(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "description": "Operaciones a aplicar, en orden; cada una es un objeto con `op` (catálogo en la descripción de la herramienta).",
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": { "op": { "type": "string" } },
+            "required": ["op"]
+        }
+    })
 }
 
 #[derive(Debug, Deserialize, serde::Serialize, schemars::JsonSchema)]

@@ -84,6 +84,35 @@ fn delegate_lista_solo_el_hub_y_publica_modo_y_rol() {
     assert!(esquema["properties"].get("wait").is_none());
 }
 
+// Gemini (Antigravity) rechaza la petición entera si un esquema no calza con su
+// subconjunto: un arreglo sin `items`, un `$ref`, una unión con `null`…
+#[test]
+fn los_esquemas_sirven_a_todos_los_proveedores() {
+    use atic_mcp::tools::{herramientas, ModoServidor};
+    fn revisar(herramienta: &str, valor: &serde_json::Value) {
+        match valor {
+            serde_json::Value::Object(mapa) => {
+                if mapa.get("type") == Some(&serde_json::json!("array")) {
+                    assert!(mapa.get("items").is_some_and(|i| i.is_object()), "{herramienta}: arreglo sin items: {valor}");
+                }
+                for clave in ["$ref", "$defs", "$schema", "anyOf", "oneOf"] {
+                    assert!(!mapa.contains_key(clave), "{herramienta}: lleva {clave}: {valor}");
+                }
+                assert!(!mapa.get("type").is_some_and(|t| t.is_array()), "{herramienta}: type es una lista: {valor}");
+                assert!(!mapa.get("format").and_then(|f| f.as_str()).is_some_and(|f| f.starts_with("uint")), "{herramienta}: formato {valor}");
+                mapa.values().for_each(|v| revisar(herramienta, v));
+            }
+            serde_json::Value::Array(lista) => lista.iter().for_each(|v| revisar(herramienta, v)),
+            _ => {}
+        }
+    }
+    for modo in [ModoServidor::Completo, ModoServidor::Editor, ModoServidor::Delegate] {
+        for herramienta in herramientas(modo) {
+            revisar(&herramienta.name, &serde_json::to_value(&herramienta.input_schema).unwrap());
+        }
+    }
+}
+
 #[test]
 fn rechaza_modos_y_roles_fuera_del_contrato() {
     use atic_mcp::tools::{Delegar, MandarMensaje};

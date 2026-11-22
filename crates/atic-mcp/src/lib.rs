@@ -3,6 +3,7 @@
 
 pub mod budget;
 pub mod editor;
+pub mod esquema;
 pub mod hub_client;
 pub mod payload;
 pub mod tools;
