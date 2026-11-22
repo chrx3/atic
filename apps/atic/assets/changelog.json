@@ -1,6 +1,17 @@
 {
   "versions": [
     {
+      "version": "0.7.4",
+      "date": "2026-11-21",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Antigravity ya funciona en Atic Code con las herramientas de Atic activadas",
+          "en": "Antigravity now works in Atic Code with Atic's tools turned on"
+        }
+      ]
+    },
+    {
       "version": "0.7.3",
       "date": "2026-11-21",
       "items": [
