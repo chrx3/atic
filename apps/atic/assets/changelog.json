@@ -1,9 +1,14 @@
 {
   "versions": [
     {
-      "version": "0.7.5",
+      "version": "0.7.6",
       "date": "2026-11-23",
       "items": [
+        {
+          "kind": "fixed",
+          "es": "Compartir mouse entre dos Macs ya no se queda pegado: si algo falla, el cursor vuelve solo a tu equipo",
+          "en": "Sharing the mouse between two Macs no longer gets stuck: if something fails, the cursor comes back to your computer on its own"
+        },
         {
           "kind": "fixed",
           "es": "Cada chat de una carpeta conserva su modelo y su esfuerzo: elegir otro en un chat ya no cambia los demás",
