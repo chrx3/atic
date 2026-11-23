@@ -1,6 +1,37 @@
 {
   "versions": [
     {
+      "version": "0.7.5",
+      "date": "2026-11-23",
+      "items": [
+        {
+          "kind": "fixed",
+          "es": "Cada chat de una carpeta conserva su modelo y su esfuerzo: elegir otro en un chat ya no cambia los demás",
+          "en": "Each chat in a folder keeps its own model and effort: picking another in one chat no longer changes the others"
+        },
+        {
+          "kind": "new",
+          "es": "Las imágenes del panel derecho se abren en grande, con zoom y arrastre",
+          "en": "Images in the right panel open full size, with zoom and drag"
+        },
+        {
+          "kind": "fixed",
+          "es": "Un PDF u otro archivo adjunto se ve como un chip con su nombre en el mensaje, no como una ruta",
+          "en": "An attached PDF or other file shows as a chip with its name in the message, not as a path"
+        },
+        {
+          "kind": "improved",
+          "es": "Citar un texto del chat lo pone como un chip en la caja y como una cita en el mensaje",
+          "en": "Quoting text from the chat puts it in the box as a chip and in the message as a quote"
+        },
+        {
+          "kind": "improved",
+          "es": "El selector de modelo elige el agente en una sola fila y «Predeterminado» dice qué modelo se usa",
+          "en": "The model picker chooses the agent in a single row and \"Default\" says which model is in use"
+        }
+      ]
+    },
+    {
       "version": "0.7.4",
       "date": "2026-11-21",
       "items": [
