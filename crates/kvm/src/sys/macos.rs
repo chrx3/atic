@@ -377,6 +377,12 @@ extern "C" fn on_event(_proxy: *mut c_void, kind: u32, event: CGEventRef, _user:
             // SAFETY: el gancho que se creó en `start_capture`, que no se suelta.
             unsafe { CGEventTapEnable(tap, true) };
         }
+        // Mientras estuvo apagado, el mouse y el teclado pasaron sin que `Grab` los viera: si el
+        // cursor estaba en el otro equipo, aquí se movía solo y allá quedaban teclas o botones
+        // apretados. El cursor vuelve a este equipo (como en Windows al perder los ganchos).
+        if let Some(grab) = grab() {
+            grab.recall();
+        }
         return event;
     }
     let Some(grab) = grab() else { return event };

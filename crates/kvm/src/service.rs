@@ -496,6 +496,18 @@ fn disconnect_grab(shared: &Shared, grab: &Grab) {
     }
 }
 
+/// Una sesión nueva con `peer` reemplazó a la vieja sin que esta se diera por cortada. Si aquí el
+/// cursor estaba en `peer`, vuelve: la sesión nueva no sabe que estaba allá y, sin esto, este
+/// equipo seguiría tragándose el mouse y el teclado hacia uno que ya no los inyecta.
+fn session_replaced(shared: &Shared, peer: EndpointId) {
+    if lock(&shared.share).is_some_and(|s| s.peer == peer) {
+        if let Some(grab) = shared.grab.get() {
+            disconnect_grab(shared, grab);
+        }
+    }
+    update_connected(shared);
+}
+
 fn hello(shared: &Shared, peer: EndpointId) -> Msg {
     // De qué lado del otro está este equipo, si comparte con él (las versiones
     // anteriores lo leen como «comparte conmigo»: solo entonces).
@@ -657,7 +669,14 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session, ou
         return;
     };
     match replaced {
-        Some(old) => old.conn.close(CLOSE_DUPLICATE.into(), b"repetida"),
+        Some(old) => {
+            old.conn.close(CLOSE_DUPLICATE.into(), b"repetida");
+            // La sesión nueva no sabe que el cursor estaba allá (su `Enter` fue por la vieja):
+            // si aquí seguía en el otro, quedaría tragando el mouse y el teclado hacia un
+            // equipo que ya no los inyecta, y el latido no lo notaría porque este sí contesta.
+            // El cursor vuelve a este equipo y la sesión nueva parte limpia.
+            session_replaced(&shared, peer);
+        }
         None => {
             let _ = shared.events.send(Event::Connected { id: peer, name: name.clone() });
             update_connected(&shared);
@@ -959,6 +978,38 @@ mod tests {
         pc.pair(mac.id(), async move { Ok(code_rx.await?) }).await.unwrap();
         let mac_rx = shown.await.unwrap();
         (pc, pc_rx, mac, mac_rx)
+    }
+
+    /// Con el cursor en el otro equipo, una sesión nueva con él reemplaza a la vieja (un corte
+    /// rápido de red, el otro que despertó): el cursor vuelve a este equipo y puede volver a
+    /// cruzar. Antes seguía tragándose el mouse y el teclado hacia un equipo que ya no los
+    /// inyectaba, y el latido no lo notaba porque el otro sí contesta.
+    #[tokio::test]
+    async fn una_sesion_nueva_devuelve_el_cursor_que_estaba_en_el_otro() {
+        use crate::layout::{Rect, Screens};
+        use crate::source::Verdict;
+
+        let base = std::env::temp_dir().join(format!("atic-kvm-reemplazo-{}", std::process::id()));
+        let (pc, mut pc_rx, mac, _mac_rx) = vinculados(&base).await;
+        // El gancho de prueba, con una pantalla (en los tests no hay gancho real), y la sesión
+        // con el Mac arriba sin que se abra el conector que reintenta.
+        let (grab_tx, _grab_rx) = mpsc::unbounded_channel();
+        let grab = Arc::new(Grab::new(Some(Side::Right), Screens(vec![Rect { x: 0., y: 0., w: 1920., h: 1080. }]), grab_tx));
+        assert!(pc.shared.grab.set(grab.clone()).is_ok());
+        *lock(&pc.shared.share) = Some(Share { peer: mac.id(), side: Side::Right });
+        pc.connect(mac.id()).await.unwrap();
+        update_connected(&pc.shared);
+        assert_eq!(grab.on_move(1919., 540., 5., 0., true), Verdict::Swallow, "el cursor no cruzó");
+        assert!(grab.is_remote());
+
+        session_replaced(&pc.shared, mac.id());
+        assert!(!grab.is_remote(), "el cursor quedó en el otro equipo");
+        next(&mut pc_rx, |e| matches!(e, Event::Home)).await;
+        // La sesión sigue arriba, así que puede volver a cruzar.
+        assert_eq!(grab.on_move(1919., 540., 5., 0., true), Verdict::Swallow);
+        pc.stop();
+        mac.stop();
+        let _ = std::fs::remove_dir_all(base);
     }
 
     /// El lado que eligió cada uno, visto desde el otro, es el contrario.
