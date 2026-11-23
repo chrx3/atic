@@ -75,6 +75,11 @@ pub fn cursor() -> (f64, f64) {
     (p.x as f64, p.y as f64)
 }
 
+/// Windows deja inyectar sin un permiso aparte.
+pub fn can_inject() -> bool {
+    true
+}
+
 /// El cursor a `(x, y)` del escritorio virtual. Absoluto: un movimiento
 /// relativo pasaría otra vez por la aceleración del mouse.
 pub fn move_to(x: f64, y: f64, _dx: f64, _dy: f64) {

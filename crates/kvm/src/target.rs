@@ -15,17 +15,32 @@ pub struct Target {
     buttons: HashSet<Button>,
     /// Ctrl por ⌘ (o Windows) y al revés, entre sistemas distintos.
     swap: bool,
+    /// Si este equipo puede inyectar (en macOS, el permiso de Accesibilidad); cambia en los tests.
+    can_inject: fn() -> bool,
 }
 
 impl Target {
     pub fn new(peer: Os) -> Self {
         let mac = |os| os == Os::Macos;
-        Self { screens: Screens::default(), entered: None, keys: HashSet::new(), buttons: HashSet::new(), swap: mac(peer) != mac(Os::current()) }
+        Self {
+            screens: Screens::default(),
+            entered: None,
+            keys: HashSet::new(),
+            buttons: HashSet::new(),
+            swap: mac(peer) != mac(Os::current()),
+            can_inject: crate::sys::can_inject,
+        }
     }
 
     /// Atiende un mensaje; lo que devuelve va de vuelta al otro.
     pub fn handle(&mut self, msg: Msg) -> Option<Msg> {
         match msg {
+            // Sin poder inyectar, aceptar sería mentirle al otro: contesta `Back` y el cursor
+            // vuelve allá en vez de quedar en un equipo que no lo mueve.
+            Msg::Enter { along, .. } if !(self.can_inject)() => {
+                tracing::warn!("no se puede controlar este equipo: falta el permiso para mover el mouse y el teclado");
+                return Some(Msg::Back { along });
+            }
             Msg::Enter { side, along } => {
                 self.screens = crate::sys::screens();
                 if let Some((x, y)) = self.screens.entry(side, along) {
@@ -76,7 +91,7 @@ impl Target {
                 self.release_all();
                 self.entered = None;
             }
-            Msg::Hello { .. } | Msg::Back { .. } | Msg::ClipText { .. } | Msg::ClipImage { .. } | Msg::Layout { .. } | Msg::Ping | Msg::Pong => {}
+            Msg::Hello { .. } | Msg::Back { .. } | Msg::ClipText { .. } | Msg::ClipImage { .. } | Msg::Layout { .. } | Msg::Ping | Msg::Pong | Msg::Held => {}
         }
         None
     }
@@ -99,6 +114,16 @@ mod tests {
     fn target() -> Target {
         // El mismo sistema en los dos lados: las teclas no se cambian.
         Target::new(Os::current())
+    }
+
+    #[test]
+    fn sin_permiso_para_inyectar_no_acepta_el_cursor() {
+        let mut t = target();
+        t.can_inject = || false;
+        assert_eq!(t.handle(Msg::Enter { side: Side::Right, along: 0.3 }), Some(Msg::Back { along: 0.3 }));
+        assert!(t.entered.is_none());
+        // Y lo que llegue después no se inyecta.
+        assert_eq!(t.handle(Msg::Move { dx: 5, dy: 0 }), None);
     }
 
     #[test]

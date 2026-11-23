@@ -39,6 +39,9 @@ mod none {
     pub fn button(_button: Button, _down: bool) {}
     pub fn wheel(_dx: f32, _dy: f32) {}
     pub fn key(_hid: u16, _down: bool, _repeat: bool) {}
+    pub fn can_inject() -> bool {
+        true
+    }
     pub fn start_capture(_grab: Arc<Grab>) -> anyhow::Result<()> {
         // En los tests se hace como que se instaló; fuera de ellos, este sistema no puede.
         if cfg!(test) {

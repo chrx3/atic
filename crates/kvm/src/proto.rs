@@ -123,15 +123,21 @@ pub enum Msg {
     /// contesta, el mouse y el teclado vuelven a este equipo.
     Ping,
     Pong,
+    /// Quien recibe contesta a [`Msg::Ping`], además del `Pong`, mientras de verdad tiene el
+    /// cursor del otro ([`CAP_HELD`]). Si no llega, quien manda recupera el mouse y el teclado:
+    /// un `Pong` solo prueba que el otro está vivo, no que esté controlado.
+    Held,
 }
 
 /// Entiende [`Msg::Layout`] y los campos nuevos del saludo.
 pub const CAP_LAYOUT2: &str = "layout2";
 /// Contesta [`Msg::Ping`].
 pub const CAP_PING: &str = "ping";
+/// Manda y entiende [`Msg::Held`] (supone [`CAP_PING`]).
+pub const CAP_HELD: &str = "held";
 /// Lo que entiende esta versión (va en el saludo).
 pub fn caps() -> Vec<String> {
-    vec![CAP_LAYOUT2.into(), CAP_PING.into()]
+    vec![CAP_LAYOUT2.into(), CAP_PING.into(), CAP_HELD.into()]
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -250,6 +256,7 @@ mod tests {
             Msg::Layout { side: Side::Top, rev: 7 },
             Msg::Ping,
             Msg::Pong,
+            Msg::Held,
         ];
         let mut buf = Vec::new();
         for m in &msgs {

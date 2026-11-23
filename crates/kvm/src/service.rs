@@ -33,7 +33,7 @@ use crate::clip::{Clip, Copied};
 use crate::files::{self, Purpose};
 use crate::layout::Side;
 use crate::link::{Node, PairingState, Peer, Session, PAIR_ALPN};
-use crate::proto::{caps, clean_name, read_msg, write_frame, Incoming, Msg, Os, CAP_LAYOUT2, CAP_PING};
+use crate::proto::{caps, clean_name, read_msg, write_frame, Incoming, Msg, Os, CAP_HELD, CAP_LAYOUT2, CAP_PING};
 use crate::source::Grab;
 use crate::sys;
 use crate::target::Target;
@@ -121,6 +121,8 @@ const RETRY: Duration = Duration::from_secs(3);
 /// cuánto sin oír nada antes de devolverle el mouse y el teclado a este.
 const PING_EVERY: Duration = Duration::from_secs(1);
 const PING_LOST: Duration = Duration::from_secs(3);
+/// Cada cuánto el vigilante mira si el cursor que está en el otro sigue bien allá.
+const WATCH_EVERY: Duration = Duration::from_secs(1);
 /// Con qué se cierra la sesión que sobra o la del equipo que dejó de contestar.
 const CLOSE_DUPLICATE: u32 = 4;
 const CLOSE_SILENT: u32 = 5;
@@ -137,6 +139,8 @@ struct Shared {
     share: Mutex<Option<Share>>,
     connector: Mutex<Option<JoinHandle<()>>>,
     grab: OnceLock<Arc<Grab>>,
+    /// Por dónde salió el cursor, mientras está en el otro equipo.
+    cross: Mutex<Option<Cross>>,
     clip: Arc<Clip>,
     clipboard: AtomicBool,
     /// De qué lado de este está cada equipo, como lo acordaron.
@@ -155,6 +159,16 @@ struct Link {
     outgoing: bool,
     /// El otro entiende [`Msg::Layout`].
     layout2: bool,
+    /// El otro manda y entiende [`Msg::Held`]: confirma cuando tiene el cursor.
+    held: bool,
+}
+
+/// Por qué sesión salió el cursor hacia el otro equipo y qué se ha oído de allá desde entonces.
+struct Cross {
+    link: u64,
+    since: Instant,
+    /// La última confirmación ([`Msg::Held`]) de esa sesión.
+    held: Option<Instant>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -185,6 +199,7 @@ impl Service {
             share: Mutex::new(None),
             connector: Mutex::new(None),
             grab: OnceLock::new(),
+            cross: Mutex::new(None),
             clip: Arc::new(Clip::default()),
             clipboard: AtomicBool::new(true),
             layouts: Mutex::new(HashMap::new()),
@@ -454,16 +469,20 @@ fn ensure_grab(shared: &Arc<Shared>) -> Result<Arc<Grab>> {
             });
         });
     }
+    tokio::spawn(watchdog(shared.clone()));
     let pump = shared.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let Some(share) = *lock(&pump.share) else { continue };
             match &msg {
                 Msg::Enter { .. } => {
+                    let link = lock(&pump.links).get(&share.peer).map(|l| l.id);
+                    *lock(&pump.cross) = link.map(|link| Cross { link, since: Instant::now(), held: None });
                     let name = pump.node.peer(&share.peer).map(|p| p.name).unwrap_or_default();
                     let _ = pump.events.send(Event::Away { id: share.peer, name });
                 }
                 Msg::Leave => {
+                    *lock(&pump.cross) = None;
                     let _ = pump.events.send(Event::Home);
                 }
                 _ => {}
@@ -491,6 +510,7 @@ fn update_connected(shared: &Shared) {
 fn disconnect_grab(shared: &Shared, grab: &Grab) {
     let was_away = grab.is_remote();
     grab.set_connected(false);
+    *lock(&shared.cross) = None;
     if was_away {
         let _ = shared.events.send(Event::Home);
     }
@@ -658,9 +678,10 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session, ou
     let name = clean_name(&name);
     let layout2 = caps.iter().any(|c| c == CAP_LAYOUT2);
     let ping = caps.iter().any(|c| c == CAP_PING);
+    let held = caps.iter().any(|c| c == CAP_HELD);
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let link_id = shared.next_link.fetch_add(1, Ordering::Relaxed);
-    let link = Link { id: link_id, tx: tx.clone(), conn: conn.clone(), outgoing, layout2 };
+    let link = Link { id: link_id, tx: tx.clone(), conn: conn.clone(), outgoing, layout2, held };
     // `None`: sobra (ya hay una mejor). `Some(old)`: queda esta; `old`, la que reemplazó.
     let registered = {
         let mut links = lock(&shared.links);
@@ -731,12 +752,25 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session, ou
             Msg::Layout { side, rev } => heard_layout(&shared, peer, Placement { side, rev }, true),
             Msg::Ping => {
                 let _ = tx.send(Msg::Pong);
+                // Además de estar vivo, que el otro sepa que de verdad lo controlan desde allá.
+                if controlled && held {
+                    let _ = tx.send(Msg::Held);
+                }
             }
             Msg::Pong => {}
+            Msg::Held => {
+                if let Some(cross) = lock(&shared.cross).as_mut().filter(|c| c.link == link_id) {
+                    cross.held = Some(Instant::now());
+                }
+            }
             Msg::Back { along } => {
-                if let Some(grab) = shared.grab.get() {
+                // Solo vale el `Back` de la sesión por la que salió el cursor: uno que llega por
+                // una sesión vieja o repetida no devuelve un cursor que está en otra.
+                let ours = lock(&shared.cross).as_ref().is_none_or(|c| c.link == link_id);
+                if let Some(grab) = shared.grab.get().filter(|_| ours) {
                     if grab.is_remote() {
                         grab.back(along);
+                        *lock(&shared.cross) = None;
                         let _ = shared.events.send(Event::Home);
                     }
                 }
@@ -758,6 +792,12 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session, ou
                 let entering = matches!(msg, Msg::Enter { .. });
                 let leaving = matches!(msg, Msg::Leave);
                 let reply = target.handle(msg);
+                // Sin poder inyectar, `Target` no acepta el cursor y lo devuelve: no se cuenta como controlado.
+                let refused = entering && matches!(reply, Some(Msg::Back { .. }));
+                if refused {
+                    let _ = shared.events.send(Event::Error("falta el permiso para mover el mouse y el teclado en este equipo".into()));
+                }
+                let entering = entering && !refused;
                 let gone = leaving || matches!(reply, Some(Msg::Back { .. }));
                 if entering != controlled && (entering || gone) {
                     controlled = entering;
@@ -790,6 +830,67 @@ async fn run_session(shared: Arc<Shared>, peer: EndpointId, session: Session, ou
     if removed {
         update_connected(&shared);
         let _ = shared.events.send(Event::Disconnected { id: peer, name });
+    }
+}
+
+/// Por qué el cursor que está en el otro equipo ya no tiene a quién obedecer, si es el caso.
+/// `now` entra como parámetro para probarlo. `link`: la sesión actual con el otro, con su id y
+/// si manda [`Msg::Held`]. `cross`: la sesión por la que salió el cursor.
+fn cross_lost(cross: &Cross, link: Option<(u64, bool)>, now: Instant) -> Option<&'static str> {
+    let Some((id, confirms)) = link else {
+        return Some("la sesión se cortó");
+    };
+    if id != cross.link {
+        return Some("la sesión cambió");
+    }
+    // Sin confirmación no se puede saber si el otro lo controla: el `Pong` solo dice que vive.
+    if confirms && now.duration_since(cross.held.unwrap_or(cross.since)) > PING_LOST {
+        return Some("el otro equipo no confirma que lo controla");
+    }
+    None
+}
+
+/// Vigila el cursor que está en el otro equipo, una vez por segundo y sin depender de ninguna
+/// sesión: si la sesión por la que salió ya no es la actual, se cortó, o el otro no confirma
+/// tenerlo, el mouse y el teclado vuelven a este equipo. Es la red de seguridad de todo lo
+/// demás (latido, `Back`, sesiones reemplazadas), que fallaban cada uno por su lado.
+async fn watchdog(shared: Arc<Shared>) {
+    // Desde cuándo se ve el cursor fuera sin que el cruce esté anotado (la anotación llega un
+    // instante después de que el gancho lo cruza).
+    let mut unlogged: Option<Instant> = None;
+    loop {
+        tokio::time::sleep(WATCH_EVERY).await;
+        let Some(grab) = shared.grab.get() else { continue };
+        if !grab.is_remote() {
+            unlogged = None;
+            continue;
+        }
+        let Some(peer) = lock(&shared.share).map(|s| s.peer) else {
+            tracing::warn!("el cursor estaba en el otro equipo sin compartir: vuelve");
+            disconnect_grab(&shared, grab);
+            continue;
+        };
+        let link = lock(&shared.links).get(&peer).map(|l| (l.id, l.held, l.conn.clone()));
+        let now = Instant::now();
+        let reason = match lock(&shared.cross).as_ref() {
+            Some(cross) => {
+                unlogged = None;
+                cross_lost(cross, link.as_ref().map(|(id, held, _)| (*id, *held)), now)
+            }
+            None => match *unlogged.get_or_insert(now) {
+                since if now.duration_since(since) > PING_LOST => Some("no quedó anotado por qué sesión salió"),
+                _ => None,
+            },
+        };
+        let Some(reason) = reason else { continue };
+        tracing::warn!("{reason}: el cursor vuelve a este equipo");
+        unlogged = None;
+        // Una sesión que no confirma se cierra: `connect_loop` la reabre y parte limpia.
+        if let Some((_, _, conn)) = link.filter(|_| reason.starts_with("el otro")) {
+            conn.close(CLOSE_SILENT.into(), b"sin confirmar");
+        }
+        disconnect_grab(&shared, grab);
+        update_connected(&shared);
     }
 }
 
@@ -1032,6 +1133,70 @@ mod tests {
         next(&mut pc_rx, |e| matches!(e, Event::Disconnected { .. })).await;
         assert!(pc.connected().is_empty());
         pc.stop();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    fn cross_at(link: u64, since: Instant, held: Option<Instant>) -> Cross {
+        Cross { link, since, held }
+    }
+
+    #[test]
+    fn el_vigilante_juzga_si_el_cursor_en_el_otro_sigue_bien() {
+        let t0 = Instant::now();
+        let later = |s: u64| t0 + Duration::from_secs(s);
+        // Todo en orden: la misma sesión, confirmando.
+        assert_eq!(cross_lost(&cross_at(7, t0, Some(later(2))), Some((7, true)), later(4)), None);
+        // La sesión se cortó o cambió.
+        assert_eq!(cross_lost(&cross_at(7, t0, None), None, later(1)), Some("la sesión se cortó"));
+        assert_eq!(cross_lost(&cross_at(7, t0, None), Some((8, true)), later(1)), Some("la sesión cambió"));
+        // Sin confirmar desde que salió (o desde la última): pasados los 3 s, vuelve.
+        assert_eq!(cross_lost(&cross_at(7, t0, None), Some((7, true)), later(2)), None);
+        assert!(cross_lost(&cross_at(7, t0, None), Some((7, true)), later(4)).is_some());
+        assert!(cross_lost(&cross_at(7, t0, Some(later(3))), Some((7, true)), later(5)).is_none());
+        assert!(cross_lost(&cross_at(7, t0, Some(later(3))), Some((7, true)), later(7)).is_some());
+        // Un equipo de una versión sin `Held` no confirma nunca: no se le exige.
+        assert_eq!(cross_lost(&cross_at(7, t0, None), Some((7, false)), later(60)), None);
+    }
+
+    /// Los dos con el cursor cruzado de verdad: el otro confirma con `Held` y el vigilante no
+    /// lo trae de vuelta (más de `PING_LOST` después). Si el vigilante fallara aquí, el mouse
+    /// volvería solo a cada rato.
+    #[tokio::test]
+    async fn con_la_confirmacion_del_otro_el_cursor_se_queda_y_si_cambia_la_sesion_vuelve() {
+        use crate::layout::{Rect, Screens};
+        use crate::source::Verdict;
+
+        let base = std::env::temp_dir().join(format!("atic-kvm-vigilante-{}", std::process::id()));
+        let (pc, mut pc_rx, mac, _mac_rx) = vinculados(&base).await;
+        pc.share(Some(Share { peer: mac.id(), side: Side::Right })).unwrap();
+        next(&mut pc_rx, |e| matches!(e, Event::Connected { .. })).await;
+        let grab = pc.shared.grab.get().unwrap().clone();
+        grab.set_screens(Screens(vec![Rect { x: 0., y: 0., w: 1920., h: 1080. }]));
+        for _ in 0..250 {
+            if grab.drop_edge().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(grab.on_move(1919., 540., 5., 0., true), Verdict::Swallow, "el cursor no cruzó");
+
+        // Pasan más de 3 s con el otro confirmando: sigue allá.
+        tokio::time::sleep(PING_LOST + Duration::from_millis(2500)).await;
+        assert!(grab.is_remote(), "el vigilante trajo de vuelta un cursor que el otro sí controlaba");
+        assert!(lock(&pc.shared.cross).as_ref().is_some_and(|c| c.held.is_some()), "el otro no confirmó");
+
+        // Una sesión nueva con el otro: sea cual sea el orden en que se cierran las dos, el cursor vuelve.
+        let session = pc.shared.node.connect(mac.id(), hello(&pc.shared, mac.id())).await.unwrap();
+        tokio::spawn(run_session(pc.shared.clone(), mac.id(), session, true));
+        for _ in 0..200 {
+            if !grab.is_remote() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!grab.is_remote(), "el cursor quedó en el otro equipo");
+        pc.stop();
+        mac.stop();
         let _ = std::fs::remove_dir_all(base);
     }
 

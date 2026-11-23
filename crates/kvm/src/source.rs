@@ -175,7 +175,7 @@ impl Grab {
         drop(s);
         // Fuera del candado: mover el cursor puede volver a pasar por el gancho.
         crate::sys::hold_cursor(park.0, park.1);
-        tracing::debug!(along, "el cursor pasa al otro equipo");
+        tracing::info!(along, "el cursor pasa al otro equipo");
         Verdict::Swallow
     }
 

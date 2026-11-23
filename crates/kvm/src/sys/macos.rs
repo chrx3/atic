@@ -328,6 +328,18 @@ fn grab() -> Option<Arc<Grab>> {
     GRAB.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
+/// ¿Puede esta app mover el mouse y apretar teclas aquí? Sin el permiso de Accesibilidad,
+/// `CGEventPost` no hace nada y en silencio: el otro equipo creería que lo controla.
+pub fn can_inject() -> bool {
+    // SAFETY: sin precondiciones.
+    unsafe { AXIsProcessTrusted() }
+}
+
 pub fn start_capture(grab: Arc<Grab>) -> Result<()> {
     {
         // El gancho ya está: lo que capture va al `Grab` nuevo.
