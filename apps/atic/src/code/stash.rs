@@ -24,12 +24,14 @@ pub struct StashEntry {
     #[serde(default)]
     pub pasted: Vec<String>,
     #[serde(default)]
+    pub quotes: Vec<String>,
+    #[serde(default)]
     pub images: Vec<StashImage>,
 }
 
 impl StashEntry {
     pub fn has_attachments(&self) -> bool {
-        !(self.files.is_empty() && self.pasted.is_empty() && self.images.is_empty())
+        !(self.files.is_empty() && self.pasted.is_empty() && self.quotes.is_empty() && self.images.is_empty())
     }
 
     /// Lo que se escribió, en una línea, para reconocer el borrador en el menú.

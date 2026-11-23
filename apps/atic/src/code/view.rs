@@ -862,6 +862,16 @@ fn nav_row(
         )
 }
 
+/// Lo que dice el chip de una cita en la caja: su primera línea, cortada.
+fn quote_chip_label(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let mut label: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        label.push('…');
+    }
+    format!("“{label}”")
+}
+
 /// Un chip con un archivo y su «×»: el de Expressive es el `Chip::input` de gpui-m3.
 /// Las primeras líneas de un pegado largo, para el globito de su chip.
 pub(crate) fn pasted_preview(text: &str) -> String {
@@ -2824,6 +2834,37 @@ impl CodeView {
         Some(row)
     }
 
+    /// La cita con que empezó un mensaje, con una barra a la izquierda y el texto atenuado.
+    fn quote_block(&self, text: String) -> Div {
+        div()
+            .border_l_2()
+            .border_color(accent_line())
+            .pl(px(10.))
+            .py(px(2.))
+            .text_size(px(13.))
+            .line_height(px(19.))
+            .text_color(muted())
+            .child(text)
+    }
+
+    /// Los archivos adjuntos que llevó un mensaje, como chips con su nombre: un clic los abre.
+    fn attached_chips(&self, key: &str, index: usize, files: Vec<String>, cx: &mut Context<Self>) -> Option<Div> {
+        if files.is_empty() {
+            return None;
+        }
+        let mut row = div().flex().flex_wrap().gap(px(6.));
+        for (n, file) in files.into_iter().enumerate() {
+            let label = file_name(std::path::Path::new(&file));
+            let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_attached(&file, cx));
+            row = row.child(
+                gpui_m3::Chip::new(SharedString::from(format!("attached-chip-{key}-{index}-{n}")), label)
+                    .leading(svg().path("icons/file.svg").size(px(16.)).text_color(muted()))
+                    .on_click(open),
+            );
+        }
+        Some(row)
+    }
+
     fn message(&self, key: &str, index: usize, item: &Item, flagged: bool, fresh: bool, streaming: bool, fades: Vec<(usize, f32)>, cx: &mut Context<Self>) -> AnyElement {
         let group = SharedString::from(format!("msg-{index}"));
         let flag = self.flag_button(index, flagged, cx);
@@ -2847,8 +2888,13 @@ impl CodeView {
             Item::User { text, images, .. } if expressive() => {
                 let copy = text.clone();
                 let (shown, refs) = super::split_pasted_refs(text);
+                let (quote, shown) = super::split_quote(shown);
+                let (shown, files) = super::split_attached_files(shown);
                 let shown = shown.to_string();
+                let quote = quote.map(|quote| self.quote_block(quote));
+                let separate = !shown.is_empty() || !files.is_empty();
                 let pasted = self.pasted_chips(key, index, refs, cx);
+                let attached = self.attached_chips(key, index, files, cx);
                 div()
                     .group(group.clone())
                     .flex()
@@ -2857,9 +2903,11 @@ impl CodeView {
                     .child(
                         gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
                             .when(fresh, |b| b.entrance(SharedString::from(format!("bubble-{key}-{index}")), 0.))
-                            .when_some(thumbs(images), |el, row| el.child(row.mb(px(if shown.is_empty() && pasted.is_none() { 0. } else { 8. }))))
+                            .when_some(quote, |el, block| el.child(block.mb(px(8.))))
+                            .when_some(thumbs(images), |el, row| el.child(row.mb(px(if shown.is_empty() && pasted.is_none() && attached.is_none() { 0. } else { 8. }))))
                             .when(!shown.is_empty(), |el| el.child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), shown.clone())))
-                            .when_some(pasted, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.))))),
+                            .when_some(attached, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.)))))
+                            .when_some(pasted, |el, row| el.child(row.mt(px(if separate { 8. } else { 0. })))),
                     )
                     .child(
                         // Copiar y Marcar bajo el mensaje, a la derecha como la burbuja.
@@ -2886,8 +2934,13 @@ impl CodeView {
             Item::User { text, images, .. } => {
                 let copy_button = self.flat_copy(index, text.clone(), group.clone(), cx);
                 let (shown, refs) = super::split_pasted_refs(text);
+                let (quote, shown) = super::split_quote(shown);
+                let (shown, files) = super::split_attached_files(shown);
                 let shown = shown.to_string();
+                let quote = quote.map(|quote| self.quote_block(quote));
+                let separate = !shown.is_empty() || !files.is_empty();
                 let pasted = self.pasted_chips(key, index, refs, cx);
+                let attached = self.attached_chips(key, index, files, cx);
                 // El mensaje guarda el alto de sus botones (que van debajo): así no
                 // pisan lo que sigue y el cursor no sale del mensaje al ir a ellos.
                 div()
@@ -2907,9 +2960,11 @@ impl CodeView {
                         .border_1()
                         .border_color(accent_line())
                         .line_height(px(22.))
+                        .when_some(quote, |el, block| el.child(block.mb(px(8.))))
                         .when_some(thumbs(images), |el, row| el.child(row.mb(px(8.))))
                         .when(!shown.is_empty(), |el| el.child(gpui_m3::SelectableText::new(SharedString::from(format!("user-{key}-{index}")), shown.clone())))
-                        .when_some(pasted, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.))))),
+                        .when_some(attached, |el, row| el.child(row.when(!shown.is_empty(), |row| row.mt(px(8.)))))
+                        .when_some(pasted, |el, row| el.child(row.mt(px(if separate { 8. } else { 0. })))),
                 )
                 .child(div().absolute().right(px(-6.)).bottom_0().flex().gap(px(2.)).child(copy_button).child(actions(div().child(flag))))
                 .into_any_element()
@@ -3285,6 +3340,7 @@ impl CodeView {
                 }
                 Attachment::File(path) => file_name(path),
                 Attachment::Pasted { lines, .. } => tf("pill.code.view.pastedChip", &[("lines", lines)]),
+                Attachment::Quote(text) => quote_chip_label(text),
             };
             let chip = file_chip(("attachment", index), name.clone(), remove);
             // Sin el índice: al quitar uno, los que siguen no vuelven a entrar.

@@ -169,6 +169,9 @@ pub(super) enum Entry {
     Empty(&'static str),
     /// Un título con botones debajo (Rewind).
     Block { label: String, picks: Vec<Pick> },
+    /// Opciones en una sola fila de chips (la elegida marcada), que pasan a la línea
+    /// siguiente si no caben: elegir el agente sin gastar una fila por cada uno.
+    Choice(Vec<(Pick, bool)>),
 }
 
 struct Row {
@@ -407,6 +410,23 @@ impl CodeView {
             Some(_) => String::new(),
             None if self.current_agent().is_some() => String::new(),
             None => self.chat_effort(),
+        }
+    }
+
+    /// Lo que dice la fila «Predeterminado»: el modelo que de verdad responde en esta
+    /// conversación si ya se sabe (Claude Code decide cuál es el predeterminado, y puede no ser
+    /// el que describe su lista), y si no, la descripción de la lista.
+    fn default_model_note(&self) -> Option<String> {
+        // Solo si esta conversación usa el predeterminado: con otro modelo elegido, el que
+        // responde es ese y la fila no tiene nada que decir de él.
+        let actual = self
+            .active_chat()
+            .filter(|_| self.chat_model().is_empty())
+            .and_then(|chat| chat.model.clone())
+            .filter(|model| !model.is_empty() && !model.starts_with('<'));
+        match actual {
+            Some(model) => Some(tf("pill.code.agentMenu.defaultInUse", &[("model", &self.model_label(&model))])),
+            None => self.model_info.get("").cloned(),
         }
     }
 
@@ -749,6 +769,15 @@ impl CodeView {
             Entry::Separator => menu.separator(),
             Entry::Empty(text) => menu.item(div().p(px(16.)).text_center().text_color(t().muted).child(text)),
             Entry::Line(line) => menu.item(self.m3_item(line, cx)),
+            Entry::Choice(picks) => menu.item(
+                div()
+                    .px(px(12.))
+                    .py(px(4.))
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .children(picks.into_iter().map(|(pick, selected)| gpui_m3::Chip::new(pick.id, pick.label).filter(selected).on_click(pick.click))),
+            ),
             // TODO(gpui-m3): MenuItem con acciones bajo el texto (una fila
             // estática de dos líneas); por ahora, la fila de aquí.
             Entry::Block { label, picks } => menu.item(
@@ -838,23 +867,27 @@ impl CodeView {
                     let fixed = self.agent_fixed();
                     let options = std::iter::once((None, "Claude Code"))
                         .chain(visible.iter().filter_map(|cli| super::acp::agent(cli)).map(|a| (Some(a.cli), a.name)));
+                    let mut choices = Vec::new();
                     for (index, (cli, name)) in options.enumerate() {
-                        if fixed && cli != current {
+                        if fixed {
+                            if cli == current {
+                                let mut line = Line::new(("agent", index), name);
+                                line.radio = Some(true);
+                                line.static_row = true;
+                                line.sublabel = Some(crate::i18n::t("pill.code.agentMenu.fixedInChat").into());
+                                out.push(Entry::Line(line));
+                            }
                             continue;
                         }
-                        let mut line = Line::new(("agent", index), name);
-                        line.radio = Some(cli == current);
-                        if fixed {
-                            line.static_row = true;
-                            line.sublabel = Some(crate::i18n::t("pill.code.agentMenu.fixedInChat").into());
-                        } else {
-                            line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                                view.choose_agent(cli, cx);
-                                view.configs.set_last_agent(cli);
-                                view.close_menus(cx);
-                            })));
-                        }
-                        out.push(Entry::Line(line));
+                        let click = boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                            view.choose_agent(cli, cx);
+                            view.configs.set_last_agent(cli);
+                            view.close_menus(cx);
+                        }));
+                        choices.push((Pick { id: ("agent", index), label: name, click }, cli == current));
+                    }
+                    if !choices.is_empty() {
+                        out.push(Entry::Choice(choices));
                     }
                     out.push(Entry::Separator);
                 }
@@ -883,7 +916,7 @@ impl CodeView {
                     let (id, name) = &self.models[index];
                     let mut line = Line::new(("model", index), name.clone());
                     line.radio = Some(selected == Some(id.as_str()));
-                    line.sublabel = self.model_info.get(id).cloned();
+                    line.sublabel = if id.is_empty() { self.default_model_note() } else { self.model_info.get(id).cloned() };
                     let id = id.clone();
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let id = id.clone();
@@ -985,7 +1018,7 @@ impl CodeView {
                     let id = entry.id;
                     let mut label = entry.snippet();
                     if entry.has_attachments() {
-                        let extra = tf("pill.code.stash.withAttachments", &[("count", &(entry.files.len() + entry.pasted.len() + entry.images.len()))]);
+                        let extra = tf("pill.code.stash.withAttachments", &[("count", &(entry.files.len() + entry.pasted.len() + entry.quotes.len() + entry.images.len()))]);
                         label = if label.is_empty() { extra } else { format!("{label} · {extra}") };
                     }
                     let picks = vec![

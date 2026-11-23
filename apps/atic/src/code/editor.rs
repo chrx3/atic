@@ -517,14 +517,28 @@ impl CodeView {
                 .min_h(px(0.))
                 .relative()
                 .child(
-                    div().absolute().top_0().left_0().size_full().p(px(16.)).child(
-                        // Con id: sin él GPUI no avanza los cuadros de un GIF o un WebP animado.
-                        gpui::img(open.path.clone())
-                            .id(SharedString::from(format!("file-img-{}", open.path.display())))
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain)
-                            .with_fallback(|| div().into_any_element()),
-                    ),
+                    div()
+                        .id(SharedString::from(format!("file-img-open-{}", open.path.display())))
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .p(px(16.))
+                        .cursor_pointer()
+                        .tooltip(crate::hover::tip(crate::i18n::t("pill.code.editor.zoomImage")))
+                        // Un clic la abre en grande, con zoom y arrastre (el visor de los diagramas).
+                        .on_click({
+                            let path = open.path.clone();
+                            cx.listener(move |view, _: &ClickEvent, _, cx| view.open_image_viewer(path.clone(), cx))
+                        })
+                        .child(
+                            // Con id: sin él GPUI no avanza los cuadros de un GIF o un WebP animado.
+                            gpui::img(open.path.clone())
+                                .id(SharedString::from(format!("file-img-{}", open.path.display())))
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Contain)
+                                .with_fallback(|| div().into_any_element()),
+                        ),
                 )
                 .into_any_element(),
             Body::Note(note) => div().flex_1().p(px(16.)).text_color(t.muted).child(note.clone()).into_any_element(),

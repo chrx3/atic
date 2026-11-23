@@ -49,6 +49,7 @@ impl Content {
                 (Attachment::Image { name: a, data: x, .. }, Attachment::Image { name: b, data: y, .. }) => a == b && x == y,
                 (Attachment::File(a), Attachment::File(b)) => a == b,
                 (Attachment::Pasted { text: a, .. }, Attachment::Pasted { text: b, .. }) => a == b,
+                (Attachment::Quote(a), Attachment::Quote(b)) => a == b,
                 _ => false,
             })
     }
@@ -261,6 +262,7 @@ enum DiskAttachment {
     Image { name: String, media_type: String, file: String },
     File { path: String },
     Pasted { text: String },
+    Quote { text: String },
 }
 
 impl DiskDraft {
@@ -279,6 +281,7 @@ impl DiskDraft {
                 }
                 Attachment::File(path) => attachments.push(DiskAttachment::File { path: path.to_string_lossy().into_owned() }),
                 Attachment::Pasted { text, .. } => attachments.push(DiskAttachment::Pasted { text: text.clone() }),
+                Attachment::Quote(text) => attachments.push(DiskAttachment::Quote { text: text.clone() }),
             }
         }
         Self { text: draft.content.text.clone(), cursor: draft.content.cursor, edited: draft.edited, attachments }
@@ -312,6 +315,7 @@ impl DiskDraft {
                     let lines = text.lines().count();
                     attachments.push(Attachment::Pasted { text, lines });
                 }
+                DiskAttachment::Quote { text } => attachments.push(Attachment::Quote(text)),
             }
         }
         Content { text: self.text, cursor: self.cursor, attachments }

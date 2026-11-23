@@ -201,6 +201,9 @@ pub enum Attachment {
     /// Un texto largo pegado en la caja: al enviar se guarda como archivo .md y el mensaje
     /// solo lo nombra (`pasted_ref`); si no se puede guardar, va dentro, en su propio bloque.
     Pasted { text: String, lines: usize },
+    /// Lo seleccionado en el chat con «Citar»: va al comienzo del mensaje como cita (`> línea`)
+    /// y en la caja se ve como un chip, no como texto.
+    Quote(String),
 }
 
 /// Un pegado con al menos tantas líneas o tantos caracteres se vuelve adjunto.
@@ -250,6 +253,50 @@ pub(crate) fn split_pasted_refs(message: &str) -> (&str, Vec<PastedRef>) {
     (rest, refs)
 }
 
+/// `message` con las citas al comienzo, en un solo bloque `> línea`.
+pub(crate) fn with_quotes(quotes: &[String], message: String) -> String {
+    if quotes.is_empty() {
+        return message;
+    }
+    let block = quotes.join("\n>\n");
+    if message.is_empty() { block } else { format!("{block}\n\n{message}") }
+}
+
+/// La cita con que empieza un mensaje (sin los `> `) y el resto del mensaje; sin cita, `None`.
+pub(crate) fn split_quote(message: &str) -> (Option<String>, &str) {
+    let mut end = 0;
+    let mut lines = Vec::new();
+    for line in message.split_inclusive('\n') {
+        let Some(rest) = line.trim_end().strip_prefix('>') else {
+            break;
+        };
+        lines.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
+        end += line.len();
+    }
+    if lines.is_empty() {
+        return (None, message);
+    }
+    (Some(lines.join("\n").trim().to_string()), message[end..].trim_start_matches('\n'))
+}
+
+/// El mensaje sin la lista «(Archivos adjuntos: @a @b)» que lleva al final (y sin el texto
+/// que pone `compose_message_with` cuando solo hay archivos), y esas rutas en orden.
+pub(crate) fn split_attached_files(message: &str) -> (&str, Vec<String>) {
+    let rest = message.trim_end();
+    let (head, last) = match rest.rfind("\n\n") {
+        Some(at) => (&rest[..at], &rest[at + 2..]),
+        None => ("", rest),
+    };
+    let Some(list) = last.strip_prefix(FILES_OPEN).and_then(|list| list.strip_suffix(')')) else {
+        return (message, Vec::new());
+    };
+    let files: Vec<String> = list.split(" @").map(|file| file.strip_prefix('@').unwrap_or(file).to_string()).filter(|file| !file.is_empty()).collect();
+    if files.is_empty() {
+        return (message, Vec::new());
+    }
+    (if head == FILES_ONLY_TEXT { "" } else { head }, files)
+}
+
 /// El nombre del archivo del pegado `n` (desde 1) de un mensaje enviado a la hora `stamp`.
 fn pasted_file_name(stamp: &str, n: usize) -> String {
     format!("pegado-{stamp}-{n}.md")
@@ -293,6 +340,11 @@ pub(crate) fn is_long_paste(text: &str) -> bool {
     text.chars().count() >= PASTE_MIN_CHARS || text.lines().count() >= PASTE_MIN_LINES
 }
 
+/// Cómo abre `compose_message_with` la lista de archivos adjuntos de un mensaje.
+const FILES_OPEN: &str = "(Archivos adjuntos: ";
+/// El texto que lleva un mensaje con archivos y nada escrito.
+const FILES_ONLY_TEXT: &str = "Revisa los archivos adjuntos.";
+
 const PASTED_OPEN: &str = "<texto pegado>";
 const PASTED_CLOSE: &str = "</texto pegado>";
 
@@ -320,13 +372,14 @@ fn recall_step(current: Option<usize>, len: usize, up: bool) -> Option<Option<us
 /// Lo que el usuario escribió en un mensaje ya compuesto: sin los bloques de texto pegado,
 /// la lista de archivos adjuntos ni la nota de contexto del editor que agrega `compose_message`.
 pub(crate) fn typed_prompt(message: &str) -> String {
-    let mut text = split_pasted_refs(message).0;
+    let mut text = split_quote(split_pasted_refs(message).0).1;
     if text.starts_with(PASTED_OPEN) {
         text = "";
     } else if let Some(at) = text.find(&format!("\n\n{PASTED_OPEN}\n")) {
         text = &text[..at];
     }
-    for marker in ["\n\n(Archivos adjuntos: ", "\n\n(Contexto: @"] {
+    let files_marker = format!("\n\n{FILES_OPEN}");
+    for marker in [files_marker.as_str(), "\n\n(Contexto: @"] {
         if let Some(at) = text.rfind(marker) {
             if text[at..].trim_end().ends_with(')') && !text[at + 2..].contains("\n\n") {
                 text = &text[..at];
@@ -366,9 +419,9 @@ pub(crate) fn compose_message_with(text: &str, context: Option<&str>, files: &[S
         full = format!("{text}\n\n{note}");
     }
     if !files.is_empty() {
-        let base = if text.is_empty() { "Revisa los archivos adjuntos." } else { full.as_str() };
+        let base = if text.is_empty() { FILES_ONLY_TEXT } else { full.as_str() };
         let list: Vec<String> = files.iter().map(|f| format!("@{f}")).collect();
-        full = format!("{base}\n\n(Archivos adjuntos: {})", list.join(" "));
+        full = format!("{base}\n\n{FILES_OPEN}{})", list.join(" "));
     }
     for block in pasted {
         let block = format!("{PASTED_OPEN}\n{}\n{PASTED_CLOSE}", block.trim_end_matches('\n'));
@@ -1059,12 +1112,13 @@ pub fn warm_up() {
 /// tasks»): las frases conocidas pasan a español y las demás quedan como vienen.
 fn model_description_es(description: &str) -> String {
     // En inglés la traducción es la misma frase: no cambia nada.
-    let phrases: [(&str, &str); 5] = [
+    let phrases: [(&str, &str); 6] = [
         ("Efficient for routine tasks", crate::i18n::t("pill.code.mod.descEfficient")),
         ("For complex work and everyday tasks", crate::i18n::t("pill.code.mod.descComplex")),
         ("For your toughest challenges", crate::i18n::t("pill.code.mod.descToughest")),
         ("Most efficient for simpler tasks", crate::i18n::t("pill.code.mod.descSimpler")),
         ("Fastest for quick answers", crate::i18n::t("pill.code.mod.descFastest")),
+        ("Best for everyday, complex tasks", crate::i18n::t("pill.code.mod.descEveryday")),
     ];
     phrases.iter().fold(description.to_string(), |text, (en, es)| text.replace(en, es))
 }
@@ -3419,6 +3473,7 @@ impl CodeView {
         let mut files = Vec::new();
         let mut pasted = Vec::new();
         let mut saved = Vec::new();
+        let mut quotes: Vec<String> = Vec::new();
         // Los pegados largos, como archivos en la carpeta de esta conversación.
         let folder = self
             .active_chat()
@@ -3432,6 +3487,7 @@ impl CodeView {
                     thumbs.push(image.clone());
                 }
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
+                Attachment::Quote(text) => quotes.push(thread_list::quote_of(text).unwrap_or_default()),
                 Attachment::Pasted { text, lines } => {
                     match save_long_paste(&folder, &stamp, saved.len() + 1, text) {
                         Some(path) => saved.push((path.display().to_string(), *lines)),
@@ -3447,6 +3503,7 @@ impl CodeView {
             .editor_context(cx)
             .and_then(|ctx| editor::context_note(&typed, &relative_to(&ctx.path, &roots), ctx.lines));
         let text = compose_message_with(&typed, note.as_deref(), &files, !images.is_empty() && saved.is_empty(), &pasted);
+        let text = with_quotes(&quotes, text);
         let text = with_pasted_refs(text, &saved);
         self.prompt_nav = None;
         Some((text, images, thumbs))
@@ -3772,6 +3829,7 @@ impl CodeView {
                 }
                 Attachment::File(path) => entry.files.push(path.to_string_lossy().into_owned()),
                 Attachment::Pasted { text, .. } => entry.pasted.push(text.clone()),
+                Attachment::Quote(text) => entry.quotes.push(text.clone()),
             }
         }
         Some(entry)
@@ -3799,6 +3857,7 @@ impl CodeView {
             out.push(Attachment::Image { name: image.name.clone(), media_type, data: image.data.clone(), image: decoded, size });
         }
         out.extend(entry.files.iter().map(|path| Attachment::File(PathBuf::from(path))));
+        out.extend(entry.quotes.iter().map(|text| Attachment::Quote(text.clone())));
         out.extend(entry.pasted.iter().map(|text| Attachment::Pasted { text: text.clone(), lines: text.lines().count() }));
         out
     }
@@ -3873,7 +3932,7 @@ impl CodeView {
                         continue;
                     }
                 }
-                Attachment::Pasted { .. } => {}
+                Attachment::Pasted { .. } | Attachment::Quote(_) => {}
             }
             self.attachments.push(attachment);
         }
@@ -4863,6 +4922,20 @@ impl CodeView {
     }
 
     /// Abre en el visor el `código` en línea de una respuesta (`src/x.rs:42`).
+    /// Un archivo adjunto de un mensaje enviado: se ve en el panel si es texto o imagen y,
+    /// si no (un PDF, un Word), lo abre su app.
+    fn open_attached(&mut self, text: &str, cx: &mut Context<Self>) {
+        match files::resolve_ref(text, &self.ref_roots()) {
+            Some(path) if editor::is_image(&path) || editor::read_text(&path).is_ok() => self.open_file(path, cx),
+            Some(path) => {
+                if let Err(error) = crate::paths::open(&path) {
+                    self.show_toast(tf("pill.code.fileMenu.openFailed", &[("error", &error)]), cx);
+                }
+            }
+            None => self.show_toast(tf("pill.code.mod.notFound", &[("path", &text)]), cx),
+        }
+    }
+
     fn open_ref(&mut self, text: &str, cx: &mut Context<Self>) {
         match files::resolve_ref(text, &self.ref_roots()) {
             Some(path) => match gpui_m3::split_path_line(text.trim()).1 {
@@ -5114,6 +5187,35 @@ mod tests {
         );
         // Sin pegados es igual que `compose_message`.
         assert_eq!(compose_message_with("hola", None, &[], false, &[]), compose_message("hola", None, &[], false));
+    }
+
+    #[test]
+    fn los_archivos_adjuntos_se_separan_del_mensaje() {
+        let files = vec!["docs/Informe final.pdf".to_string(), "/Users/c/b.rs".to_string()];
+        let message = compose_message("mira esto", None, &files, false);
+        assert_eq!(split_attached_files(&message), ("mira esto", files.clone()));
+        // Solo archivos: el texto por defecto no se muestra.
+        let only = compose_message("", None, &files[..1], false);
+        assert_eq!(split_attached_files(&only), ("", vec!["docs/Informe final.pdf".to_string()]));
+        // Un paréntesis del usuario no es una lista, y sin lista el mensaje queda igual.
+        assert_eq!(split_attached_files("¿qué es (esto)?"), ("¿qué es (esto)?", Vec::new()));
+        // Con un pegado guardado al final, la lista queda antes.
+        let saved = with_pasted_refs(message, &[("/tmp/pegado-1.md".to_string(), 30)]);
+        let (shown, refs) = split_pasted_refs(&saved);
+        assert_eq!((split_attached_files(shown).0, refs.len()), ("mira esto", 1));
+    }
+
+    #[test]
+    fn una_cita_va_al_comienzo_y_se_separa_del_mensaje() {
+        let quotes = vec!["> uno\n> dos".to_string(), "> tres".to_string()];
+        let message = with_quotes(&quotes, "¿y esto?".into());
+        assert_eq!(message, "> uno\n> dos\n>\n> tres\n\n¿y esto?");
+        let (quote, rest) = split_quote(&message);
+        assert_eq!((quote.as_deref(), rest), (Some("uno\ndos\n\ntres"), "¿y esto?"));
+        // Sin cita, el mensaje queda igual; una cita sola no deja resto.
+        assert_eq!(split_quote("hola"), (None, "hola"));
+        assert_eq!(split_quote("> solo"), (Some("solo".into()), ""));
+        assert_eq!(typed_prompt(&message), "¿y esto?");
     }
 
     #[test]

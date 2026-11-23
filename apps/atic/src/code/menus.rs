@@ -470,6 +470,7 @@ impl CodeView {
                 Entry::Separator => list.child(divider()),
                 Entry::Empty(text) => list.child(div().p(px(16.)).flex().justify_center().text_color(t.muted).child(text)),
                 Entry::Line(line) => list.child(self.flat_line(line, cx)),
+                Entry::Choice(picks) => list.child(div().px(px(10.)).py(px(4.)).flex().flex_wrap().gap(px(4.)).children(picks.into_iter().map(|(pick, _)| Self::flat_pick(pick)))),
                 Entry::Block { label, picks } => list.child(
                     div()
                         .px(px(10.))

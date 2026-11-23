@@ -248,6 +248,8 @@ impl NotchChat {
                     thumbs.push(image);
                 }
                 Attachment::File(path) => files.push(crate::code::relative_to(&path, &folders)),
+                // Citar es de Atic Code; si llegara una, va como texto dentro del mensaje.
+                Attachment::Quote(text) => pasted.push(text),
                 Attachment::Pasted { text, lines } => match crate::code::save_long_paste(&folder, &stamp, saved.len() + 1, &text) {
                     Some(path) => saved.push((path.display().to_string(), lines)),
                     None => {
@@ -795,6 +797,7 @@ impl NotchChat {
                     ))
                     .child(remove)
                     .into_any_element(),
+                Attachment::Quote(_) => div().into_any_element(),
                 Attachment::Pasted { lines, .. } => div()
                     .h(px(34.))
                     .max_w(px(150.))

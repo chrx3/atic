@@ -1499,6 +1499,11 @@ impl Chat {
             self.items.push(Item::Model(model_name(list, model)));
         }
         self.sent_model = Some(model.to_string());
+        // Lo enviado queda como el modelo de esta conversación: sin esto, seguiría el del
+        // espacio y otro chat de la misma carpeta se lo cambiaría al elegir el suyo.
+        if self.acp.is_none() {
+            self.want_model.get_or_insert_with(|| model.to_string());
+        }
     }
 
     /// Lo mismo con el esfuerzo: si cambió desde el último mensaje, se suma a la
@@ -1515,6 +1520,9 @@ impl Chat {
             }
         }
         self.sent_effort = Some(effort.to_string());
+        if self.acp.is_none() {
+            self.want_effort.get_or_insert_with(|| effort.to_string());
+        }
     }
 
     /// Se eligió otro modelo con la conversación ya empezada: el nombre que
@@ -2452,6 +2460,22 @@ mod tests {
         // Elegir «Predeterminado» en la conversación no vuelve al del espacio.
         chat.want_model = Some(String::new());
         assert_eq!(chat.chosen_model(&config), "");
+    }
+
+    #[test]
+    fn lo_enviado_fija_el_modelo_y_el_esfuerzo_de_la_conversacion() {
+        let list = models();
+        let mut config = ClaudeConfig { model: "sonnet".into(), effort: "high".into(), ..Default::default() };
+        let mut chat = chat();
+        chat.note_model_for_send(&list, "sonnet");
+        chat.note_effort_for_send("high");
+        chat.push_user("hola", Vec::new());
+        chat.busy = false;
+        // Otro chat de la carpeta cambia el predeterminado del espacio: este no se entera.
+        config.model = "opus".into();
+        config.effort = "low".into();
+        assert_eq!((chat.chosen_model(&config), chat.chosen_effort(&config)), ("sonnet".into(), "high".into()));
+        assert_eq!(chat.pending_model(&list, &config), None);
     }
 
     #[test]

@@ -1,6 +1,8 @@
-//! El visor de un diagrama Mermaid de una respuesta: a pantalla completa sobre Atic Code,
+//! El visor de un diagrama Mermaid de una respuesta o de una imagen del panel: a pantalla completa sobre Atic Code,
 //! con zoom (rueda o botones; clic en el porcentaje vuelve a ajustarlo a la ventana),
 //! arrastre para moverlo, copiar la imagen y guardarla como PNG. Esc o la x lo cierran.
+
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -21,8 +23,17 @@ const STEP: f32 = 1.25;
 const MARGIN: f32 = 48.;
 const BAR: f32 = 64.;
 
+/// Lo que muestra el visor.
+pub(super) enum Shown {
+    Diagram(gpui_m3::MermaidDiagram),
+    /// Una imagen del disco (la del panel derecho), a su tamaño original.
+    File(PathBuf),
+}
+
 pub(super) struct DiagramView {
-    pub diagram: gpui_m3::MermaidDiagram,
+    pub shown: Shown,
+    /// Su tamaño natural en píxeles lógicos.
+    pub size: (f32, f32),
     /// `None`: ajustado a la ventana.
     pub zoom: Option<f32>,
     /// Cuánto se movió el centro del diagrama desde el centro de la ventana.
@@ -33,8 +44,33 @@ pub(super) struct DiagramView {
 
 impl DiagramView {
     pub fn new(diagram: gpui_m3::MermaidDiagram) -> Self {
-        Self { diagram, zoom: None, offset: Point::default(), drag: None }
+        Self { size: diagram.size, shown: Shown::Diagram(diagram), zoom: None, offset: Point::default(), drag: None }
     }
+
+    fn file(path: PathBuf, size: (f32, f32)) -> Self {
+        Self { shown: Shown::File(path), size, zoom: None, offset: Point::default(), drag: None }
+    }
+}
+
+/// El ancho y el alto de una imagen del disco, mirando solo su cabecera.
+fn image_dimensions_of(path: &Path) -> Option<(u32, u32)> {
+    image::image_dimensions(path).ok()
+}
+
+/// Pone la imagen del archivo en el portapapeles; `false` si no se pudo leer.
+fn copy_image_file(path: &Path, cx: &mut gpui::App) -> bool {
+    let format = match super::image_type(path) {
+        Some("image/png") => gpui::ImageFormat::Png,
+        Some("image/jpeg") => gpui::ImageFormat::Jpeg,
+        Some("image/gif") => gpui::ImageFormat::Gif,
+        Some("image/webp") => gpui::ImageFormat::Webp,
+        _ => return false,
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(format, bytes)));
+    true
 }
 
 /// El zoom que hace caber `size` en `room` (sin agrandar más del doble un diagrama chico).
@@ -56,6 +92,16 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Abre en el visor una imagen del disco, con zoom y arrastre. Una que no se puede
+    /// medir (formato desconocido) se queda como está en el panel.
+    pub(super) fn open_image_viewer(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some((width, height)) = image_dimensions_of(&path) else {
+            return;
+        };
+        self.diagram = Some(DiagramView::file(path, (width as f32, height as f32)));
+        cx.notify();
+    }
+
     pub(super) fn close_diagram(&mut self, cx: &mut Context<Self>) {
         if self.diagram.take().is_some() {
             cx.notify();
@@ -68,7 +114,7 @@ impl CodeView {
         };
         view.zoom.unwrap_or_else(|| {
             let room = window.viewport_size();
-            fit_zoom(view.diagram.size, (f32::from(room.width), f32::from(room.height)))
+            fit_zoom(view.size, (f32::from(room.width), f32::from(room.height)))
         })
     }
 
@@ -101,10 +147,10 @@ impl CodeView {
     }
 
     fn save_diagram(&mut self, cx: &mut Context<Self>) {
-        let Some(view) = &self.diagram else {
+        let Some(DiagramView { shown: Shown::Diagram(diagram), .. }) = &self.diagram else {
             return;
         };
-        let png = view.diagram.png.clone();
+        let png = diagram.png.clone();
         let dir = self.active_chat().map(|c| c.cwd.clone()).unwrap_or_else(std::env::temp_dir);
         let picked = cx.prompt_for_new_path(&dir, Some("diagrama.png"));
         cx.spawn(async move |this, cx| {
@@ -125,7 +171,7 @@ impl CodeView {
         let view = self.diagram.as_ref()?;
         let scheme = *gpui_m3::Theme::of(cx);
         let zoom = self.diagram_zoom(window);
-        let (w, h) = view.diagram.size;
+        let (w, h) = view.size;
         let room = window.viewport_size();
         let left = room.width / 2. + view.offset.x - px(w * zoom / 2.);
         let top = room.height / 2. + view.offset.y - px(h * zoom / 2.);
@@ -172,12 +218,21 @@ impl CodeView {
                     .child(icon_button("diagram-in", "icons/plus.svg", t("pill.code.diagram.zoomIn")).on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.zoom_diagram(1., None, window, cx))))
                     .child(div().w(px(1.)).h(px(18.)).mx(px(4.)).bg(scheme.outline_variant))
                     .child(icon_button("diagram-copy", "icons/copy.svg", t("pill.code.diagram.copy")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                        if let Some(open) = &view.diagram {
-                            open.diagram.copy(cx);
+                        let copied = match view.diagram.as_ref().map(|open| &open.shown) {
+                            Some(Shown::Diagram(diagram)) => {
+                                diagram.copy(cx);
+                                true
+                            }
+                            Some(Shown::File(path)) => copy_image_file(path, cx),
+                            None => false,
+                        };
+                        if copied {
                             view.show_toast(t("pill.code.diagram.copied"), cx);
                         }
                     })))
-                    .child(icon_button("diagram-save", "icons/download.svg", t("pill.code.diagram.save")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.save_diagram(cx))))
+                    .when(matches!(view.shown, Shown::Diagram(_)), |bar| {
+                        bar.child(icon_button("diagram-save", "icons/download.svg", t("pill.code.diagram.save")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.save_diagram(cx))))
+                    })
                     .child(icon_button("diagram-close", "icons/x.svg", t("pill.code.diagram.close")).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.close_diagram(cx)))),
             );
 
@@ -242,7 +297,10 @@ impl CodeView {
                         .h(px(h * zoom))
                         .rounded(px(12.))
                         .overflow_hidden()
-                        .child(img(ImageSource::Render(view.diagram.image.clone())).size_full()),
+                        .child(match &view.shown {
+                            Shown::Diagram(diagram) => img(ImageSource::Render(diagram.image.clone())).size_full(),
+                            Shown::File(path) => img(path.clone()).size_full(),
+                        }),
                 )
                 .child(bar)
                 .into_any_element(),

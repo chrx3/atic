@@ -25,7 +25,7 @@ use gpui::{
 
 use super::chat::{Chat, Item};
 use super::style::{t, Style};
-use super::CodeView;
+use super::{Attachment, CodeView};
 use crate::i18n::t as tr;
 
 /// Cuánto se arma por encima y por debajo de lo visible.
@@ -568,15 +568,17 @@ impl CodeView {
             .into_any_element()
     }
 
-    /// Pone lo seleccionado en `key` como cita al final de la caja y la enfoca.
+    /// Pone lo seleccionado en `key` como cita (un chip) en la caja y la enfoca.
     fn quote_selection(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.lists.borrow().get(key).map(|list| list.quote.clone()).unwrap_or_default();
-        let Some(quote) = quote_of(&text) else {
+        if quote_of(&text).is_none() {
             return;
-        };
-        let current = self.composer.read(cx).text().trim_end().to_string();
-        let joined = if current.is_empty() { format!("{quote}\n\n") } else { format!("{current}\n\n{quote}\n\n") };
-        self.composer.update(cx, |area, cx| area.set_text_at(&joined, joined.len(), cx));
+        }
+        // Un chip en la caja, no texto: la cita va al comienzo del mensaje al enviarlo.
+        let quote = Attachment::Quote(text.trim().to_string());
+        if !self.attachments.iter().any(|a| matches!((a, &quote), (Attachment::Quote(x), Attachment::Quote(y)) if x == y)) {
+            self.attachments.push(quote);
+        }
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1311,7 +1313,7 @@ fn mark_snippet(text: &str) -> String {
 
 /// El texto seleccionado como cita de Markdown (`> línea`); `None` si no hay nada que citar.
 /// Se corta en `QUOTE_MAX_CHARS`.
-fn quote_of(text: &str) -> Option<String> {
+pub(super) fn quote_of(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
         return None;
