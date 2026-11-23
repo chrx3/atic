@@ -602,7 +602,11 @@ async fn connect_loop(shared: Arc<Shared>, peer: EndpointId) {
     loop {
         if !lock(&shared.links).contains_key(&peer) {
             match shared.node.connect(peer, hello(&shared, peer)).await {
-                Ok(session) => run_session(shared.clone(), peer, session, true).await,
+                // En su propia tarea: si `share` aborta este conector, la sesión sigue y se limpia
+                // sola al cortarse. Abortada a medias, quedaba en `links` sin nadie que la leyera.
+                Ok(session) => {
+                    let _ = tokio::spawn(run_session(shared.clone(), peer, session, true)).await;
+                }
                 Err(e) => tracing::debug!("sin conexión con {}: {e:#}", peer.fmt_short()),
             }
         }
@@ -1009,6 +1013,25 @@ mod tests {
         assert_eq!(grab.on_move(1919., 540., 5., 0., true), Verdict::Swallow);
         pc.stop();
         mac.stop();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// Volver a llamar a `share` aborta el conector. La sesión que ese conector había abierto
+    /// no se queda a medias: si el otro la corta después, se limpia y avisa. Antes quedaba
+    /// en `links` sin nadie que la leyera: «arriba» para siempre, sin reconectar, con el cursor
+    /// pegado en el otro equipo si se había cruzado.
+    #[tokio::test]
+    async fn volver_a_compartir_no_deja_una_sesion_zombi() {
+        let base = std::env::temp_dir().join(format!("atic-kvm-zombi-{}", std::process::id()));
+        let (pc, mut pc_rx, mac, _mac_rx) = vinculados(&base).await;
+        let share = Share { peer: mac.id(), side: Side::Right };
+        pc.share(Some(share)).unwrap();
+        next(&mut pc_rx, |e| matches!(e, Event::Connected { .. })).await;
+        pc.share(Some(share)).unwrap();
+        mac.stop();
+        next(&mut pc_rx, |e| matches!(e, Event::Disconnected { .. })).await;
+        assert!(pc.connected().is_empty());
+        pc.stop();
         let _ = std::fs::remove_dir_all(base);
     }
 
