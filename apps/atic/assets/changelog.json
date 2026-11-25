@@ -1,6 +1,32 @@
 {
   "versions": [
     {
+      "version": "0.7.7",
+      "date": "2026-11-25",
+      "items": [
+        {
+          "kind": "new",
+          "es": "Si pides más subagentes de los que caben, esperan en cola y arrancan solos; el tope se elige en Ajustes (6 por defecto)",
+          "en": "If you ask for more subagents than fit, they wait in a queue and start on their own; you pick the limit in Settings (6 by default)"
+        },
+        {
+          "kind": "fixed",
+          "es": "«El orquestador decide por sus subagentes» ahora funciona: los subagentes ya no se quedan parados esperando un permiso",
+          "en": "“The orchestrator decides for its subagents” now works: subagents no longer sit waiting for a permission"
+        },
+        {
+          "kind": "new",
+          "es": "Quien delega puede leer por partes el resultado largo de un subagente, sin pedírselo de nuevo",
+          "en": "The delegating agent can read a subagent's long result in parts, without asking it again"
+        },
+        {
+          "kind": "improved",
+          "es": "Si un subagente pide una carpeta fuera del proyecto o que no existe, el error dice qué carpetas valen",
+          "en": "If a subagent asks for a folder outside the project or one that doesn't exist, the error says which folders are valid"
+        }
+      ]
+    },
+    {
       "version": "0.7.6",
       "date": "2026-11-23",
       "items": [
