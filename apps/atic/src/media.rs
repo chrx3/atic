@@ -4006,7 +4006,10 @@ impl Render for MediaPanel {
             .child(
                 // El alto final desde el principio: mientras el notch crece
                 // (al desplegar las salidas) nada se encoge ni se empuja;
-                // el notch solo va destapando lo nuevo.
+                // el notch solo va destapando lo nuevo. Los controles fijos
+                // (volumen y salida) van sobre lo variable (letra y fuentes):
+                // el panel abre hacia abajo y lo que cambia de alto queda
+                // entre los controles y el borde libre.
                 div()
                     .relative()
                     .w_full()
@@ -4020,11 +4023,11 @@ impl Render for MediaPanel {
                     .child(div().h(px(12.)).flex_none())
                     .children(progress.map(|p| div().pb(px(6.)).child(p)))
                     .child(controls)
-                    .children(lyrics_block)
-                    .children(sources)
                     .child(div().h(px(10.)))
                     .child(bottom)
-                    .children(outputs),
+                    .children(outputs)
+                    .children(lyrics_block)
+                    .children(sources),
             )
             .into_any_element()
     }

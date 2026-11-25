@@ -586,6 +586,27 @@ struct CompactProbe {
     closing: bool,
 }
 
+/// Lo que se mira de una conversación para decidir si toca compactarla por haber pasado el
+/// umbral de contexto elegido.
+struct AutoCompactProbe {
+    /// El ajuste «Autocompactar al llegar a» de su espacio, en tokens (0: no).
+    threshold: u64,
+    claude: bool,
+    live: bool,
+    in_use: bool,
+    queued: usize,
+    used: Option<u64>,
+    ends_compacted: bool,
+    closing: bool,
+}
+
+/// ¿Toca compactar ahora por haber pasado el umbral? Solo con la conversación quieta, y no
+/// otra vez mientras lo último que pasó fue la compactación (si no baja del umbral, espera al
+/// siguiente turno en vez de repetirla sin parar).
+fn compact_over_threshold(p: &AutoCompactProbe) -> bool {
+    p.threshold > 0 && p.claude && p.live && !p.in_use && p.queued == 0 && !p.closing && !p.ends_compacted && p.used.is_some_and(|used| used >= p.threshold)
+}
+
 /// El contexto pesa lo bastante como para que compactar valga la pena.
 fn context_is_big(context: Option<(u64, u64)>) -> bool {
     context.is_some_and(|(used, max)| used >= COMPACT_MIN_TOKENS || (max > 0 && used * 100 >= max * COMPACT_MIN_PERCENT))
@@ -743,6 +764,8 @@ pub struct CodeView {
     acp_raw: HashMap<&'static str, Value>,
     /// El buscador del submenú de modelos (OpenCode tiene cientos).
     model_filter: Entity<gpui_m3::TextField>,
+    /// El filtro de los submenús de estilo, subagentes y comandos.
+    sub_filter: Entity<gpui_m3::TextField>,
     /// La versión de cada CLI de agente (`None`: no está), para la pestaña «Agentes».
     agent_versions: HashMap<&'static str, Option<String>>,
     versions_loading: bool,
@@ -844,6 +867,8 @@ pub struct CodeView {
     menu_tab: usize,
     menu_sub: Option<agent_menu::Sub>,
     menu_filter: Entity<gpui_m3::TextField>,
+    /// El buscador del menú de proyecto (filtra por nombre, ruta y rama).
+    project_filter: Entity<gpui_m3::TextField>,
     /// El próximo cuadro pasa el foco al filtro del menú de acciones (se abrió con «/»).
     focus_menu_filter: bool,
     /// Un chat abierto que se marcó como hecho: el próximo cuadro (que tiene la ventana) pasa
@@ -899,6 +924,8 @@ pub struct CodeView {
     /// se ven los terminados.
     agent_clock: u64,
     agents_done_open: bool,
+    /// Los comandos terminados de la pestaña Agentes, desplegados.
+    commands_done_open: bool,
     /// La barra lateral de Expressive: abierta o el riel, la página de
     /// historial, el menú contextual y el renombrar en el sitio.
     sidebar_open: bool,
@@ -1324,6 +1351,8 @@ impl CodeView {
             .collect();
         let model_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.mod.searchModel")).icon("search"));
         cx.subscribe(&model_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
+        let sub_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.agentMenu.filterSub")).icon("search"));
+        cx.subscribe(&sub_filter, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
         // Qué agentes ACP hay: buscar en el PATH toca el disco, fuera del hilo de la interfaz.
         cx.spawn(async move |this, cx| {
             let installed = cx
@@ -1403,6 +1432,18 @@ impl CodeView {
                 // Escribir vuelve a elegir la primera fila de lo que queda.
                 gpui_m3::TextFieldEvent::Changed(_) => view.menu_pick = 0,
                 gpui_m3::TextFieldEvent::Submitted(_) => view.activate_menu_pick(window, cx),
+                gpui_m3::TextFieldEvent::Cancelled => {}
+            }
+            cx.notify();
+        })
+        .detach();
+        // El buscador del menú de proyecto: filtra por nombre, ruta y rama. Esc
+        // cierra el menú, como en los demás; el filtro se limpia al reabrirlo.
+        let project_filter = cx.new(|cx| gpui_m3::TextField::new(cx).compact().placeholder(crate::i18n::t("pill.code.project.filter")).icon("search"));
+        cx.subscribe_in(&project_filter, window, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, _window, cx| {
+            match event {
+                gpui_m3::TextFieldEvent::Changed(_) => view.menu_pick = 0,
+                gpui_m3::TextFieldEvent::Submitted(_) => view.activate_project_pick(cx),
                 gpui_m3::TextFieldEvent::Cancelled => {}
             }
             cx.notify();
@@ -1502,6 +1543,7 @@ impl CodeView {
             acp_probing: std::collections::HashSet::new(),
             acp_raw,
             model_filter,
+            sub_filter,
             agent_versions: HashMap::new(),
             versions_loading: false,
             chats: Vec::new(),
@@ -1563,6 +1605,7 @@ impl CodeView {
             menu_tab: 0,
             menu_sub: None,
             menu_filter,
+            project_filter,
             focus_menu_filter: false,
             leave_settled: None,
             menu_pick: 0,
@@ -1593,6 +1636,7 @@ impl CodeView {
             rate_alert: None,
             agent_clock: 0,
             agents_done_open: false,
+            commands_done_open: false,
             sidebar_open: true,
             history_page: false,
             loose_all: false,
@@ -3184,21 +3228,50 @@ impl CodeView {
             .map(|c| c.key.clone())
             .collect();
         for key in due {
-            self.compact_quietly(&key, cx);
+            let text = crate::i18n::t("pill.code.mod.compactIdle").to_string();
+            self.compact_quietly(&key, text, true, cx);
+        }
+    }
+
+    /// Compacta las conversaciones de Claude quietas cuyo contexto pasó el umbral que el
+    /// usuario eligió («Autocompactar al llegar a»). Corre con el mismo reloj que la
+    /// compactación por inactividad, entre un turno y el siguiente.
+    fn compact_over_limit(&mut self, cx: &mut Context<Self>) {
+        let due: Vec<(String, u64)> = self
+            .chats
+            .iter()
+            .filter_map(|c| {
+                let threshold = self.configs.get(c.workspace).auto_compact_tokens;
+                let probe = AutoCompactProbe {
+                    threshold,
+                    claude: c.acp.is_none(),
+                    live: c.live,
+                    in_use: c.in_use(),
+                    queued: c.queued.len(),
+                    used: c.context.map(|(used, _)| used),
+                    ends_compacted: ends_compacted(&c.items),
+                    closing: self.closing,
+                };
+                compact_over_threshold(&probe).then(|| (c.key.clone(), threshold))
+            })
+            .collect();
+        for (key, threshold) in due {
+            let text = tf("pill.code.mod.compactAuto", &[("tokens", &format!("{}k", threshold / 1000))]);
+            self.compact_quietly(&key, text, false, cx);
         }
     }
 
     /// Manda `/compact` a una conversación sin tocar el borrador ni dibujar una
     /// burbuja del usuario (su eco, `isReplay`, se descarta solo). Deja un aviso.
-    fn compact_quietly(&mut self, key: &str, cx: &mut Context<Self>) {
+    fn compact_quietly(&mut self, key: &str, notice: String, idle: bool, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
             return;
         };
-        chat.idle_compacted = true;
+        chat.idle_compacted |= idle;
         chat.busy = true;
         chat.auto_turn = false;
-        chat.notice(crate::i18n::t("pill.code.mod.compactIdle"), false);
-        tracing::info!(key, "atic code: compactando una conversación inactiva");
+        chat.notice(notice, false);
+        tracing::info!(key, idle, "atic code: compactando una conversación sin que lo pida el usuario");
         let failed_key = key.to_string();
         self.request("send", json!({ "key": key, "text": "/compact", "images": [] }), cx, move |view, reply, _| {
             if let Err(error) = reply {
@@ -3217,6 +3290,7 @@ impl CodeView {
             if this
                 .update(cx, |view, cx| {
                     view.compact_idle(cx);
+                    view.compact_over_limit(cx);
                     view.close_idle(cx);
                 })
                 .is_err()
@@ -3899,9 +3973,9 @@ impl CodeView {
         cx.notify();
     }
 
-    /// Descarta el borrador guardado `id`.
+    /// Descarta el borrador guardado `id`, acordándose de él para deshacer.
     fn drop_stash(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.stash.take(id).is_some() {
+        if self.stash.drop_with_undo(id) {
             self.stash.save();
         }
         cx.notify();
@@ -4051,6 +4125,8 @@ impl CodeView {
         self.menu_sub = None;
         self.menu_filter.update(cx, |field, cx| field.set_text("", cx));
         self.model_filter.update(cx, |field, cx| field.set_text("", cx));
+        self.sub_filter.update(cx, |field, cx| field.set_text("", cx));
+        self.project_filter.update(cx, |field, cx| field.set_text("", cx));
         cx.notify();
     }
 
@@ -5385,6 +5461,36 @@ mod tests {
         assert!(!context_is_big(Some((10, 0))));
         assert!(!compact_when_idle(&CompactProbe { context: Some((10_000, 200_000)), ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
         assert!(!compact_when_idle(&CompactProbe { context: None, ..lista_para_compactar() }, COMPACT_IDLE_AFTER));
+    }
+
+    fn pasada_del_umbral() -> AutoCompactProbe {
+        AutoCompactProbe { threshold: 200_000, claude: true, live: true, in_use: false, queued: 0, used: Some(210_000), ends_compacted: false, closing: false }
+    }
+
+    #[test]
+    fn se_compacta_al_pasar_el_umbral_elegido() {
+        assert!(compact_over_threshold(&pasada_del_umbral()));
+        // Justo en el umbral ya cuenta; por debajo, no.
+        assert!(compact_over_threshold(&AutoCompactProbe { used: Some(200_000), ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { used: Some(199_999), ..pasada_del_umbral() }));
+        // Sin dato de contexto, no se adivina.
+        assert!(!compact_over_threshold(&AutoCompactProbe { used: None, ..pasada_del_umbral() }));
+    }
+
+    #[test]
+    fn no_se_compacta_por_umbral_apagado_en_uso_ni_en_agentes_acp() {
+        assert!(!compact_over_threshold(&AutoCompactProbe { threshold: 0, ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { claude: false, ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { live: false, ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { in_use: true, ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { queued: 1, ..pasada_del_umbral() }));
+        assert!(!compact_over_threshold(&AutoCompactProbe { closing: true, ..pasada_del_umbral() }));
+    }
+
+    #[test]
+    fn tras_compactar_no_se_repite_hasta_el_siguiente_turno() {
+        // Si la compactación no bajó del umbral, espera: no la repite en bucle.
+        assert!(!compact_over_threshold(&AutoCompactProbe { ends_compacted: true, ..pasada_del_umbral() }));
     }
 
     #[test]

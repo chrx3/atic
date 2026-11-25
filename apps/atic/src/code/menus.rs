@@ -9,6 +9,7 @@ use gpui::{
     anchored, deferred, div, point, prelude::*, px, svg, AnyElement, ClickEvent, Context, Corner, Div, FontWeight,
     MouseButton, SharedString, Stateful,
 };
+use serde_json::json;
 
 use super::agent_menu::{Entry, Line, Sub, Trailing, TABS};
 use super::config;
@@ -127,6 +128,7 @@ fn flat_icon(name: &str) -> &'static str {
         "blocks" => "icons/layout-grid.svg",
         "refresh" => "icons/rotate-cw.svg",
         "x" => "icons/x.svg",
+        "slash" => "icons/eye-off.svg",
         "chevron-down" => "icons/chevron-down.svg",
         "chevron-right" => "icons/chevron-right.svg",
         "search" => "icons/search.svg",
@@ -259,7 +261,19 @@ impl CodeView {
         commands
     }
 
+    /// Una fila del menú de permisos: la elegida se tiñe y lleva un check, sin radio.
+    fn mode_row(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, hint: Option<String>, on: bool) -> Stateful<Div> {
+        let t = t();
+        let row = item(id, label, hint, None);
+        if on {
+            row.bg(t.sel).child(svg().path("icons/check.svg").size(px(16.)).flex_none().text_color(t.accent))
+        } else {
+            row
+        }
+    }
+
     fn mode_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
         // Un agente ACP: sus modos, con las piezas de este estilo.
         if self.current_agent().is_some() {
             let mut entries = Vec::new();
@@ -268,13 +282,13 @@ impl CodeView {
             for entry in entries {
                 menu = match entry {
                     super::agent_menu::Entry::Line(line) => {
-                        let row = item(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label, line.sublabel, line.radio);
+                        let row = Self::mode_row(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label, line.sublabel, line.chosen == Some(true));
                         match line.click {
                             Some(click) => menu.child(row.on_click(click)),
                             None => menu.child(row),
                         }
                     }
-                    super::agent_menu::Entry::Empty(text) => menu.child(div().p(px(12.)).text_color(t().muted).child(text)),
+                    super::agent_menu::Entry::Empty(text) => menu.child(div().p(px(12.)).text_color(t.muted).child(text)),
                     _ => menu,
                 };
             }
@@ -282,11 +296,12 @@ impl CodeView {
         }
         let config = self.config();
         let mut menu = card().child(heading(crate::i18n::t("pill.code.menus.permissions")));
-        for (id, _) in config::MODES {
+        // De menos a más permisivo.
+        for (id, _) in config::MODE_ORDER {
             let label = config::mode_name(id);
             let on = config.permission_mode == id;
             menu = menu.child(
-                item(SharedString::from(format!("mode-{id}")), label, Some(config::mode_hint(id).to_string()), Some(on)).on_click(
+                Self::mode_row(SharedString::from(format!("mode-{id}")), label, Some(config::mode_hint(id).to_string()), on).on_click(
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.set_config(|c| c.permission_mode = id.into(), cx);
                         view.menu = None;
@@ -437,14 +452,48 @@ impl CodeView {
         let trailing: Option<AnyElement> = match line.trailing {
             Trailing::None => None,
             Trailing::Value(value) => Some(div().flex_none().max_w(px(150.)).truncate().text_size(px(12.5)).text_color(t.muted).child(value).into_any_element()),
-            Trailing::Kbd(kbd) => Some(div().flex_none().text_size(px(12.)).text_color(t.muted).child(kbd).into_any_element()),
+            // El atajo, como `kbd`: al final y siempre en el mismo lugar.
+            Trailing::Kbd(kbd) => Some(
+                div()
+                    .flex_none()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(t.border)
+                    .text_size(px(11.5))
+                    .text_color(t.muted)
+                    .child(kbd)
+                    .into_any_element(),
+            ),
             Trailing::Switch(on) => Some(switch(on).into_any_element()),
             Trailing::Effort => Some(self.effort_dots(cx).into_any_element()),
-            Trailing::Chips(picks) => Some(div().flex().flex_none().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick)).into_any_element()),
+            // El interruptor de Expressive, aquí con el aspecto de siempre (los
+            // dos botones chicos): mismo interruptor y mismo reintento.
+            Trailing::Mcp { name, on, index, reconnect } => {
+                let mut picks = Vec::new();
+                if reconnect {
+                    let retry = name.clone();
+                    picks.push(super::agent_menu::Pick {
+                        id: ("mcp-reconnect", index),
+                        label: crate::i18n::t("pill.code.agentMenu.reconnect"),
+                        click: Box::new(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpReconnect", json!({ "name": retry }), cx))),
+                    });
+                }
+                let toggle = name;
+                picks.push(super::agent_menu::Pick {
+                    id: ("mcp-toggle", index),
+                    label: if on { crate::i18n::t("pill.code.agentMenu.disable") } else { crate::i18n::t("pill.code.agentMenu.enable") },
+                    click: Box::new(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpToggle", json!({ "name": toggle, "enabled": !on }), cx))),
+                });
+                Some(div().flex().flex_none().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick)).into_any_element())
+            }
         };
         div()
             .id(line.id)
             .when(line.picked, |el| el.bg(t.sel))
+            // La fila destacada (el héroe del modelo): teñida como la elegida.
+            .when(line.chosen == Some(true), |el| el.bg(t.sel))
             .px(px(10.))
             .py(px(8.))
             .flex()
@@ -471,14 +520,37 @@ impl CodeView {
                 Entry::Empty(text) => list.child(div().p(px(16.)).flex().justify_center().text_color(t.muted).child(text)),
                 Entry::Line(line) => list.child(self.flat_line(line, cx)),
                 Entry::Choice(picks) => list.child(div().px(px(10.)).py(px(4.)).flex().flex_wrap().gap(px(4.)).children(picks.into_iter().map(|(pick, _)| Self::flat_pick(pick)))),
-                Entry::Block { label, picks } => list.child(
+                Entry::Block { title, subtitle, age, tags, picks } => list.child(
                     div()
                         .px(px(10.))
                         .py(px(8.))
                         .flex()
                         .flex_col()
                         .gap(px(6.))
-                        .child(div().truncate().text_size(px(13.)).child(label))
+                        .child(
+                            div()
+                                .flex()
+                                .items_baseline()
+                                .gap(px(8.))
+                                .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).child(title))
+                                .children(age.map(|age| div().flex_none().text_size(px(11.)).text_color(t.muted).child(age))),
+                        )
+                        .children(subtitle.map(|subtitle| div().truncate().text_size(px(12.)).text_color(t.muted).child(subtitle)))
+                        .when(!tags.is_empty(), |el| {
+                            el.child(
+                                div().flex().flex_wrap().gap(px(4.)).children(tags.into_iter().map(|tag| {
+                                    div()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(t.border)
+                                        .text_size(px(11.))
+                                        .text_color(t.muted)
+                                        .child(tag.label)
+                                })),
+                            )
+                        })
                         .child(div().flex().gap(px(4.)).children(picks.into_iter().map(Self::flat_pick))),
                 ),
             };
@@ -513,12 +585,13 @@ impl CodeView {
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(sub.title()));
             let entries = self.sub_entries(sub, cx);
             let search = (sub == Sub::Model && self.model_search_shown()).then(|| div().px(px(4.)).pt(px(6.)).pb(px(2.)).child(self.model_filter.clone()));
-            return card()
-                .child(back)
-                .child(divider())
-                .children(search)
-                .child(scroll("agent-sub-scroll", self.flat_entries(entries, cx)))
-                .into_any_element();
+            let list = scroll("agent-sub-scroll", self.flat_entries(entries, cx));
+            if below {
+                return card().child(back).child(divider()).children(search).child(list).into_any_element();
+            }
+            // Abriendo hacia arriba, el «atrás» y el filtro van abajo, junto al
+            // cuadro de texto: la lista crece por arriba y ellos no se mueven.
+            return card().child(list).child(back).child(divider()).children(search).into_any_element();
         }
         let query = self.menu_filter.read(cx).text().trim().to_lowercase();
         let filtering = !query.is_empty();
@@ -552,71 +625,274 @@ impl CodeView {
         let field = div().px(px(4.)).on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone());
         let list = div().flex().flex_col().when(!filtering, |el| el.child(heading(crate::i18n::t(TABS[self.menu_tab].1)))).child(scroll("agent-menu-scroll", self.flat_entries(entries, cx)));
         if below {
-            return card().child(field.pt(px(2.)).pb(px(6.))).when(!filtering, |el| el.child(tabs)).child(list).into_any_element();
+            // Las pestañas quedan fijas también al filtrar; solo la lista se mueve.
+            return card().child(field.pt(px(2.)).pb(px(6.))).child(tabs).child(list).into_any_element();
         }
         // Abriendo hacia arriba, las pestañas y el buscador van abajo, junto al cuadro de texto:
         // el menú crece o se achica por arriba y ellos no se mueven al filtrar.
         card()
             .child(list)
-            .when(!filtering, |el| el.child(div().pt(px(4.)).child(tabs.pb(px(0.)))))
+            .child(div().pt(px(4.)).child(tabs.pb(px(0.))))
             .child(field.pt(px(6.)).pb(px(2.)))
             .into_any_element()
     }
 
     // --- Expressive: los menús de gpui-m3 --------------------------------------------
 
-    /// «Elegir proyecto» del inicio: los otros proyectos y abrir una carpeta.
+    /// «Elegir proyecto» del inicio, en Expressive: el proyecto actual con su
+    /// ruta y su rama, los demás con su ruta, el buscador fijo arriba y «Abrir
+    /// carpeta…» en el pie. La rama y los cambios solo se enseñan del proyecto
+    /// activo (son los `repos` ya cargados); de los demás no se saben sin
+    /// preguntarle a git en cada cuadro.
     fn project_menu_m3(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_m3::MenuItem;
-        let active = self.workspaces.active_id();
-        let others: Vec<(u64, String)> =
-            self.workspaces.list().iter().filter(|w| Some(w.id) != active).map(|w| (w.id, w.name.clone())).take(6).collect();
-        let mut menu = gpui_m3::Menu::new("menu-project").width(240.).max_h(px(MENU_MAX_H)).origin(Corner::TopLeft);
-        if !others.is_empty() {
-            menu = menu.section(crate::i18n::t("pill.code.menus.recents"));
-            for (index, (id, name)) in others.into_iter().enumerate() {
-                menu = menu.item(MenuItem::new(("project", index), name).icon("folder").on_click(cx.listener(
-                    move |view, _: &ClickEvent, _, cx| {
-                        view.menu = None;
-                        view.select_workspace(id, cx);
-                    },
-                )));
+        let query = self.project_filter.read(cx).text().trim().to_string();
+        let rows = self.project_rows(&query);
+        let mut menu = gpui_m3::Menu::new("menu-project").width(320.).max_h(px(MENU_MAX_H)).origin(Corner::TopLeft).pin_to_anchor(true);
+        // El buscador va fijo arriba: solo la lista se desplaza.
+        let search = div()
+            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.project_filter_key(event, cx)))
+            .child(self.project_filter.clone());
+        menu = menu.header(search);
+        if rows.is_empty() {
+            // Sin proyectos, o sin los que coincidan con el filtro.
+            if self.workspaces.list().is_empty() {
+                menu = menu.item(
+                    div()
+                        .p(px(16.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_center()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::i18n::t("pill.code.project.empty")))
+                        .child(div().text_size(px(12.5)).text_color(t().muted).child(crate::i18n::t("pill.code.project.emptyHint"))),
+                );
+            } else {
+                menu = menu.item(
+                    div()
+                        .p(px(16.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_center()
+                        .text_color(t().muted)
+                        .child(tf("pill.code.project.noMatch", &[("q", &query)])),
+                );
+                menu = menu.item(
+                    gpui_m3::MenuItem::new("project-clear", crate::i18n::t("pill.code.project.clearFilter")).icon("x").on_click(cx.listener(
+                        |view, _: &ClickEvent, _, cx| {
+                            view.project_filter.update(cx, |field, cx| field.set_text("", cx));
+                        },
+                    )),
+                );
+            }
+        } else if query.trim().is_empty() {
+            // Sin filtro: el actual aparte y los demás en su orden interno (el
+            // último uso no se guarda; ver el informe).
+            let active = self.workspaces.active_id().filter(|_| !self.in_loose_chat());
+            if let Some(row) = rows.iter().find(|row| Some(row.0) == active) {
+                menu = menu.section(crate::i18n::t("pill.code.project.current"));
+                menu = menu.item(self.project_item(row, &query, false, cx));
+            }
+            let rest: Vec<_> = rows.iter().filter(|row| Some(row.0) != active).collect();
+            if !rest.is_empty() {
+                menu = menu.section(crate::i18n::t("pill.code.menus.recents"));
+                for row in rest {
+                    menu = menu.item(self.project_item(row, &query, false, cx));
+                }
             }
             menu = menu.separator();
+            menu = menu.item(self.project_loose_item(cx));
+        } else {
+            // Filtrando: los que coinciden, en el orden de la lista, con la fila
+            // elegida con ↑↓ resaltada.
+            menu = menu.section(crate::i18n::t("pill.code.project.results"));
+            let count = rows.len();
+            for (index, row) in rows.iter().enumerate() {
+                let picked = index == self.menu_pick % count;
+                menu = menu.item(self.project_item(row, &query, picked, cx));
+            }
+            menu = menu.separator();
+            menu = menu.item(self.project_loose_item(cx));
         }
-        // El chat sin proyecto, o volver al proyecto desde uno (como el selector de la referencia).
-        menu = match self.workspaces.active().filter(|_| self.in_loose_chat()) {
-            Some(workspace) => menu.item(MenuItem::new("project-back", workspace.name.clone()).icon("folder").on_click(cx.listener(
-                |view, _: &ClickEvent, window, cx| {
+        // «Abrir carpeta…» va fijo en el pie, no entre las filas.
+        let open = gpui_m3::MenuItem::new("project-open", crate::i18n::t("pill.code.menus.openFolder")).icon("folder").on_click(cx.listener(
+            |view, _: &ClickEvent, _, cx| {
+                view.menu = None;
+                view.pick_folders(None, cx);
+            },
+        ));
+        menu.footer(open).into_any_element()
+    }
+
+    /// Las filas del menú de proyecto que coinciden con el filtro (nombre, ruta
+    /// o rama), en el orden de la lista: id, nombre, ruta abreviada y, solo
+    /// del activo, la rama con si tiene cambios.
+    fn project_rows(&self, query: &str) -> Vec<(u64, String, String, Option<(String, bool)>)> {
+        let needle = query.trim().to_lowercase();
+        let in_project = !self.in_loose_chat();
+        let branch = in_project.then(|| self.repos.iter().find_map(|r| r.branch.clone())).flatten();
+        let dirty = in_project && self.repos.iter().any(|r| !r.files.is_empty());
+        let active = self.workspaces.active_id().filter(|_| in_project);
+        let mut rows = Vec::new();
+        for space in self.workspaces.list() {
+            let path = project_path(space);
+            let own = (Some(space.id) == active).then(|| branch.clone()).flatten().map(|name| (name, dirty));
+            if !needle.is_empty() {
+                let hay = format!("{} {path} {}", space.name, own.as_ref().map(|(name, _)| name.as_str()).unwrap_or_default()).to_lowercase();
+                if !needle.split_whitespace().all(|word| hay.contains(word)) {
+                    continue;
+                }
+            }
+            rows.push((space.id, space.name.clone(), path, own));
+        }
+        rows
+    }
+
+    /// Una fila de proyecto: inicial con su color, nombre, ruta y, si es la
+    /// activa, la rama con su punto y el check. La activa va teñida.
+    fn project_item(&self, row: &(u64, String, String, Option<(String, bool)>), query: &str, picked: bool, cx: &mut Context<Self>) -> gpui_m3::MenuItem {
+        let (id, name, path, own) = row;
+        let id = *id;
+        let active = Some(id) == self.workspaces.active_id().filter(|_| !self.in_loose_chat());
+        let mut item = gpui_m3::MenuItem::new(("project", id as usize), name.clone())
+            .leading(gpui_m3::Avatar::new(name.clone()).size(px(28.)))
+            .min_h(px(44.))
+            .sublabel(path.clone())
+            .highlighted(picked)
+            .selected(active);
+        if !query.trim().is_empty() {
+            item = item.label_highlights(gpui_m3::match_ranges(name, query.trim()));
+        }
+        if active {
+            item = item.trailing(self.project_branch(own, id, cx));
+        }
+        item.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+            if Some(id) == view.workspaces.active_id().filter(|_| !view.in_loose_chat()) {
+                view.close_menus(cx);
+            } else {
+                view.menu = None;
+                view.select_workspace(id, cx);
+            }
+        }))
+    }
+
+    /// La rama del proyecto activo al final de su fila, con su punto (verde
+    /// limpia, ámbar con cambios) y el check de elegida.
+    fn project_branch(&self, own: &Option<(String, bool)>, id: u64, cx: &mut Context<Self>) -> AnyElement {
+        let scheme = *gpui_m3::Theme::of(cx);
+        let (text, tip) = match own {
+            Some((branch, dirty)) => {
+                let tip = tf(
+                    if *dirty { "pill.code.project.branchDirty" } else { "pill.code.project.branchClean" },
+                    &[("branch", branch)],
+                );
+                (branch.clone(), tip)
+            }
+            None => (crate::i18n::t("pill.code.project.noGit").to_string(), crate::i18n::t("pill.code.project.noGit").to_string()),
+        };
+        div()
+            .id(("project-branch", id as usize))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .max_w(px(150.))
+            .tooltip(gpui_m3::Tooltip::text(tip))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .min_w(px(0.))
+                    .child(div().size(px(7.)).flex_none().rounded_full().bg(if own.as_ref().is_some_and(|(_, dirty)| *dirty) { t().warn } else { t().ok }))
+                    .child(div().min_w(px(0.)).truncate().child(text)),
+            )
+            .child(gpui_m3::Icon::new("check").size(px(17.)).color(scheme.on_secondary_container))
+            .into_any_element()
+    }
+
+    /// El chat sin proyecto, o volver al proyecto desde uno.
+    fn project_loose_item(&self, cx: &mut Context<Self>) -> gpui_m3::MenuItem {
+        match self.workspaces.active().filter(|_| self.in_loose_chat()) {
+            Some(workspace) => gpui_m3::MenuItem::new("project-back", workspace.name.clone())
+                .icon("folder")
+                .sublabel(project_path(workspace))
+                .selected(true)
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
                     view.menu = None;
                     view.new_conversation(window, cx);
-                },
-            ))),
-            None => menu.item(MenuItem::new("project-loose", crate::i18n::t("pill.code.menus.looseChat")).icon("chat").on_click(cx.listener(
-                |view, _: &ClickEvent, window, cx| {
+                })),
+            None => gpui_m3::MenuItem::new("project-loose", crate::i18n::t("pill.code.menus.looseChat"))
+                .icon("chat")
+                .sublabel(crate::i18n::t("pill.code.project.noFolder"))
+                .selected(self.in_loose_chat())
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
                     view.menu = None;
                     view.new_loose_chat(window, cx);
-                },
-            ))),
+                })),
+        }
+    }
+
+    /// ↑/↓ (o Tab/Shift+Tab) en el buscador del menú de proyecto mueven la fila elegida.
+    pub(super) fn project_filter_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        let query = self.project_filter.read(cx).text().trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let shift = event.keystroke.modifiers.shift;
+        let step: isize = match event.keystroke.key.as_str() {
+            "down" => 1,
+            "up" => -1,
+            "tab" if shift => -1,
+            "tab" => 1,
+            _ => return,
         };
-        menu.item(MenuItem::new("project-open", crate::i18n::t("pill.code.menus.openFolder")).icon("folder").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-            view.menu = None;
-            view.pick_folders(None, cx);
-        })))
-        .into_any_element()
+        cx.stop_propagation();
+        let count = self.project_rows(&query).len();
+        if count == 0 {
+            return;
+        }
+        let current = self.menu_pick % count;
+        self.menu_pick = (current as isize + step).rem_euclid(count as isize) as usize;
+        cx.notify();
+    }
+
+    /// Enter en el buscador: hace lo mismo que un clic en la fila elegida.
+    pub(super) fn activate_project_pick(&mut self, cx: &mut Context<Self>) {
+        let query = self.project_filter.read(cx).text().trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let rows = self.project_rows(&query);
+        if rows.is_empty() {
+            return;
+        }
+        let id = rows[self.menu_pick % rows.len()].0;
+        if Some(id) == self.workspaces.active_id().filter(|_| !self.in_loose_chat()) {
+            self.close_menus(cx);
+        } else {
+            self.menu = None;
+            self.select_workspace(id, cx);
+        }
     }
 
     fn mode_menu_m3(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Un agente ACP: sus modos.
+        use gpui_m3::MenuItem;
+        let scheme = *gpui_m3::Theme::of(cx);
+        let risky = "bypassPermissions";
+        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).origin(Corner::BottomLeft).pin_to_anchor(true);
         if self.current_agent().is_some() {
+            // Un agente ACP: sus modos, en el orden del agente.
             let mut entries = Vec::new();
             self.acp_mode_entries(&mut entries, cx);
-            let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).origin(Corner::BottomLeft).section(crate::i18n::t("pill.code.menus.mode"));
+            menu = menu.section(crate::i18n::t("pill.code.menus.mode"));
             for entry in entries {
                 menu = match entry {
                     super::agent_menu::Entry::Line(line) => {
-                        let mut row = gpui_m3::MenuItem::new(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label)
-                            .selected(line.radio == Some(true));
+                        let mut row = MenuItem::new(SharedString::from(format!("{}-{}", line.id.0, line.id.1)), line.label)
+                            .selected(line.chosen == Some(true));
                         if let Some(sub) = line.sublabel {
                             row = row.sublabel(sub);
                         }
@@ -629,25 +905,67 @@ impl CodeView {
                     _ => menu,
                 };
             }
-            return menu.into_any_element();
-        }
-        let config = self.config();
-        let mut menu = gpui_m3::Menu::new("menu-mode").width(MENU_W).origin(Corner::BottomLeft).section(crate::i18n::t("pill.code.menus.permissions"));
-        for (id, _) in config::MODES {
-            let label = config::mode_name(id);
-            let on = config.permission_mode == id;
-            menu = menu.item(
-                gpui_m3::MenuItem::new(SharedString::from(format!("mode-{id}")), label)
+        } else {
+            menu = menu.section(crate::i18n::t("pill.code.perm.orderTitle"));
+            // De menos a más permisivo: solo el último es peligroso y pide dos toques.
+            for (id, risk) in config::MODE_ORDER {
+                let on = self.config().permission_mode == id;
+                let mut row = MenuItem::new(SharedString::from(format!("mode-{id}")), config::mode_name(id))
                     .sublabel(config::mode_hint(id))
+                    .risk(risk)
                     .selected(on)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.set_config(|c| c.permission_mode = id.into(), cx);
-                        view.menu = None;
-                        cx.notify();
-                    })),
+                    .danger(id == risky);
+                if id == risky && !on {
+                    row = row.confirm(crate::i18n::t("pill.code.perm.confirmBypass"));
+                }
+                menu = menu.item(row.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.set_config(|c| c.permission_mode = id.into(), cx);
+                    view.menu = None;
+                    cx.notify();
+                })));
+            }
+        }
+        // «Permitir todo» vale solo en esta conversación: si está activo, el menú lo dice
+        // (elegir un modo lo termina, como ya hace `update_config`).
+        if self.active.as_deref().is_some_and(super::permissions::allows_all) {
+            let t = t();
+            menu = menu.header(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .child(svg().path("icons/activity.svg").size(px(16.)).flex_none().text_color(scheme.warning))
+                    .child(div().text_size(px(12.5)).text_color(t.muted).child(crate::i18n::t("pill.code.perm.allowAllOn"))),
             );
         }
+        // El modo se guarda y sigue entre proyectos.
+        menu = menu.footer(div().px(px(12.)).py(px(6.)).text_size(px(12.)).text_color(t().muted).child(crate::i18n::t("pill.code.perm.scopeNote")));
         menu.into_any_element()
+    }
+}
+
+/// La ruta que enseña una fila del menú de proyecto: la carpeta principal con
+/// `~` en vez de la carpeta del usuario y, si el espacio trae más carpetas,
+/// cuántas más (`~/dev/tienda +2`).
+fn project_path(space: &crate::kit::workspaces::Workspace) -> String {
+    let Some(main) = space.main() else {
+        return String::new();
+    };
+    let mut path = project_tilde(main);
+    if space.folders.len() > 1 {
+        path.push_str(&format!(" +{}", space.folders.len() - 1));
+    }
+    path
+}
+
+/// La ruta con `~` en vez de la carpeta del usuario.
+fn project_tilde(path: &std::path::Path) -> String {
+    match crate::paths::home().and_then(|home| path.strip_prefix(&home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
     }
 }
 

@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "0.7.8",
+      "date": "2026-11-25",
+      "items": [
+        {
+          "kind": "improved",
+          "es": "El menú de modelo tiene el agente con su logo en una fila, el esfuerzo se arrastra y las listas muestran lo elegido con un check",
+          "en": "The model menu shows the agent with its logo in one row, the effort control can be dragged, and lists show the chosen option with a check"
+        },
+        {
+          "kind": "improved",
+          "es": "Las pestañas y botones de los menús y popovers quedan siempre del lado de la caja de texto, así que ya no cambian de lugar cuando la lista crece o se achica",
+          "en": "Tabs and buttons in menus and popovers always stay on the text box side, so they no longer move when the list grows or shrinks"
+        },
+        {
+          "kind": "improved",
+          "es": "Cuenta y uso reúne el contexto, los agentes y Remote Control en una sola tarjeta; los agentes y los comandos van por separado y lo que corre se ve primero",
+          "en": "Account and usage brings context, agents and Remote Control into one card; agents and commands are listed apart and what is running comes first"
+        },
+        {
+          "kind": "new",
+          "es": "Ajustes › General: «Autocompactar al llegar a» compacta la conversación sola al pasar de 150k, 200k, 300k o 500k tokens de contexto",
+          "en": "Settings › General: “Auto-compact at” compacts the conversation on its own once the context passes 150k, 200k, 300k or 500k tokens"
+        },
+        {
+          "kind": "improved",
+          "es": "Los subagentes muestran con qué modelo y esfuerzo trabajan, y al delegar se puede pedir el esfuerzo",
+          "en": "Subagents show the model and effort they work with, and the effort can be requested when delegating"
+        },
+        {
+          "kind": "improved",
+          "es": "Rediseño de la paleta, las menciones, los modos de permisos, el selector de proyecto, el perfil, Rewind y los borradores",
+          "en": "Redesign of the palette, mentions, permission modes, the project picker, the profile, Rewind and drafts"
+        }
+      ]
+    },
+    {
       "version": "0.7.7",
       "date": "2026-11-25",
       "items": [

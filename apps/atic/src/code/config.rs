@@ -16,6 +16,13 @@ pub const MODES: [(&str, &str); 4] = [
     ("bypassPermissions", "Omitir permisos"),
 ];
 
+/// Los modos de menos a más permisivo, con su riesgo (1–4): así se presentan
+/// en los menús. `MODES` no se toca: sus ids son los que se guardan en disco.
+pub const MODE_ORDER: [(&str, u8); 4] = [("plan", 1), ("default", 2), ("acceptEdits", 3), ("bypassPermissions", 4)];
+
+/// Los umbrales de contexto (tokens) que ofrece «Autocompactar al llegar a»; 0 es no hacerlo.
+pub const AUTO_COMPACT_CHOICES: [u64; 5] = [0, 150_000, 200_000, 300_000, 500_000];
+
 /// Los esfuerzos, de menos a más (los de la referencia). Sin elegir, decide Claude Code.
 pub const EFFORTS: [(&str, &str); 5] = [("low", "Bajo"), ("medium", "Medio"), ("high", "Alto"), ("xhigh", "Muy alto"), ("max", "Máximo")];
 
@@ -167,6 +174,9 @@ pub struct ClaudeConfig {
     /// Compactar una conversación larga que quedó inactiva justo antes de que
     /// venza el caché de prompts (beta): retomarla sale más barato.
     pub compact_idle: bool,
+    /// Compactar una conversación de Claude al pasar de esta cantidad de tokens de contexto,
+    /// cuando no está en uso. 0: no hacerlo (Claude Code compacta solo cerca del tope).
+    pub auto_compact_tokens: u64,
     /// Con un turno en curso, Enter manda el mensaje dentro de ese turno (dirigirlo) en
     /// vez de dejarlo en la cola. Alt+Enter hace lo contrario.
     pub follow_up_steer: bool,
@@ -187,6 +197,7 @@ impl Default for ClaudeConfig {
             chrome: false,
             remote_control: false,
             compact_idle: false,
+            auto_compact_tokens: 0,
             follow_up_steer: true,
         }
     }

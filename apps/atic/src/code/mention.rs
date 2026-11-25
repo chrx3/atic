@@ -4,12 +4,12 @@
 //! eligen y Esc la cierra. Elegir uno deja `@ruta ` en el lugar del token.
 
 use crate::i18n::{t, tf};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
-use gpui::{anchored, deferred, point, prelude::*, px, AnyElement, Context, Corner, SharedString, Window};
-use gpui_m3::{rank_mentions, Suggestion, SuggestionList, SuggestionNav};
+use gpui::{anchored, deferred, div, point, prelude::*, px, AnyElement, Context, Corner, Div, Hsla, SharedString, Window};
+use gpui_m3::{match_ranges, rank_mentions, Chip, Icon, Kbd, Menu, MenuItem, Scheme, SuggestionNav};
 
-use super::files::Indexed;
+use super::files::{self, Indexed};
 use super::CodeView;
 
 /// Cuántas sugerencias muestra la lista (las de la referencia).
@@ -41,13 +41,14 @@ pub fn apply_mention(text: &str, start: usize, cursor: usize, path: &str) -> Opt
 }
 
 /// La lista abierta: dónde empieza el token, lo escrito, las sugerencias
-/// y la fila resaltada.
+/// (abiertos y cambiados primero) y la fila resaltada.
 #[derive(Clone)]
 pub struct Mention {
     pub start: usize,
     pub query: String,
     pub nav: SuggestionNav,
     pub matches: Vec<Indexed>,
+    groups: Vec<MentionGroup>,
 }
 
 /// Los mejores archivos para `query` (hasta [`MAX_SUGGESTIONS`]): el nombre que
@@ -67,12 +68,89 @@ impl Indexed {
     }
 }
 
-/// Lo que dibuja la lista mientras sale: las filas, lo escrito y la resaltada.
+/// En qué parte de la lista va un archivo: abierto en una pestaña, cambiado
+/// según git, o el resto del proyecto.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum MentionGroup {
+    Open,
+    Changed,
+    Rest,
+}
+
+/// El grupo de `path` según las pestañas abiertas y los cambios de git.
+fn group_of(path: &Path, open: &[PathBuf], changed: &[PathBuf]) -> MentionGroup {
+    if open.iter().any(|p| super::same_path(p, path)) {
+        MentionGroup::Open
+    } else if changed.iter().any(|p| super::same_path(p, path)) {
+        MentionGroup::Changed
+    } else {
+        MentionGroup::Rest
+    }
+}
+
+/// Los archivos con abiertos y cambiados primero, sin cambiar el ranking que
+/// ya traen dentro de cada grupo.
+fn group_mentions(files: Vec<Indexed>, open: &[PathBuf], changed: &[PathBuf]) -> Vec<Indexed> {
+    let mut groups: [Vec<Indexed>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for f in files {
+        groups[group_of(&f.path, open, changed) as usize].push(f);
+    }
+    groups.into_iter().flatten().collect()
+}
+
+/// El título de cada sección de la lista.
+fn group_title(group: MentionGroup) -> &'static str {
+    match group {
+        MentionGroup::Open => t("pill.code.mention.openSection"),
+        MentionGroup::Changed => t("pill.code.mention.changedSection"),
+        MentionGroup::Rest => t("pill.code.mention.projectSection"),
+    }
+}
+
+/// El color del ícono según el tipo de archivo, con roles del tema para que se
+/// lea en claro y oscuro (el código lleva el primario, como el árbol).
+fn kind_tint(kind: files::Kind, scheme: &Scheme) -> Hsla {
+    match kind {
+        files::Kind::Code => scheme.primary,
+        files::Kind::Style => scheme.tertiary,
+        files::Kind::Doc => scheme.secondary,
+        files::Kind::Config => scheme.warning,
+        files::Kind::Image => scheme.success,
+        files::Kind::Other => scheme.on_surface_variant,
+    }
+}
+
+/// El pie de la lista: los atajos con su tecla.
+fn hint_footer(scheme: &Scheme, hints: &[(&'static str, &'static str)]) -> Div {
+    let mut row =
+        div().flex().flex_wrap().items_center().justify_center().gap(px(10.)).px(px(8.)).pt(px(4.));
+    for &(key, label) in hints {
+        row = row.child(
+            div().flex().items_center().gap(px(4.))
+                .child(Kbd::new(key).small(true).muted(true))
+                .child(div().text_size(px(11.)).text_color(scheme.on_surface_variant).child(label)),
+        );
+    }
+    row
+}
+
+/// Una fila de la lista: el nombre, la carpeta, la ruta para mencionar y su grupo.
+#[derive(Clone)]
+struct MentionRow {
+    name: SharedString,
+    dir: SharedString,
+    kind: files::Kind,
+    group: MentionGroup,
+}
+
+/// Lo que dibuja la lista mientras sale: las filas, lo escrito, la resaltada y
+/// si el índice todavía se está armando.
 #[derive(Clone)]
 pub struct MentionShown {
-    items: Vec<(SharedString, SharedString)>,
+    rows: Vec<MentionRow>,
     query: SharedString,
     selected: usize,
+    loading: bool,
 }
 
 /// Las teclas de la lista abierta (↑ ↓ Enter Tab Esc), en el contenedor de la caja.
@@ -101,23 +179,27 @@ impl CodeView {
             self.close_mention(cx);
             return;
         };
-        let Some(index) = self.file_index.as_ref().map(|(_, files)| Arc::clone(files)) else {
-            // Sin índice todavía: se arma y la lista aparece al terminar.
+        // Sin índice todavía: se arma en segundo plano y la lista muestra la espera.
+        let loading = self.file_index.is_none();
+        if loading {
             self.ensure_index(cx);
-            self.mention = Some(Mention { start, query: query.to_string(), nav: SuggestionNav::new(0), matches: Vec::new() });
-            self.composer.update(cx, |area, cx| area.set_suggesting(false, cx));
-            return;
-        };
-        let matches = rank(&index, query);
+        }
+        let matches = self.file_index.as_ref().map(|(_, files)| rank(files, query)).unwrap_or_default();
+        // Abiertos y cambiados primero, sin cambiar el ranking dentro de cada grupo.
+        let open_paths: Vec<PathBuf> = self.tabs.files.iter().map(|f| f.path.clone()).collect();
+        let changed_paths: Vec<PathBuf> =
+            self.repos.iter().flat_map(|r| r.files.iter().map(|f| f.path.clone())).collect();
+        let matches = group_mentions(matches, &open_paths, &changed_paths);
+        let groups = matches.iter().map(|f| group_of(&f.path, &open_paths, &changed_paths)).collect();
         let mut nav = SuggestionNav::new(matches.len());
         // Si solo cambió el cursor dentro del mismo token, la fila se mantiene.
         if let Some(old) = self.mention.as_ref().filter(|m| m.start == start && m.query == query) {
             nav = old.nav;
             nav.set_len(matches.len());
         }
-        let open = !matches.is_empty();
-        self.mention = Some(Mention { start, query: query.to_string(), nav, matches });
-        self.composer.update(cx, |area, cx| area.set_suggesting(open, cx));
+        self.mention = Some(Mention { start, query: query.to_string(), nav, matches, groups });
+        // La lista se ve también cargando o sin resultados: Esc la cierra.
+        self.composer.update(cx, |area, cx| area.set_suggesting(true, cx));
         cx.notify();
     }
 
@@ -164,6 +246,28 @@ impl CodeView {
         self.focus_composer(window, cx);
     }
 
+    /// El «Borrar filtro» del estado sin resultados: deja solo la `@` y vuelve
+    /// a listar todos los archivos.
+    pub(super) fn clear_mention_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mention) = self.mention.clone() else {
+            return;
+        };
+        let (text, cursor) = {
+            let area = self.composer.read(cx);
+            (area.text().to_string(), area.cursor())
+        };
+        let (Some(head), Some(tail)) =
+            (text.get(..mention.start), text.get(cursor.max(mention.start)..))
+        else {
+            return;
+        };
+        let next = format!("{head}@{tail}");
+        let at = mention.start + 1;
+        self.composer.update(cx, |area, cx| area.set_text_at(&next, at, cx));
+        self.update_mention(cx);
+        self.focus_composer(window, cx);
+    }
+
     /// «Mencionar archivo… @» del menú: escribe la `@` y abre la lista.
     pub(super) fn start_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.mentions_enabled() {
@@ -176,45 +280,109 @@ impl CodeView {
 
     /// La lista sobre la caja de texto; se sigue dibujando mientras sale.
     pub(super) fn mention_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let scheme = *gpui_m3::Theme::of(cx);
         let several = self.several_roots();
-        let now = self.mention.as_ref().filter(|m| !m.matches.is_empty()).map(|m| MentionShown {
-            items: m
+        let loading = self.file_index.is_none();
+        // Las filas en el orden en que se muestran (el de `update_mention`).
+        let now = self.mention.as_ref().map(|m| MentionShown {
+            rows: m
                 .matches
                 .iter()
-                .map(|f| {
-                    let hint = f.mention_path(several);
-                    (SharedString::from(f.name().to_string()), SharedString::from(hint))
+                .zip(m.groups.iter())
+                .map(|(f, group)| {
+                    let dir = f.dir(several);
+                    MentionRow {
+                        name: SharedString::from(f.name().to_string()),
+                        dir: SharedString::from(if dir.is_empty() {
+                            t("pill.code.mention.noDir").to_string()
+                        } else {
+                            dir
+                        }),
+                        kind: files::kind_of(f.name()),
+                        group: *group,
+                    }
                 })
                 .collect(),
             query: SharedString::from(m.query.clone()),
             selected: m.nav.selected(),
+            loading,
         });
         let shown = self.mention_last.show("mention-presence", now, window, cx)?;
         let bounds = self.composer_bounds.get()?;
-        let items: Vec<Suggestion> = shown.value.items.iter().map(|(name, path)| Suggestion::new("file", name.clone()).hint(path.clone())).collect();
-        let view = cx.entity();
-        let hover_view = view.clone();
-        let list = SuggestionList::new("mention-list", items)
-            .query(shown.value.query.clone())
-            .selected(shown.value.selected)
+        // Abre hacia arriba desde la caja: el pie con las pistas queda del lado del
+        // ancla y no se mueve al filtrar (solo la lista cambia de alto).
+        let mut menu = Menu::new("mention-list")
             .width(((bounds.size.width / px(1.)).min(460.) - 16.).max(280.))
-            .on_hover(move |row, _, cx| {
-                hover_view.update(cx, |view, cx| {
-                    if view.mention.as_mut().is_some_and(|m| m.nav.hover(row)) {
-                        cx.notify();
-                    }
-                });
-            })
-            .on_pick(move |row, window, cx| {
-                view.update(cx, |view, cx| view.pick_mention(Some(row), window, cx));
-            });
+            .max_h(px(320.))
+            .origin(Corner::BottomLeft)
+            .pin_to_anchor(true);
+        if shown.value.loading {
+            menu = menu.section(t("pill.code.mention.loadingTitle"));
+            menu = menu.item(
+                MenuItem::new("mention-loading", t("pill.code.mention.loadingRow"))
+                    .icon("file")
+                    .static_row(true),
+            );
+            menu = menu.footer(hint_footer(&scheme, &[("Esc", t("pill.code.mention.hintClose"))]));
+        } else if shown.value.rows.is_empty() {
+            let view = cx.entity();
+            menu = menu.item(
+                MenuItem::new("mention-empty", tf("pill.code.mention.noResults", &[("query", &shown.value.query)]))
+                    .icon("search")
+                    .static_row(true)
+                    .action(Chip::new("mention-clear", t("pill.code.mention.clearFilter")).on_click(
+                        move |_, window, cx| {
+                            view.update(cx, |view, cx| view.clear_mention_query(window, cx));
+                        },
+                    )),
+            );
+            menu = menu.footer(hint_footer(&scheme, &[("Esc", t("pill.code.mention.hintClose"))]));
+        } else {
+            // Secciones solo cuando aportan: con un solo grupo la lista va plana.
+            let multi = shown.value.rows.iter().any(|r| r.group != shown.value.rows[0].group);
+            let mut last: Option<MentionGroup> = None;
+            let view = cx.entity();
+            let hover_view = view.clone();
+            for (row, item) in shown.value.rows.iter().enumerate() {
+                if multi && Some(item.group) != last {
+                    menu = menu.section(group_title(item.group));
+                    last = Some(item.group);
+                }
+                let pick_view = view.clone();
+                let entry = MenuItem::new(("mention-pick", row), item.name.clone())
+                    .leading(Icon::new("file").size(px(16.)).color(kind_tint(item.kind, &scheme)))
+                    .sublabel(item.dir.clone())
+                    .label_highlights(match_ranges(&item.name, &shown.value.query))
+                    .selected(row == shown.value.selected)
+                    .hover_fill(false)
+                    .on_click(move |_, window, cx| {
+                        pick_view.update(cx, |view, cx| view.pick_mention(Some(row), window, cx));
+                    });
+                let hover = hover_view.clone();
+                menu = menu.item(div().id(("mention-row", row)).on_mouse_move(move |_, _, cx| {
+                    hover.update(cx, |view, cx| {
+                        if view.mention.as_mut().is_some_and(|m| m.nav.hover(row)) {
+                            cx.notify();
+                        }
+                    });
+                }).child(entry));
+            }
+            menu = menu.footer(hint_footer(
+                &scheme,
+                &[
+                    ("↑↓", t("pill.code.mention.hintMove")),
+                    ("Enter", t("pill.code.mention.hintPick")),
+                    ("Esc", t("pill.code.mention.hintClose")),
+                ],
+            ));
+        }
         Some(
             deferred(
                 anchored()
                     .position(point(bounds.left() + px(8.), bounds.top() - px(8.)))
                     .anchor(Corner::BottomLeft)
                     .snap_to_window_with_margin(px(8.))
-                    .child(shown.shrink(gpui_m3::PopDirection::Up, list)),
+                    .child(shown.shrink(gpui_m3::PopDirection::Up, menu)),
             )
             .with_priority(1)
             .into_any_element(),
@@ -276,5 +444,27 @@ mod tests {
         assert!(rank(&files, "zzz").is_empty());
         assert_eq!(files[1].mention_path(true), "r/src/code/view.rs");
         assert_eq!(files[1].mention_path(false), "src/code/view.rs");
+    }
+
+    #[test]
+    fn los_abiertos_y_cambiados_van_primero_sin_romper_el_ranking() {
+        let file = |rel: &str| Indexed { path: PathBuf::from(rel), rel: rel.to_string(), root: "r".into() };
+        let files = vec![file("src/view.rs"), file("src/code/view.rs"), file("docs/view/notes.md")];
+        let open = vec![PathBuf::from("docs/view/notes.md")];
+        let changed = vec![PathBuf::from("src/code/view.rs")];
+        let grouped: Vec<String> =
+            group_mentions(files, &open, &changed).into_iter().map(|f| f.rel).collect();
+        assert_eq!(grouped, vec!["docs/view/notes.md", "src/code/view.rs", "src/view.rs"]);
+        // Sin abiertos ni cambiados, el orden no cambia.
+        let files = vec![file("b.rs"), file("a.rs")];
+        let grouped: Vec<String> =
+            group_mentions(files, &[], &[]).into_iter().map(|f| f.rel).collect();
+        assert_eq!(grouped, vec!["b.rs", "a.rs"]);
+        // Abierto y cambiado a la vez va en abiertos, una sola vez.
+        assert_eq!(
+            group_of(Path::new("x.rs"), &[PathBuf::from("x.rs")], &[PathBuf::from("x.rs")]),
+            MentionGroup::Open
+        );
+        assert_eq!(group_of(Path::new("y.rs"), &[], &[PathBuf::from("Y.RS")]), MentionGroup::Changed);
     }
 }

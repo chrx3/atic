@@ -24,6 +24,37 @@ pub enum Rewind {
     Both,
 }
 
+impl Rewind {
+    /// Restaura archivos: se pierde trabajo, pide confirmación.
+    pub fn destructive(self) -> bool {
+        self != Rewind::Conversation
+    }
+}
+
+/// El alcance elegido en el submenú Rewind (Código, Conversación o Ambos): una
+/// preferencia de la interfaz, igual para todas las conversaciones, así que vive
+/// aquí y no en cada vista.
+static REWIND_SCOPE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// El alcance de ahora.
+pub(super) fn rewind_scope() -> Rewind {
+    match REWIND_SCOPE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Rewind::Conversation,
+        2 => Rewind::Both,
+        _ => Rewind::Code,
+    }
+}
+
+/// Guarda el alcance elegido en el submenú.
+pub(super) fn set_rewind_scope(scope: Rewind) {
+    let value = match scope {
+        Rewind::Code => 0,
+        Rewind::Conversation => 1,
+        Rewind::Both => 2,
+    };
+    REWIND_SCOPE.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl CodeView {
     /// Esc Esc o «Rewind» del menú: el submenú con los mensajes.
     pub(super) fn open_rewind(&mut self, cx: &mut Context<Self>) {

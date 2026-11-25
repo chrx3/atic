@@ -275,9 +275,11 @@ impl Render for MeetingsNotch {
             .font_family(crate::fonts::UI)
             .text_color(ink.text)
             .child(band)
+            // «Abrir» es un control fijo y el panel abre hacia abajo: va
+            // sobre la lista, no al pie, para no saltar cuando cambia de alto.
+            .child(foot)
             .child(body)
             .child(div().flex_1())
-            .child(foot)
             .into_any_element()
     }
 }
@@ -947,8 +949,11 @@ impl MeetingsNotch {
             .font_family(crate::fonts::UI)
             .text_color(s.on_surface)
             .child(band)
+            // «Abrir Reuniones» es un control fijo y el panel abre hacia
+            // abajo: va sobre la lista, no al pie, para no saltar cuando
+            // cambia de alto.
+            .child(div().flex_none().opacity(enter_foot).child(foot))
             .child(div().flex_none().opacity(enter_body).child(body))
             .child(div().flex_1())
-            .child(div().flex_none().opacity(enter_foot).child(foot))
     }
 }

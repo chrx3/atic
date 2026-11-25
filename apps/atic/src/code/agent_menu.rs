@@ -3,11 +3,11 @@
 //! submenús con «atrás» (modelo, permisos, estilo de salida, servidores MCP,
 //! subagentes, comandos). El botón de modelo abre directo el submenú «Modelo».
 
-use crate::i18n::tf;
+use crate::i18n::{t as tr, tf};
 use std::path::PathBuf;
 
-use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, SharedString, Window};
-use gpui_m3::{IconTab, IconTabs, MenuItem, StopSlider, Switch};
+use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, SharedString, Window};
+use gpui_m3::{Avatar, Icon, IconTab, IconTabs, MenuItem, StopSlider, Switch, Theme, Tooltip};
 use serde_json::{json, Value};
 
 use super::chat::Item;
@@ -101,8 +101,9 @@ pub(super) enum Trailing {
     Kbd(&'static str),
     Switch(bool),
     Effort,
-    /// Botones chicos al final de la fila (los del MCP).
-    Chips(Vec<Pick>),
+    /// Un interruptor con un botón opcional al lado (los servidores MCP): la
+    /// fila es estática, el interruptor activa o desactiva y el botón reintenta.
+    Mcp { name: String, on: bool, index: usize, reconnect: bool },
 }
 
 /// Lo que hace un clic en una fila del menú.
@@ -152,12 +153,40 @@ pub(super) struct Line {
     pub click: Option<Handler>,
     /// La fila elegida con el teclado mientras se filtra (↑/↓ y Enter).
     pub picked: bool,
+    /// Elegida, sin radio: la fila se tiñe y lleva un check (la lista de modelos).
+    pub chosen: Option<bool>,
+    /// Inicial con el tono del nombre, en vez del ícono (los subagentes).
+    pub avatar: Option<String>,
+    /// Medidor de riesgo de 1 a 4 (los modos de permisos).
+    pub risk: Option<u8>,
+    /// El texto completo, para una fila cuyo texto se corta con elipsis.
+    pub tooltip: Option<String>,
+    /// Acción en dos pasos: el primer toque arma la fila y muestra este texto
+    /// («Toca de nuevo para…»); el segundo ejecuta (Rewind destructivo).
+    pub confirm: Option<String>,
+    /// Trozos de la etiqueta que coinciden con el filtro (resaltado del buscador).
+    pub highlights: Vec<std::ops::Range<usize>>,
 }
 
 impl Line {
     pub fn new(id: (&'static str, usize), label: impl Into<String>) -> Self {
-        Self { id, label: label.into(), icon: None, sublabel: None, radio: None, trailing: Trailing::None, inline_sub: false, static_row: false, dot: None, click: None, picked: false }
+        Self { id, label: label.into(), icon: None, sublabel: None, radio: None, trailing: Trailing::None, inline_sub: false, static_row: false, dot: None, click: None, picked: false, chosen: None, avatar: None, risk: None, tooltip: None, confirm: None, highlights: Vec::new() }
     }
+}
+
+/// Qué adjunto muestra un chip de solo lectura en una tarjeta de borrador.
+pub(super) enum TagKind {
+    File,
+    Image,
+    Pasted,
+    Quote,
+}
+
+/// Un chip chico de solo lectura en una tarjeta (un adjunto del borrador).
+pub(super) struct Tag {
+    pub id: (&'static str, usize),
+    pub kind: TagKind,
+    pub label: String,
 }
 
 /// Lo que lista un menú.
@@ -167,8 +196,8 @@ pub(super) enum Entry {
     Line(Line),
     /// Un texto centrado cuando no hay nada.
     Empty(&'static str),
-    /// Un título con botones debajo (Rewind).
-    Block { label: String, picks: Vec<Pick> },
+    /// Una tarjeta con título, segunda línea, hora y chips de adjuntos (borradores).
+    Block { title: String, subtitle: Option<String>, age: Option<String>, tags: Vec<Tag>, picks: Vec<Pick> },
     /// Opciones en una sola fila de chips (la elegida marcada), que pasan a la línea
     /// siguiente si no caben: elegir el agente sin gastar una fila por cada uno.
     Choice(Vec<(Pick, bool)>),
@@ -184,14 +213,6 @@ struct Row {
 fn row(icon: &'static str, label: &'static str, trailing: Trailing, act: Act) -> Row {
     Row { icon, label, trailing, act: Some(act) }
 }
-
-/// Los permisos con sus nombres largos, como en el submenú de la referencia.
-const PERMISSIONS: [(&str, &str); 4] = [
-    ("default", "pill.code.agentMenu.permAsk"),
-    ("acceptEdits", "pill.code.agentMenu.permAuto"),
-    ("plan", "pill.code.agentMenu.permPlan"),
-    ("bypassPermissions", "pill.code.agentMenu.permBypass"),
-];
 
 fn home() -> Option<PathBuf> {
     crate::paths::home().map(std::ffi::OsString::from).or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
@@ -370,6 +391,228 @@ impl CodeView {
         rows
     }
 
+    /// La sección estática de una fila del menú de acciones (`None`: lista plana).
+    /// Solo criterios fijos (qué hace la fila), sin telemetría ni orden por uso.
+    fn row_section(tab: usize, act: Option<Act>) -> Option<&'static str> {
+        match (tab, act) {
+            (0, Some(Act::Attach | Act::Mention)) => Some("pill.code.actions.add"),
+            (0, Some(Act::Clear | Act::Open(Sub::Rewind) | Act::SideChat | Act::Open(Sub::Multi))) => Some("pill.code.actions.conversation"),
+            (0, Some(Act::StashDraft | Act::Open(Sub::Stash) | Act::Bookmark | Act::NextFlag | Act::Export | Act::CopyRemote)) => Some("pill.code.actions.saveShare"),
+            (2, Some(Act::Open(Sub::Output) | Act::Open(Sub::Permission) | Act::Open(Sub::Mcp))) => Some("pill.code.actions.modelPerms"),
+            (2, Some(Act::Hooks | Act::Open(Sub::Agents) | Act::Open(Sub::Commands) | Act::Memory)) => Some("pill.code.actions.project"),
+            (2, Some(Act::Sandbox | Act::StatusLine | Act::Personal | Act::General)) => Some("pill.code.actions.files"),
+            _ => None,
+        }
+    }
+
+    /// Lo que un agente ACP oculta en una pestaña, con sus nombres: el aviso lo
+    /// dice en vez de quitar las filas en silencio.
+    fn acp_hidden_labels(&self, tab: usize) -> Vec<String> {
+        if self.current_agent().is_none() {
+            return Vec::new();
+        }
+        match tab {
+            0 => vec!["Rewind".to_string(), crate::i18n::t("pill.code.side.action").to_string()],
+            1 => {
+                let mut hidden = vec![
+                    "Ultracode".to_string(),
+                    "Thinking".to_string(),
+                    crate::i18n::t("pill.code.agentMenu.switchOnFlag").to_string(),
+                    crate::i18n::t("pill.code.agentMenu.fastMode").to_string(),
+                ];
+                if self.effort_levels().is_empty() {
+                    hidden.push(crate::i18n::t("pill.code.agentMenu.effort").to_string());
+                }
+                hidden
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// El aviso de qué filas se ocultan con el agente ACP de ahora (`None` sin
+    /// agente o sin nada oculto en la pestaña).
+    fn acp_banner(&self, tab: usize) -> Option<Entry> {
+        let cli = self.current_agent()?;
+        let names = self.acp_hidden_labels(tab);
+        if names.is_empty() {
+            return None;
+        }
+        let agent = super::acp::agent(cli).map(|info| info.name.to_string()).unwrap_or_else(|| "Claude Code".to_string());
+        let mut line = Line::new(("act-acp", tab), tf("pill.code.actions.acpHidden", &[("agent", &agent), ("n", &names.len())]));
+        line.icon = Some("slash");
+        line.static_row = true;
+        line.sublabel = Some(names.join(", "));
+        Some(Entry::Line(line))
+    }
+
+    /// La pestaña «Modelo» del menú: la fila héroe (agente + modelo + esfuerzo,
+    /// que abre el submenú), el esfuerzo y el resto bajo su sección. La fila de
+    /// esfuerzo la dibuja cada estilo (`effort_block` en Expressive, puntitos
+    /// en Formal y Glass); la de «Cambiar modelo» la reemplaza el héroe.
+    fn model_tab_entries(&self, cx: &mut Context<Self>) -> Vec<Entry> {
+        let mut out = Vec::new();
+        if let Some(banner) = self.acp_banner(1) {
+            out.push(banner);
+        }
+        let chat_model = self.chat_model();
+        let model = if chat_model.is_empty() { crate::i18n::t("pill.code.agentMenu.default").to_string() } else { self.model_label(&chat_model) };
+        let agent = self.current_agent().and_then(super::acp::agent).map(|info| info.name.to_string()).unwrap_or_else(|| "Claude Code".to_string());
+        let label = if self.effort_levels().is_empty() {
+            model.clone()
+        } else {
+            tf("pill.code.actions.heroLabel", &[("model", &model), ("effort", &self.effort_text())])
+        };
+        let mut hero = Line::new(("act-hero", 1), label);
+        hero.icon = Some("cpu");
+        hero.chosen = Some(true);
+        hero.sublabel = Some(tf("pill.code.actions.heroSub", &[("agent", &agent), ("change", &crate::i18n::t("pill.code.agentMenu.changeModel"))]));
+        hero.click = Some(boxed(cx.listener(|view, _: &ClickEvent, window, cx| view.menu_act(Act::Open(Sub::Model), window, cx))));
+        out.push(Entry::Line(hero));
+        let mut section = false;
+        for (index, row) in self.rows(1).into_iter().enumerate() {
+            if matches!(row.act, Some(Act::Open(Sub::Model))) {
+                continue;
+            }
+            if !section {
+                out.push(Entry::Section(crate::i18n::t("pill.code.actions.modelSettings")));
+                section = true;
+            }
+            out.push(Entry::Line(self.line_of(100 + index, row, cx)));
+        }
+        out
+    }
+
+    /// Lo fijo del submenú «Modelo»: el agente y el esfuerzo. Solo la lista de modelos se
+    /// desplaza debajo.
+    fn model_header(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = *Theme::of(cx);
+        let mut header = div().flex().flex_col().px(px(8.)).pb(px(4.));
+        let visible = self.visible_acp();
+        if !visible.is_empty() || self.current_agent().is_some() {
+            header = header
+                .child(div().pt(px(6.)).pb(px(6.)).px(px(4.)).text_size(px(12.)).font_weight(gpui::FontWeight(700.)).text_color(theme.primary).child(crate::i18n::t("pill.code.agentMenu.agent")))
+                .child(self.agent_segments(&visible, cx));
+        }
+        header.children(self.effort_block(cx))
+    }
+
+    /// Los agentes en una sola fila: el logo de cada uno y, en el elegido, su nombre. Con la
+    /// conversación empezada el agente queda fijo: los demás se apagan.
+    fn agent_segments(&self, visible: &[&'static str], cx: &mut Context<Self>) -> gpui::Div {
+        let theme = *Theme::of(cx);
+        let current = self.current_agent();
+        let fixed = self.agent_fixed();
+        let options = std::iter::once((None, "Claude Code")).chain(visible.iter().filter_map(|cli| super::acp::agent(cli)).map(|a| (Some(a.cli), a.name)));
+        let mut group = div().flex().gap(px(3.)).p(px(3.)).rounded(px(21.)).bg(theme.surface_container_high).when(fixed, |el| el.mb(px(2.)));
+        for (index, (cli, name)) in options.enumerate() {
+            let selected = cli == current;
+            let locked = fixed && !selected;
+            let color = if selected { theme.on_primary_container } else { theme.on_surface_variant };
+            let logo = match super::delegate::agent_logo(cli.unwrap_or("claude")) {
+                Some(path) => svg().path(path).size(px(18.)).flex_none().text_color(color).into_any_element(),
+                None => Icon::new("cpu").size(px(18.)).color(color).into_any_element(),
+            };
+            let segment = div()
+                .id(("agent-segment", index))
+                .h(px(40.))
+                .min_w(px(40.))
+                .px(px(11.))
+                .rounded(px(18.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .text_color(color)
+                .when(selected, |el| el.bg(theme.primary_container))
+                .when(locked, |el| el.opacity(0.45))
+                .child(logo)
+                .when(selected, |el| el.child(div().text_size(px(13.)).font_weight(gpui::FontWeight(600.)).child(name)));
+            let segment = if locked {
+                segment.tooltip(Tooltip::text(crate::i18n::t("pill.code.agentMenu.fixedInChat")))
+            } else if selected {
+                segment
+            } else {
+                let hover = theme.surface_container_highest;
+                segment
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .tooltip(Tooltip::text(name))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.choose_agent(cli, cx);
+                        view.configs.set_last_agent(cli);
+                        view.close_menus(cx);
+                    }))
+            };
+            group = group.child(segment);
+        }
+        if fixed {
+            let muted = theme.on_surface_variant;
+            return div()
+                .flex()
+                .flex_col()
+                .child(group)
+                .child(div().flex().items_center().gap(px(6.)).px(px(4.)).pb(px(4.)).text_size(px(12.)).text_color(muted).child(Icon::new("lock").size(px(14.)).color(muted)).child(crate::i18n::t("pill.code.agentMenu.fixedInChat")));
+        }
+        group
+    }
+
+    /// La pista de un nivel de esfuerzo, para los que se conocen.
+    fn effort_hint(id: &str) -> Option<&'static str> {
+        Some(match id {
+            "low" => crate::i18n::t("pill.code.agentMenu.effortHintLow"),
+            "medium" => crate::i18n::t("pill.code.agentMenu.effortHintMedium"),
+            "high" => crate::i18n::t("pill.code.agentMenu.effortHintHigh"),
+            "xhigh" => crate::i18n::t("pill.code.agentMenu.effortHintXhigh"),
+            "max" => crate::i18n::t("pill.code.agentMenu.effortHintMax"),
+            _ => return None,
+        })
+    }
+
+    /// El esfuerzo como bloque propio: el nombre del nivel arriba, la barra de ancho completo
+    /// que se arrastra, y qué significa el nivel debajo. Si el agente no tiene esfuerzo, el
+    /// bloque queda apagado y lo dice. `None` mientras el agente aún no mandó sus opciones.
+    fn effort_block(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let theme = *Theme::of(cx);
+        if self.current_agent().is_some() && !self.acp_cfg().is_some_and(|cfg| !cfg.options.is_empty()) {
+            return None;
+        }
+        let levels = self.effort_levels();
+        let frame = || div().flex().flex_col().mx(px(4.)).my(px(4.)).py(px(8.)).border_t_1().border_b_1().border_color(theme.outline_variant);
+        let title = |value: Option<String>, color: gpui::Hsla| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(2.))
+                .child(Icon::new("gauge").size(px(20.)).color(color))
+                .child(div().text_size(px(14.)).font_weight(gpui::FontWeight(500.)).child(crate::i18n::t("pill.code.agentMenu.effort")))
+                .children(value.map(|value| div().ml_auto().text_size(px(13.)).font_weight(gpui::FontWeight(600.)).text_color(theme.primary).child(value)))
+        };
+        if levels.is_empty() {
+            let muted = theme.on_surface_variant;
+            return Some(frame().opacity(0.6).child(title(None, muted)).child(div().px(px(2.)).pt(px(4.)).text_size(px(12.)).text_color(muted).child(crate::i18n::t("pill.code.agentMenu.effortNone"))));
+        }
+        let now = self.effort_now();
+        let stop = levels.iter().position(|(id, _)| *id == now);
+        let hint = stop.and_then(|i| Self::effort_hint(&levels[i].0)).unwrap_or("");
+        let count = levels.len();
+        let set = cx.listener(move |view, pick: &usize, _, cx| {
+            if let Some((id, _)) = levels.get(*pick) {
+                // Arrastrando llegan muchos avisos por el mismo nivel: solo cambia al cruzar a otro.
+                if view.effort_now() != *id {
+                    view.pick_effort(id.clone(), cx);
+                }
+            }
+        });
+        let slider = StopSlider::new("effort-slider", count, stop).fill().draggable().on_change(move |pick, window, cx| set(&pick, window, cx));
+        Some(
+            frame()
+                .child(title(Some(self.effort_text()), theme.on_surface_variant))
+                .child(div().px(px(2.)).child(slider))
+                .child(div().px(px(2.)).h(px(18.)).text_size(px(12.)).text_color(theme.on_surface_variant).child(hint)),
+        )
+    }
+
     fn effort_slider(&self, cx: &mut Context<Self>) -> StopSlider {
         let levels = self.effort_levels();
         let effort = self.effort_now();
@@ -457,14 +700,14 @@ impl CodeView {
     /// El submenú «Modelo» de un agente ACP: su esfuerzo (si tiene), sus modelos con
     /// nombres legibles —primero los del grupo del actual, el resto con «Más modelos»,
     /// agrupados por proveedor— y otras opciones que mande.
-    fn acp_model_entries(&self, out: &mut Vec<Entry>, cx: &mut Context<Self>) {
+    fn acp_model_entries(&self, out: &mut Vec<Entry>, with_effort: bool, cx: &mut Context<Self>) {
         let Some(cfg) = self.acp_cfg().filter(|cfg| !cfg.options.is_empty()) else {
             let name = self.current_agent().and_then(super::acp::agent).map_or(crate::i18n::t("pill.code.agentMenu.theAgent"), |agent| agent.name);
             let text = if self.acp_loading() { tf("pill.code.agentMenu.readingModels", &[("name", &name)]) } else { tf("pill.code.agentMenu.noModels", &[("name", &name)]) };
             out.push(Entry::Empty(interned(&text)));
             return;
         };
-        if !self.effort_levels().is_empty() {
+        if with_effort && !self.effort_levels().is_empty() {
             let mut effort = Line::new(("sub-effort", 0), crate::i18n::t("pill.code.agentMenu.effort"));
             effort.icon = Some("gauge");
             effort.static_row = true;
@@ -528,7 +771,7 @@ impl CodeView {
                 group = Some(entry_group);
                 n += 1;
                 let mut line = Line::new(("acp-opt", n), label.clone());
-                line.radio = Some(*value == option.current);
+                line.chosen = Some(*value == option.current);
                 line.sublabel = detail.clone().or_else(|| (many && !self.more_models).then(|| entry_group.clone()).flatten());
                 let (config, value) = (config.clone(), value.clone());
                 line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -583,7 +826,7 @@ impl CodeView {
         for (index, (id, name, description)) in cfg.modes.iter().enumerate() {
             let (label, hint) = super::acp::mode_text(id, name, description);
             let mut line = Line::new(("acp-mode", index), label);
-            line.radio = Some(cfg.mode.as_deref() == Some(id.as_str()));
+            line.chosen = Some(cfg.mode.as_deref() == Some(id.as_str()));
             line.sublabel = (!hint.is_empty()).then_some(hint);
             let id = id.clone();
             line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -615,6 +858,21 @@ impl CodeView {
         let mut line = Line::new(("act", id), row.label);
         line.icon = Some(row.icon);
         line.click = row.act.map(|act| boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.menu_act(act, window, cx))));
+        // Los interruptores dicen qué hacen, en una línea con elipsis.
+        let desc = match row.act {
+            Some(Act::Ultracode) => Some(crate::i18n::t("pill.code.actions.descUltracode")),
+            Some(Act::Thinking) => Some(crate::i18n::t("pill.code.actions.descThinking")),
+            Some(Act::SwitchOnFlag) => Some(crate::i18n::t("pill.code.actions.descSwitchOnFlag")),
+            Some(Act::FastMode) => Some(crate::i18n::t("pill.code.actions.descFastMode")),
+            Some(Act::Sandbox) => Some(crate::i18n::t("pill.code.actions.descSandbox")),
+            Some(Act::StatusLine) => Some(crate::i18n::t("pill.code.actions.descStatusLine")),
+            Some(Act::Chrome) => Some(crate::i18n::t("pill.code.actions.descChrome")),
+            _ => None,
+        };
+        if let Some(desc) = desc {
+            line.sublabel = Some(desc.to_string());
+            line.inline_sub = true;
+        }
         match row.trailing {
             Trailing::Effort => {
                 line.sublabel = Some(self.effort_text());
@@ -632,7 +890,21 @@ impl CodeView {
     pub(super) fn menu_entries(&self, query: &str, tab: usize, cx: &mut Context<Self>) -> Vec<Entry> {
         let mut out = Vec::new();
         if query.is_empty() {
+            if tab == 1 {
+                return self.model_tab_entries(cx);
+            }
+            if let Some(banner) = self.acp_banner(tab) {
+                out.push(banner);
+            }
+            let mut section: Option<&'static str> = None;
             for (index, row) in self.rows(tab).into_iter().enumerate() {
+                let at = Self::row_section(tab, row.act);
+                if at != section {
+                    if let Some(title) = at {
+                        out.push(Entry::Section(crate::i18n::t(title)));
+                    }
+                    section = at;
+                }
                 out.push(Entry::Line(self.line_of(tab * 100 + index, row, cx)));
             }
             return out;
@@ -654,6 +926,7 @@ impl CodeView {
                 line.icon = Some("command");
                 line.inline_sub = true;
                 line.sublabel = Some(description);
+                line.highlights = gpui_m3::match_ranges(&line.label, query.trim_start_matches('/'));
                 line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&name, window, cx))));
                 out.push(Entry::Line(line));
             }
@@ -668,13 +941,25 @@ impl CodeView {
             if rows.is_empty() {
                 continue;
             }
+            // La pestaña de origen va en la sección: cada resultado dice de dónde viene.
             out.push(Entry::Section(section));
             for (index, row) in rows.into_iter().enumerate() {
-                out.push(Entry::Line(self.line_of(tab * 100 + index, row, cx)));
+                let mut line = self.line_of(tab * 100 + index, row, cx);
+                line.highlights = gpui_m3::match_ranges(&line.label, query);
+                out.push(Entry::Line(line));
             }
         }
         if out.is_empty() {
             out.push(Entry::Empty(crate::i18n::t("overlay.noResults")));
+            // Vacío con acción: borra el filtro sin cerrar el menú.
+            let mut clear = Line::new(("filter-clear", 0), crate::i18n::t("pill.code.actions.clearFilter").to_string());
+            clear.icon = Some("x");
+            clear.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
+                view.menu_pick = 0;
+                view.menu_filter.update(cx, |field, cx| field.set_text("", cx));
+                cx.notify();
+            })));
+            out.push(Entry::Line(clear));
         }
         // Con filtro, una fila queda elegida para Enter: la primera, o la que se movió con ↑/↓.
         let pickable: Vec<usize> = pickable_lines(&out);
@@ -727,14 +1012,29 @@ impl CodeView {
     }
 
     /// La fila de Expressive para una línea.
-    fn m3_item(&self, line: Line, cx: &mut Context<Self>) -> MenuItem {
+    fn m3_item(&self, mut line: Line, cx: &mut Context<Self>) -> MenuItem {
         let muted = t().muted;
         let mut item = MenuItem::new(line.id, line.label).dense(true).highlighted(line.picked);
+        if !line.highlights.is_empty() {
+            item = item.label_highlights(std::mem::take(&mut line.highlights));
+        }
         if let Some(icon) = line.icon {
             item = item.icon(icon);
         }
         if let Some(on) = line.radio {
             item = item.radio(on);
+        }
+        if let Some(on) = line.chosen {
+            item = item.selected(on);
+        }
+        if let Some(level) = line.risk {
+            item = item.risk(level);
+        }
+        if let Some(text) = line.tooltip {
+            item = item.tooltip(text);
+        }
+        if let Some(label) = line.confirm {
+            item = item.confirm(label);
         }
         if line.static_row {
             item = item.static_row(true);
@@ -748,13 +1048,29 @@ impl CodeView {
         if let Some(color) = line.dot {
             item = item.leading(div().size(px(8.)).rounded_full().bg(color));
         }
+        if let Some(name) = line.avatar {
+            item = item.leading(Avatar::new(name).size(px(28.)));
+        }
         item = match line.trailing {
             Trailing::None => item,
             Trailing::Value(value) => item.trailing(div().text_size(px(11.5)).text_color(muted).child(value)),
             Trailing::Kbd(kbd) => item.shortcut(kbd),
             Trailing::Switch(on) => item.trailing(Switch::new(("act-switch", line.id.1), on).compact(true)),
             Trailing::Effort => item.trailing(self.effort_slider(cx)),
-            Trailing::Chips(picks) => item.trailing(div().flex().gap(px(4.)).children(picks.into_iter().map(|pick| gpui_m3::Chip::new(pick.id, pick.label).on_click(pick.click)))),
+            Trailing::Mcp { name, on, index, reconnect } => {
+                let weak = cx.weak_entity();
+                let mut trailing = div().flex().items_center().gap(px(6.)).min_h(px(40.));
+                if reconnect {
+                    let retry_name = name.clone();
+                    trailing = trailing.child(gpui_m3::Chip::new(("mcp-reconnect", index), crate::i18n::t("pill.code.agentMenu.reconnect")).on_click(boxed(cx.listener(
+                        move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpReconnect", json!({ "name": retry_name }), cx),
+                    ))));
+                }
+                trailing = trailing.child(Switch::new(("mcp-switch", index), on).compact(true).on_toggle(move |enabled, _, cx| {
+                    let _ = weak.update(cx, |view, cx| view.mcp_call("mcpToggle", json!({ "name": name, "enabled": enabled }), cx));
+                }));
+                item.trailing(trailing)
+            }
         };
         match line.click {
             Some(click) => item.on_click(click),
@@ -778,16 +1094,36 @@ impl CodeView {
                     .gap(px(6.))
                     .children(picks.into_iter().map(|(pick, selected)| gpui_m3::Chip::new(pick.id, pick.label).filter(selected).on_click(pick.click))),
             ),
-            // TODO(gpui-m3): MenuItem con acciones bajo el texto (una fila
-            // estática de dos líneas); por ahora, la fila de aquí.
-            Entry::Block { label, picks } => menu.item(
+            // Una tarjeta de borrador: título con su hora, segunda línea, chips de
+            // adjuntos por tipo y acciones debajo (Recuperar, Descartar).
+            Entry::Block { title, subtitle, age, tags, picks } => menu.item(
                 div()
                     .px(px(12.))
                     .py(px(8.))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(div().truncate().text_size(px(13.)).child(label))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).child(title))
+                            .children(age.map(|age| div().flex_none().text_size(px(11.)).text_color(t().muted).child(age))),
+                    )
+                    .children(subtitle.map(|subtitle| div().truncate().text_size(px(12.)).text_color(t().muted).child(subtitle)))
+                    .when(!tags.is_empty(), |el| {
+                        el.child(div().flex().flex_wrap().gap(px(4.)).children(tags.into_iter().map(|tag| {
+                            let chip = gpui_m3::Chip::new(tag.id, tag.label).inert(true).size(gpui_m3::ChipSize::Small);
+                            match tag.kind {
+                                TagKind::File => chip.icon("file"),
+                                TagKind::Image => chip.leading(svg().path("icons/image.svg").size(px(13.)).text_color(t().muted)),
+                                TagKind::Pasted => chip.leading(svg().path("icons/clipboard.svg").size(px(13.)).text_color(t().muted)),
+                                // La cita se reconoce por sus comillas, como en la caja.
+                                TagKind::Quote => chip,
+                            }
+                        })))
+                    })
                     .child(div().flex().gap(px(4.)).children(picks.into_iter().map(|pick| gpui_m3::Chip::new(pick.id, pick.label).on_click(pick.click)))),
             ),
         }
@@ -809,15 +1145,22 @@ impl CodeView {
         // Las pestañas y el buscador van del lado del cuadro de texto: el menú crece o se
         // achica por el otro, y ellos no se mueven al filtrar. Abriendo hacia arriba quedan
         // abajo, con el buscador al final; hacia abajo, arriba con el buscador primero.
+        // Las pestañas quedan fijas también al filtrar (el icono con nombre solo en la
+        // activa lo pone `IconTabs`); solo la lista se desplaza.
         let field = div().on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _, cx| view.menu_filter_key(event, cx))).child(self.menu_filter.clone());
-        let tabs = (!filtering).then(|| {
-            div().when(below, |el| el.pt(px(8.)).pb(px(6.))).when(!below, |el| el.pt(px(6.)).pb(px(8.))).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx)))
-        });
-        let fixed = if below { div().flex().flex_col().child(field).children(tabs) } else { div().flex().flex_col().children(tabs).child(field) };
+        let tabs = div().when(below, |el| el.pt(px(8.)).pb(px(6.))).when(!below, |el| el.pt(px(6.)).pb(px(8.))).child(IconTabs::new("menu-tabs", tabs, self.menu_tab).on_change(move |tab, window, cx| set_tab(&tab, window, cx)));
+        let fixed = if below { div().flex().flex_col().child(field).child(tabs) } else { div().flex().flex_col().child(tabs).child(field) };
         let menu = gpui_m3::Menu::new("agent-menu").width(MENU_W).max_h(px(list_h.min(MENU_H))).origin(menu_origin(below));
         let mut menu = if below { menu.header(fixed) } else { menu.footer(fixed) }
             .content_key(if filtering { 99 } else { self.menu_tab as u64 });
+        // En la pestaña «Modelo», el esfuerzo va como bloque (nombre, barra
+        // arrastrable y pista), no como fila con puntitos.
+        let mut effort = (!filtering && self.menu_tab == 1).then(|| self.effort_block(cx)).flatten();
         for entry in self.menu_entries(&query, self.menu_tab, cx) {
+            if effort.is_some() && matches!(&entry, Entry::Line(line) if matches!(line.trailing, Trailing::Effort)) {
+                menu = menu.item(effort.take().unwrap());
+                continue;
+            }
             menu = self.m3_add(menu, entry, cx);
         }
         menu.into_any_element()
@@ -838,11 +1181,15 @@ impl CodeView {
 
     fn sub_menu(&self, sub: Sub, below: bool, list_h: f32, cx: &mut Context<Self>) -> AnyElement {
         let back = Self::back_handler(cx);
-        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(list_h.min(MENU_H))).origin(menu_origin(below)).back(sub.title(), back).content_key(100 + sub as u64);
-        if sub == Sub::Model && self.model_search_shown() {
-            menu = menu.header(div().pb(px(6.)).child(self.model_filter.clone()));
+        let mut menu = gpui_m3::Menu::new("agent-sub").width(MENU_W).max_h(px(list_h.min(MENU_H))).origin(menu_origin(below)).pin_to_anchor(true).back(sub.title(), back).content_key(100 + sub as u64);
+        if sub == Sub::Model {
+            let header = div().flex().flex_col().child(self.model_header(cx)).when(self.model_search_shown(), |el| el.child(div().px(px(8.)).pb(px(6.)).child(self.model_filter.clone())));
+            menu = menu.header(header);
+        } else if matches!(sub, Sub::Output | Sub::Agents | Sub::Commands) {
+            // El filtro fijo: solo la lista se desplaza, como el buscador de modelos.
+            menu = menu.header(div().px(px(8.)).pb(px(4.)).child(self.sub_filter.clone()));
         }
-        for entry in self.sub_entries(sub, cx) {
+        for entry in self.sub_entries_with(sub, sub != Sub::Model, cx) {
             menu = self.m3_add(menu, entry, cx);
         }
         menu.into_any_element()
@@ -850,6 +1197,12 @@ impl CodeView {
 
     /// Lo que lista un submenú, para los tres estilos.
     pub(super) fn sub_entries(&self, sub: Sub, cx: &mut Context<Self>) -> Vec<Entry> {
+        self.sub_entries_with(sub, true, cx)
+    }
+
+    /// Igual, pero `header: false` deja fuera el agente y el esfuerzo del submenú «Modelo»: en
+    /// Expressive van fijos arriba (`model_header`) y solo la lista de modelos se desplaza.
+    fn sub_entries_with(&self, sub: Sub, header: bool, cx: &mut Context<Self>) -> Vec<Entry> {
         let config = self.config();
         let mut out = Vec::new();
         match sub {
@@ -862,7 +1215,7 @@ impl CodeView {
                 // conversación; después queda fijo.
                 let current = self.current_agent();
                 let visible = self.visible_acp();
-                if !visible.is_empty() || current.is_some() {
+                if header && (!visible.is_empty() || current.is_some()) {
                     out.push(Entry::Section(crate::i18n::t("pill.code.agentMenu.agent")));
                     let fixed = self.agent_fixed();
                     let options = std::iter::once((None, "Claude Code"))
@@ -895,17 +1248,19 @@ impl CodeView {
                 // modos van en el menú de la píldora del modo). Antes de abrir la sesión el
                 // agente todavía no dijo cuáles tiene.
                 if current.is_some() {
-                    self.acp_model_entries(&mut out, cx);
+                    self.acp_model_entries(&mut out, header, cx);
                     return out;
                 }
-                let mut effort = Line::new(("sub-effort", 0), crate::i18n::t("pill.code.agentMenu.effort"));
-                effort.icon = Some("gauge");
-                effort.static_row = true;
-                effort.inline_sub = true;
-                effort.sublabel = Some(config::effort_label(&self.chat_effort()).to_string());
-                effort.trailing = Trailing::Effort;
-                out.push(Entry::Line(effort));
-                out.push(Entry::Separator);
+                if header {
+                    let mut effort = Line::new(("sub-effort", 0), crate::i18n::t("pill.code.agentMenu.effort"));
+                    effort.icon = Some("gauge");
+                    effort.static_row = true;
+                    effort.inline_sub = true;
+                    effort.sublabel = Some(config::effort_label(&self.chat_effort()).to_string());
+                    effort.trailing = Trailing::Effort;
+                    out.push(Entry::Line(effort));
+                    out.push(Entry::Separator);
+                }
                 // El modelo de la conversación visible (puede venir como id de una
                 // sesión retomada: se compara por nombre, como `isCurrent` de la referencia).
                 let current = self.chat_model();
@@ -915,7 +1270,7 @@ impl CodeView {
                 for index in visible {
                     let (id, name) = &self.models[index];
                     let mut line = Line::new(("model", index), name.clone());
-                    line.radio = Some(selected == Some(id.as_str()));
+                    line.chosen = Some(selected == Some(id.as_str()));
                     line.sublabel = if id.is_empty() { self.default_model_note() } else { self.model_info.get(id).cloned() };
                     let id = id.clone();
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -938,11 +1293,15 @@ impl CodeView {
                 }
             }
             Sub::Permission => {
-                for (index, (id, label)) in PERMISSIONS.iter().enumerate() {
-                    let mut line = Line::new(("permission", index), crate::i18n::t(*label));
-                    line.radio = Some(config.permission_mode == *id);
+                // De menos a más permisivo, cada uno con su descripción y su riesgo.
+                for (index, (id, risk)) in config::MODE_ORDER.iter().enumerate() {
+                    let mut line = Line::new(("permission", index), config::mode_name(id));
+                    line.chosen = Some(config.permission_mode == *id);
+                    line.sublabel = Some(config::mode_hint(id).to_string());
+                    line.risk = Some(*risk);
+                    let id = id.to_string();
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.set_config(|c| c.permission_mode = id.to_string(), cx);
+                        view.set_config(|c| c.permission_mode = id.clone(), cx);
                         view.close_menus(cx);
                     })));
                     out.push(Entry::Line(line));
@@ -950,9 +1309,17 @@ impl CodeView {
             }
             Sub::Output => {
                 let styles = if self.output_styles.is_empty() { vec!["default".to_string()] } else { self.output_styles.clone() };
+                // Sin descripciones del sidecar: solo el nombre, con el elegido teñido.
+                let query = self.sub_filter.read(cx).text().trim().to_lowercase();
+                let mut shown = 0;
                 for (index, style) in styles.into_iter().enumerate() {
-                    let mut line = Line::new(("output", index), if style == "default" { crate::i18n::t("pill.code.agentMenu.default").to_string() } else { style.clone() });
-                    line.radio = Some(config.output_style == style);
+                    let label = if style == "default" { crate::i18n::t("pill.code.agentMenu.default").to_string() } else { style.clone() };
+                    if !query.is_empty() && !query.split_whitespace().all(|word| label.to_lowercase().contains(word)) {
+                        continue;
+                    }
+                    shown += 1;
+                    let mut line = Line::new(("output", index), label);
+                    line.chosen = Some(config.output_style == style);
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let style = style.clone();
                         view.set_config(|c| c.output_style = style, cx);
@@ -960,36 +1327,131 @@ impl CodeView {
                     })));
                     out.push(Entry::Line(line));
                 }
+                if shown == 0 {
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noFilterMatch")));
+                }
             }
             Sub::Agents => {
+                // Sin origen en los datos (nombre y descripción): lista plana con
+                // filtro; la inicial distingue las filas y la descripción va en una
+                // línea con elipsis (el tooltip completo queda para gpui-m3).
                 if self.agents.is_empty() {
-                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.nothingYet")));
-                }
-                for (index, (name, description)) in self.agents.iter().enumerate() {
-                    let prompt = format!("Usa el subagente {name} para ");
-                    let mut line = Line::new(("agent", index), name.clone());
-                    line.sublabel = Some(description.clone());
-                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| {
-                        view.close_menus(cx);
-                        view.insert(&prompt, window, cx);
-                    })));
-                    out.push(Entry::Line(line));
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noAgents")));
+                } else {
+                    let query = self.sub_filter.read(cx).text().trim().to_lowercase();
+                    let mut shown = 0;
+                    for (index, (name, description)) in self.agents.iter().enumerate() {
+                        if !query.is_empty() {
+                            let hay = format!("{name} {description}").to_lowercase();
+                            if !query.split_whitespace().all(|word| hay.contains(word)) {
+                                continue;
+                            }
+                        }
+                        shown += 1;
+                        let prompt = format!("Usa el subagente {name} para ");
+                        let mut line = Line::new(("agent", index), name.clone());
+                        line.avatar = Some(name.clone());
+                        line.inline_sub = true;
+                        line.sublabel = Some(description.clone());
+                        line.tooltip = Some(description.clone());
+                        line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            view.close_menus(cx);
+                            view.insert(&prompt, window, cx);
+                        })));
+                        out.push(Entry::Line(line));
+                    }
+                    if shown == 0 {
+                        out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noFilterMatch")));
+                    }
                 }
             }
             Sub::Commands => {
-                for (index, (name, description)) in self.command_names().into_iter().enumerate() {
-                    let mut line = Line::new(("command", index), format!("/{name}"));
-                    line.sublabel = Some(description);
-                    line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&name, window, cx))));
-                    out.push(Entry::Line(line));
+                // Solo se distingue la sesión de las skills locales (por nombre):
+                // los argumentos y el resto de orígenes no llegan en los datos.
+                let project = self.workspaces.active().and_then(|w| w.main().cloned());
+                let skill_names: std::collections::HashSet<String> = local_skills(project.as_deref()).into_iter().map(|(name, _)| name).collect();
+                let mut session = Vec::new();
+                let mut skills = Vec::new();
+                for (name, description) in self.command_names() {
+                    if skill_names.contains(&name) {
+                        skills.push((name, description));
+                    } else {
+                        session.push((name, description));
+                    }
+                }
+                let query = self.sub_filter.read(cx).text();
+                let trimmed = query.trim().to_lowercase();
+                let keep = |name: &str, description: &str| {
+                    if trimmed.is_empty() {
+                        return true;
+                    }
+                    let hay = format!("{name} {description}").to_lowercase();
+                    trimmed.split_whitespace().all(|word| hay.contains(word))
+                };
+                session.retain(|(name, description)| keep(name, description));
+                skills.retain(|(name, description)| keep(name, description));
+                if session.is_empty() && skills.is_empty() {
+                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noFilterMatch")));
+                } else {
+                    let mut number = 0;
+                    for (title, group) in [
+                        (
+                            match self.current_agent().and_then(super::acp::agent) {
+                                Some(agent) => interned(agent.name),
+                                None => crate::i18n::t("pill.code.agentMenu.sessionCmds"),
+                            },
+                            session,
+                        ),
+                        (crate::i18n::t("pill.code.agentMenu.localSkills"), skills),
+                    ] {
+                        if group.is_empty() {
+                            continue;
+                        }
+                        out.push(Entry::Section(title));
+                        for (name, description) in group {
+                            let mut line = Line::new(("command", number), format!("/{name}"));
+                            number += 1;
+                            line.icon = Some("command");
+                            line.inline_sub = true;
+                            line.sublabel = Some(description);
+                            if !trimmed.is_empty() {
+                                line.highlights = gpui_m3::match_ranges(&line.label, trimmed.as_str());
+                            }
+                            line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.insert_command(&name, window, cx))));
+                            out.push(Entry::Line(line));
+                        }
+                    }
                 }
             }
             Sub::Mcp => self.mcp_entries(&mut out, cx),
             Sub::Multi => {
                 out.push(Entry::Section(crate::i18n::t("pill.code.multi.hint")));
+                // Los elegidos arriba, cada chip quita el suyo sin buscar su fila.
+                if !self.multi_pick.is_empty() {
+                    out.push(Entry::Section(tr("pill.code.multi.chosen")));
+                    let mut unpicks = Vec::new();
+                    for (order, (id, name)) in self.models.iter().filter(|item| self.multi_pick.contains(&item.0)).enumerate() {
+                        let remove = id.clone();
+                        unpicks.push((
+                            Pick {
+                                id: ("multi-unpick", order),
+                                label: interned(name),
+                                click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                    view.multi_pick.remove(&remove);
+                                    cx.notify();
+                                })),
+                            },
+                            true,
+                        ));
+                    }
+                    out.push(Entry::Choice(unpicks));
+                }
                 for (index, (id, name)) in self.models.iter().enumerate() {
                     let mut line = Line::new(("multi-model", index), name.clone());
-                    line.trailing = Trailing::Switch(self.multi_pick.contains(id));
+                    // Casilla, no interruptor: la fila entera responde y la elegida se
+                    // tiñe con su check, como la lista de modelos.
+                    line.chosen = Some(self.multi_pick.contains(id));
+                    line.sublabel = self.model_info.get(id).cloned();
                     let id = id.clone();
                     line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         if !view.multi_pick.remove(&id) {
@@ -1011,44 +1473,126 @@ impl CodeView {
                 out.push(Entry::Line(send));
             }
             Sub::Stash => {
-                if self.stash.is_empty() {
-                    out.push(Entry::Empty(crate::i18n::t("pill.code.stash.empty")));
-                }
-                for (index, entry) in self.stash.entries().iter().enumerate() {
-                    let id = entry.id;
-                    let mut label = entry.snippet();
-                    if entry.has_attachments() {
-                        let extra = tf("pill.code.stash.withAttachments", &[("count", &(entry.files.len() + entry.pasted.len() + entry.quotes.len() + entry.images.len()))]);
-                        label = if label.is_empty() { extra } else { format!("{label} · {extra}") };
+                let total = self.stash.len();
+                if total == 0 && !self.stash.has_undo() {
+                    out.push(Entry::Empty(interned(&format!("{} — {}", tr("pill.code.stash.empty"), tr("pill.code.stash.emptyHint")))));
+                } else {
+                    let mut count = tf("pill.code.stash.count", &[("n", &total), ("max", &super::stash::MAX_ENTRIES)]);
+                    if total >= super::stash::MAX_ENTRIES {
+                        count = format!("{count} · {}", tr("pill.code.stash.full"));
                     }
-                    let picks = vec![
-                        Pick { id: ("stash-restore", index), label: crate::i18n::t("pill.code.stash.restore"), click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.restore_stash(id, window, cx))) },
-                        Pick { id: ("stash-drop", index), label: crate::i18n::t("pill.code.stash.drop"), click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.drop_stash(id, cx))) },
-                    ];
-                    out.push(Entry::Block { label, picks });
+                    out.push(Entry::Section(interned(&count)));
+                    // Deshacer lo último descartado, mientras se pueda.
+                    if self.stash.has_undo() {
+                        let mut undo = Line::new(("stash-undo", 0), tr("pill.code.stash.undo"));
+                        undo.click = Some(boxed(cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.stash.restore_undo();
+                            view.stash.save();
+                            cx.notify();
+                        })));
+                        out.push(Entry::Line(undo));
+                    }
+                    let now = chrono::Utc::now().timestamp();
+                    let mut tag_no = 0;
+                    for (index, entry) in self.stash.entries().iter().enumerate() {
+                        let id = entry.id;
+                        let title = entry.snippet();
+                        let subtitle = entry.second_line();
+                        let mut tags: Vec<Tag> = Vec::new();
+                        for file in &entry.files {
+                            tags.push(Tag { id: ("stash-tag", tag_no), kind: TagKind::File, label: file.clone() });
+                            tag_no += 1;
+                        }
+                        for image in &entry.images {
+                            tags.push(Tag { id: ("stash-tag", tag_no), kind: TagKind::Image, label: image.name.clone() });
+                            tag_no += 1;
+                        }
+                        for pasted in &entry.pasted {
+                            if pasted.trim().is_empty() {
+                                continue;
+                            }
+                            let lines = pasted.lines().count().max(1);
+                            tags.push(Tag { id: ("stash-tag", tag_no), kind: TagKind::Pasted, label: tf("pill.code.view.pastedChip", &[("lines", &lines)]) });
+                            tag_no += 1;
+                        }
+                        for quote in &entry.quotes {
+                            let first = quote.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
+                            let short: String = first.chars().take(40).collect();
+                            if short.is_empty() {
+                                continue;
+                            }
+                            tags.push(Tag { id: ("stash-tag", tag_no), kind: TagKind::Quote, label: format!("“{short}”") });
+                            tag_no += 1;
+                        }
+                        let picks = vec![
+                            Pick { id: ("stash-restore", index), label: tr("pill.code.stash.restore"), click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.restore_stash(id, window, cx))) },
+                            Pick { id: ("stash-drop", index), label: tr("pill.code.stash.drop"), click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.drop_stash(id, cx))) },
+                        ];
+                        out.push(Entry::Block {
+                            title: if title.is_empty() && !tags.is_empty() { tf("pill.code.stash.withAttachments", &[("count", &tags.len())]) } else { title },
+                            subtitle: (!subtitle.is_empty()).then_some(subtitle),
+                            age: stash_age(entry.age_secs(now)),
+                            tags,
+                            picks,
+                        });
+                    }
                 }
             }
             Sub::Rewind => {
+                use super::rewind::{rewind_scope, set_rewind_scope};
+                let scope = rewind_scope();
+                // Un alcance en vez de 3 chips por fila: elegir arriba, una vez.
+                out.push(Entry::Section(tr("pill.code.rewind.scope")));
+                let scopes = [
+                    (Rewind::Code, "pill.code.agentMenu.code"),
+                    (Rewind::Conversation, "pill.code.agentMenu.conversation"),
+                    (Rewind::Both, "pill.code.agentMenu.both"),
+                ];
+                out.push(Entry::Choice(
+                    scopes
+                        .into_iter()
+                        .map(|(what, key)| {
+                            (
+                                Pick {
+                                    id: ("rewind-scope", what as usize),
+                                    label: tr(key),
+                                    click: boxed(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                        set_rewind_scope(what);
+                                        cx.notify();
+                                    })),
+                                },
+                                scope == what,
+                            )
+                        })
+                        .collect(),
+                ));
                 let turns = self.active_chat().map(|c| c.user_turns()).unwrap_or_default();
                 if turns.is_empty() {
-                    out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noMessagesToRewind")));
-                }
-                for (index, (uuid, text)) in turns.into_iter().enumerate() {
-                    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
-                    let mut label: String = line.chars().take(70).collect();
-                    if line.chars().count() > 70 {
-                        label.push('…');
-                    }
-                    let pick = |id: &'static str, name: &'static str, what: Rewind| {
-                        let (uuid, text) = (uuid.clone(), text.clone());
-                        Pick {
-                            id: (id, index),
-                            label: name,
-                            click: boxed(cx.listener(move |view, _: &ClickEvent, window, cx| view.rewind(uuid.clone(), text.clone(), what, window, cx))),
+                    out.push(Entry::Empty(interned(&format!("{} — {}", tr("pill.code.agentMenu.noMessagesToRewind"), tr("pill.code.rewind.emptyHint")))));
+                } else {
+                    let count = turns.len();
+                    let count = if count == 1 { tr("pill.code.rewind.oneMessage").to_string() } else { tf("pill.code.rewind.count", &[("n", &count)]) };
+                    out.push(Entry::Section(interned(&count)));
+                    // La hora de cada mensaje y cuántos archivos toca no existen como datos:
+                    // la fila lleva solo el texto. Lo destructivo pide una segunda pulsación.
+                    for (index, (uuid, text)) in turns.into_iter().enumerate() {
+                        let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
+                        let mut label: String = line.chars().take(70).collect();
+                        if line.chars().count() > 70 {
+                            label.push('…');
                         }
-                    };
-                    let picks = vec![pick("rewind-code", crate::i18n::t("pill.code.agentMenu.code"), Rewind::Code), pick("rewind-chat", crate::i18n::t("pill.code.agentMenu.conversation"), Rewind::Conversation), pick("rewind-both", crate::i18n::t("pill.code.agentMenu.both"), Rewind::Both)];
-                    out.push(Entry::Block { label, picks });
+                        let mut row = Line::new(("rewind", index), label);
+                        row.icon = Some("history");
+                        if scope.destructive() {
+                            let again = if scope == Rewind::Code { tr("pill.code.rewind.confirmCode") } else { tr("pill.code.rewind.confirmBoth") };
+                            row.confirm = Some(again.to_string());
+                        }
+                        let (uuid, text) = (uuid, text.clone());
+                        row.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                            view.rewind(uuid.clone(), text.clone(), rewind_scope(), window, cx);
+                        })));
+                        out.push(Entry::Line(row));
+                    }
                 }
             }
         }
@@ -1068,7 +1612,8 @@ impl CodeView {
             return;
         };
         if servers.is_empty() {
-            out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noMcp")));
+            // Sin botón en `Empty`: el camino (settings.json → mcpServers) va en el texto.
+            out.push(Entry::Empty(crate::i18n::t("pill.code.agentMenu.noMcpHint")));
             return;
         }
         for (index, (name, status)) in servers.iter().enumerate() {
@@ -1080,33 +1625,24 @@ impl CodeView {
                 "disabled" => (off, crate::i18n::t("pill.code.agentMenu.disabled")),
                 _ => (off, ""),
             };
-            let disabled = status == "disabled";
-            let reconnect = matches!(status.as_str(), "failed" | "needs-auth" | "pending");
-            let (toggle_name, reconnect_name) = (name.clone(), name.clone());
-            let mut picks = Vec::new();
-            if reconnect {
-                picks.push(Pick {
-                    id: ("mcp-reconnect", index),
-                    label: crate::i18n::t("pill.code.agentMenu.reconnect"),
-                    click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpReconnect", json!({ "name": reconnect_name }), cx))),
-                });
-            }
-            picks.push(Pick {
-                id: ("mcp-toggle", index),
-                label: if disabled { crate::i18n::t("pill.code.agentMenu.enable") } else { crate::i18n::t("pill.code.agentMenu.disable") },
-                click: boxed(cx.listener(move |view, _: &ClickEvent, _, cx| view.mcp_call("mcpToggle", json!({ "name": toggle_name, "enabled": disabled }), cx))),
-            });
+            // La causa del error y las herramientas no llegan en los datos
+            // (`load_mcp` solo trae nombre y estado): punto más texto, sin inventar.
             let mut line = Line::new(("mcp", index), name.clone());
             line.static_row = true;
             line.dot = Some(color);
             line.sublabel = Some(hint.to_string());
-            line.trailing = Trailing::Chips(picks);
+            line.trailing = Trailing::Mcp {
+                name: name.clone(),
+                on: status != "disabled",
+                index,
+                reconnect: matches!(status.as_str(), "failed" | "needs-auth" | "pending"),
+            };
             out.push(Entry::Line(line));
         }
     }
 
     /// Una acción sobre un servidor MCP; después se vuelve a pedir la lista.
-    fn mcp_call(&mut self, method: &str, mut params: Value, cx: &mut Context<Self>) {
+    pub(super) fn mcp_call(&mut self, method: &str, mut params: Value, cx: &mut Context<Self>) {
         let Some(key) = self.live_key() else {
             return;
         };
@@ -1345,6 +1881,21 @@ impl CodeView {
             });
         })
         .detach();
+    }
+}
+
+/// La hora relativa de un borrador («hace 5 min»); `None` si se guardó antes de
+/// anotar fecha.
+fn stash_age(age_secs: Option<i64>) -> Option<String> {
+    let minutes = age_secs? / 60;
+    if minutes < 1 {
+        Some(tr("pill.code.stash.ageNow").into())
+    } else if minutes < 60 {
+        Some(tf("pill.code.stash.ageMin", &[("n", &minutes)]))
+    } else if minutes < 24 * 60 {
+        Some(tf("pill.code.stash.ageHour", &[("n", &(minutes / 60))]))
+    } else {
+        Some(tf("pill.code.stash.ageDay", &[("n", &(minutes / 1440))]))
     }
 }
 

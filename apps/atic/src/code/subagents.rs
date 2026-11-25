@@ -13,8 +13,9 @@
 
 use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
 use gpui_m3::theme::type_scale::{self, TypeScaleExt};
-use gpui_m3::{Button, ExpandableCard, Icon, Tone};
+use gpui_m3::{Button, DotShape, ExpandableCard, Icon, MorphDot, Tone};
 use serde_json::Value;
+use std::time::Instant;
 
 use super::chat::{Chat, TaskNote, ToolCall};
 use super::delegate::{self, ChildState, DelegateTool};
@@ -393,75 +394,132 @@ impl CodeView {
         )
     }
 
-    /// Los hijos de la conversación que trabajan (para el chip «N agentes»).
+    /// Los hijos de la conversación que trabajan (para el chip «N agentes» y la pestaña).
     pub(super) fn busy_children(&self, key: &str) -> usize {
         self.children_of(key).into_iter().filter(|c| c.busy).count()
     }
 
-    /// Los hijos de la conversación que trabajan, los que terminaron bien y los que fallaron
-    /// (para el encabezado del mapa de agentes).
-    pub(super) fn children_counts(&self, key: &str) -> (usize, usize, usize) {
-        let (mut working, mut done, mut failed) = (0, 0, 0);
-        for child in self.children_of(key) {
-            match self.child_state_of(Some(child)) {
-                ChildState::Working | ChildState::Permission(_) | ChildState::Starting => working += 1,
-                ChildState::Failed => failed += 1,
-                ChildState::Done | ChildState::Stopped => done += 1,
-                ChildState::Idle | ChildState::Queued | ChildState::Gone => {}
+    /// Los subagentes de Atic de la conversación para el mapa de agentes: (trabajando,
+    /// terminados), cada fila con su agente, su título, su estado y su tiempo en vivo, del alto
+    /// y la forma de las filas de tareas para que la lista sea una sola. Lleva además el
+    /// instante de inicio para mezclarlos con las tareas del SDK. Un clic los abre. `None`
+    /// si no tiene.
+    /// El modelo y el esfuerzo con que trabaja un hijo, para su fila: «Opus 5.5 · Alto». Un hijo
+    /// Claude usa el modelo que de verdad respondió o, si aún no, el pedido; uno ACP, lo que
+    /// dicen sus opciones. Vacío si no se sabe.
+    fn child_setup(&self, child: &Chat) -> String {
+        let (model, effort) = match child.acp {
+            None => {
+                let config = self.configs.get(child.workspace);
+                let model = child.model.clone().filter(|m| !m.is_empty() && !m.starts_with('<')).or_else(|| Some(child.chosen_model(&config)).filter(|m| !m.is_empty())).map(|m| self.model_label(&m));
+                let effort = Some(child.chosen_effort(&config)).filter(|e| !e.is_empty()).map(|e| super::config::effort_label(&e).to_string());
+                (model, effort)
             }
-        }
-        (working, done, failed)
+            Some(_) => {
+                let current = |category: &str| child.acp_cfg.options.iter().find(|o| o.category == category).map(|o| (o.current.clone(), o.choices.iter().find(|c| c.value == o.current).map(|c| c.name.clone())));
+                let model = current("model").filter(|(value, _)| !value.is_empty()).map(|(value, name)| name.unwrap_or_else(|| super::acp::pretty_model(&value)));
+                let effort = current("thought_level").filter(|(value, _)| !value.is_empty() && value != "default").map(|(value, _)| super::acp::effort_name(&value));
+                (model, effort)
+            }
+        };
+        [model, effort].into_iter().flatten().collect::<Vec<_>>().join(" · ")
     }
 
-    /// Los subagentes de Atic de la conversación en el mapa de agentes: su agente, su
-    /// título y su estado; un clic los abre. `None` si no tiene.
-    pub(super) fn subagent_map(&self, chat: &Chat, cx: &mut Context<Self>) -> Option<Div> {
+    pub(super) fn subagent_map(&self, chat: &Chat, cx: &mut Context<Self>) -> Option<(Vec<(Instant, AnyElement)>, Vec<(Instant, AnyElement)>)> {
         let tokens = t();
+        let scheme = *gpui_m3::Theme::of(cx);
         let children = self.children_of(&chat.key);
         if children.is_empty() {
             return None;
         }
-        let mut list = div().flex().flex_col().gap(px(4.)).child(
-            div()
-                .px(px(4.))
-                .text_size(px(12.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(tokens.accent)
-                .child(tf("pill.code.delegate.mapSection", &[("count", &children.len())])),
-        );
+        let mut working = Vec::new();
+        let mut done = Vec::new();
         for child in children.into_iter().rev() {
             let Some(delegation) = child.delegation.as_ref() else { continue };
             let state = self.child_state_of(Some(child));
-            let elapsed = match state {
-                ChildState::Working | ChildState::Permission(_) => Some(delegation.started.elapsed().as_millis() as u64),
+            let live = matches!(state, ChildState::Working | ChildState::Permission(_) | ChildState::Starting);
+            let elapsed = match &state {
+                ChildState::Working | ChildState::Permission(_) | ChildState::Starting => Some(delegation.started.elapsed().as_millis() as u64),
                 _ => delegation.last.as_ref().and_then(|v| v.get("elapsed_s")).and_then(Value::as_u64).map(|s| s * 1000),
             };
+            let state_text = match &state {
+                ChildState::Starting => tr("pill.code.delegate.stateStarting").to_string(),
+                ChildState::Working => tr("pill.code.delegate.stateWorking").to_string(),
+                ChildState::Permission(tool) => tf("pill.code.delegate.permissionAsk", &[("tool", tool)]),
+                ChildState::Done => tr("pill.code.delegate.stateDone").to_string(),
+                ChildState::Failed => tr("pill.code.delegate.stateFailed").to_string(),
+                ChildState::Stopped => tr("pill.code.delegate.stateStopped").to_string(),
+                ChildState::Queued => tr("pill.code.delegate.stateQueued").to_string(),
+                ChildState::Idle => tr("pill.code.delegate.stateIdle").to_string(),
+                ChildState::Gone => tr("pill.code.delegate.stateGone").to_string(),
+            };
+            let time = super::usage::duration(elapsed);
+            let third = if time.is_empty() { state_text } else { format!("{state_text} · {time}") };
+            let color = match &state {
+                ChildState::Working | ChildState::Permission(_) | ChildState::Starting => scheme.primary,
+                ChildState::Done => scheme.success,
+                ChildState::Failed => scheme.error,
+                _ => scheme.outline,
+            };
+            let kind = match delegate::role_label(delegation.role.as_deref()) {
+                Some(role) => format!("{} · {role}", delegate::agent_label(&delegation.backend)),
+                None => delegate::agent_label(&delegation.backend).to_string(),
+            };
+            let kind = match self.child_setup(child) {
+                setup if setup.is_empty() => kind,
+                setup => format!("{kind} · {setup}"),
+            };
+            // El hueco lo dibuja la capa de indicadores del popover (`pop_layer`), como en
+            // las filas de tareas; en reposo, el punto cambia de forma según el estado.
+            let marker = if live && super::view::expressive() {
+                super::spinners::slot(16.).into_any_element()
+            } else {
+                MorphDot::new(SharedString::from(format!("subagent-dot-{}", child.key)), if live { DotShape::Square } else { DotShape::Circle })
+                    .size(px(8.))
+                    .color(color)
+                    .into_any_element()
+            };
             let open = self.open_chat_listener(child.key.clone(), cx);
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("subagent-map-{}", child.key)))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
-                    .py(px(6.))
-                    .rounded(px(12.))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(tokens.hover))
-                    .on_click(move |event, window, cx| open(event, window, cx))
-                    .child(logo(&delegation.backend, 16.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(child.title.clone()))
-                            .child(div().text_size(px(11.5)).text_color(tokens.muted).child(delegate::agent_label(&delegation.backend))),
-                    )
-                    .child(state_badge(&state, elapsed)),
-            );
+            let row = div()
+                .id(SharedString::from(format!("subagent-row-{}", child.key)))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(6.))
+                .min_h(px(44.))
+                .rounded(px(12.))
+                .cursor_pointer()
+                .hover(|el| el.bg(tokens.hover))
+                .tooltip(crate::hover::tip(tr("pill.code.delegate.open")))
+                .on_click(move |event, window, cx| open(event, window, cx))
+                .child(div().w(px(16.)).flex_none().flex().justify_center().child(marker))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(child.title.clone()))
+                        .child(div().text_size(px(11.5)).text_color(tokens.muted).truncate().child(kind))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(if matches!(state, ChildState::Permission(_)) { tokens.accent } else { tokens.muted })
+                                .truncate()
+                                .child(third),
+                        ),
+                )
+                .into_any_element();
+            if live {
+                working.push((delegation.started, row));
+            } else {
+                done.push((delegation.started, row));
+            }
         }
-        Some(list)
+        if working.is_empty() && done.is_empty() {
+            return None;
+        }
+        Some((working, done))
     }
 }

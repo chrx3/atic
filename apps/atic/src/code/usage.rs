@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use gpui::{anchored, deferred, div, point, prelude::*, px, AnyElement, ClickEvent, Context, Corner, FontWeight, MouseButton, SharedString};
-use gpui_m3::{Chip, Icon, IconButton, LinearProgress, MorphDot, DotShape, Popover, Ring};
+use gpui_m3::{Chip, Icon, IconButton, IconTab, IconTabs, LinearProgress, Menu, MorphDot, DotShape, Ring, Switch};
 use serde_json::{json, Value};
 
 use super::chat::Chat;
@@ -13,11 +13,12 @@ use super::style::t;
 use crate::i18n::{t as tr, tf};
 use super::CodeView;
 
-/// El panel abierto sobre la caja de texto.
+/// El panel abierto sobre la caja de texto: una sola tarjeta con pestañas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Pop {
     Usage,
     Agents,
+    Remote,
 }
 
 /// Una tarea de la conversación: un subagente o algo en segundo plano.
@@ -394,12 +395,29 @@ impl CodeView {
         if self.was_dismissed(super::Dismissed::Pop(pop)) {
             return;
         }
+        if self.pop == Some(pop) {
+            self.menu = None;
+            self.pop = None;
+            cx.notify();
+            return;
+        }
+        self.show_pop(pop, cx);
+    }
+
+    /// Abre el panel en una pestaña (las pestañas y los chips llaman aquí): carga lo que
+    /// falte y arranca el reloj de los tiempos en vivo. Con un agente ACP, Remote Control
+    /// no aplica y cae en «Cuenta y uso».
+    fn show_pop(&mut self, pop: Pop, cx: &mut Context<Self>) {
+        let pop = if pop == Pop::Remote && self.current_agent().is_some() { Pop::Usage } else { pop };
+        if self.pop == Some(pop) {
+            return;
+        }
         self.menu = None;
-        self.pop = if self.pop == Some(pop) { None } else { Some(pop) };
-        if self.pop == Some(Pop::Usage) {
+        self.pop = Some(pop);
+        if pop == Pop::Usage {
             self.load_usage(cx);
         }
-        if self.pop == Some(Pop::Agents) {
+        if pop == Pop::Agents {
             self.start_agent_clock(cx);
         }
         cx.notify();
@@ -568,12 +586,8 @@ impl CodeView {
                     el.child(div().absolute().right(px(-3.)).bottom(px(-2.)).size(px(8.)).rounded_full().border_2().border_color(scheme.surface).bg(dot))
                 })
                 .into_any_element();
-            let on_click = cx.listener(|view, _: &ClickEvent, _, cx| {
-                let on = !view.config().remote_control;
-                view.set_config(|c| c.remote_control = on, cx);
-                view.show_toast(if on { tr("pill.code.usage.rcOnToast") } else { tr("pill.code.usage.rcOffToast") }, cx);
-            });
-            chips.push(icon_chip("rc-chip", icon, None, false, format!("Remote Control · {tip}"), on_click, cx));
+            let on_click = cx.listener(|view, _: &ClickEvent, _, cx| view.toggle_pop(Pop::Remote, cx));
+            chips.push(icon_chip("rc-chip", icon, None, self.pop == Some(Pop::Remote), format!("Remote Control · {tip}"), on_click, cx));
         }
         // El servidor avisó que la ventana se acerca al límite o ya lo alcanzó: un anillo con el
         // porcentaje; el globito dice cuál ventana.
@@ -593,10 +607,7 @@ impl CodeView {
         let pop = shown.value;
         let bounds = self.composer_bounds.get()?;
         let leaving = shown.leaving;
-        let content = match pop {
-            Pop::Usage => self.usage_popover(cx),
-            Pop::Agents => self.agent_map(cx),
-        };
+        let content = self.unified_popover(pop, cx);
         Some(
             deferred(
                 div()
@@ -643,185 +654,322 @@ impl CodeView {
         }))
     }
 
-    fn usage_popover(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = t();
+    /// Una sola tarjeta con pestañas (Cuenta y uso / Agentes / Remote): las pestañas y el
+    /// cierre quedan fijos arriba y solo el contenido se desplaza (`Menu::header`).
+    fn unified_popover(&self, pop: Pop, cx: &mut Context<Self>) -> AnyElement {
         let chat = self.active_chat();
-        let context = chat.and_then(|c| c.context);
-        let info = self.usage.clone().unwrap_or_default();
-        let cell = |label: &'static str, value: String, bg: gpui::Hsla, pad: f32| {
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .px(px(pad + 2.))
-                .py(px(8.))
-                .rounded(px(12.))
-                .bg(bg)
-                .flex()
-                .flex_col()
-                .child(div().text_size(px(11.)).text_color(t.muted).child(label))
-                .child(div().truncate().font_weight(FontWeight::SEMIBOLD).child(value))
+        let working = chat.map(|c| c.running_agents() + self.busy_children(&c.key)).unwrap_or(0);
+        // Remote Control es de Claude: con un agente ACP no va.
+        let remote = self.current_agent().is_none();
+        let selected = match pop {
+            Pop::Usage => 0,
+            Pop::Agents => 1,
+            Pop::Remote => 2,
         };
-        let head = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(Ring::new("usage-ring", context.map_or(0., |(u, m)| if m > 0 { u as f32 / m as f32 } else { 0. })).size(px(56.)).stroke(7.).warn_at(0.8))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .flex_col()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child(tr("pill.code.usage.title")))
-                    .child(div().text_size(px(12.)).text_color(t.muted).child(match context {
-                        Some((used, max)) => tf("pill.code.usage.contextTokens", &[("used", &fmt(Some(used))), ("max", &fmt(Some(max)))]),
-                        None => tr("pill.code.usage.contextNone").into(),
-                    })),
-            )
-            .child(Self::close_button("usage-close", cx));
-        let mut popover = Popover::new("usage").origin(Corner::BottomRight).width(px(380.)).padding(px(18.)).radius(px(28.)).gap(px(14.)).max_h(px(520.)).child(head);
-        if let Some(error) = info.error.clone() {
-            popover = popover.child(div().text_size(px(12.)).text_color(t.muted).child(error));
+        let agents_label = if working > 0 { format!("{} ({working})", tr("pill.code.usage.agents")) } else { tr("pill.code.usage.agents").to_string() };
+        let set_tab = cx.listener(move |view, tab: &usize, _, cx| {
+            view.show_pop(match *tab {
+                1 => Pop::Agents,
+                2 => Pop::Remote,
+                _ => Pop::Usage,
+            }, cx);
+        });
+        let mut tabs = vec![IconTab::new("gauge", tr("pill.code.usage.title")), IconTab::new("layers", agents_label)];
+        if remote {
+            tabs.push(IconTab::new("plug", tr("pill.code.usage.tabRemote")));
         }
-        if info.email.is_some() || info.plan.is_some() {
-            popover = popover.child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(cell(tr("pill.code.usage.account"), info.email.clone().unwrap_or_else(|| "—".into()), t.hover, 8.))
-                    .child(cell(tr("pill.code.usage.plan"), info.plan.clone().unwrap_or_else(|| "—".into()), t.hover, 8.)),
-            );
-        }
-        for (index, (label, value, resets)) in info.windows.iter().enumerate() {
-            popover = popover.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(div().flex().justify_between().child(label.clone()).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{}%", value.round()))))
-                    // Sin onda: `WavyProgress` anima a 30 fps aunque el valor no cambie, y
-                    // aquí rehacía la raíz de la ventana mientras el popover estaba abierto.
-                    .child(LinearProgress::new(("usage-wave", index), value / 100.).height(px(6.)))
-                    .child(div().text_size(px(12.)).text_color(t.muted).child(resets.clone())),
-            );
-        }
-        let tokens = chat.map(|c| c.tokens);
-        popover
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(cell(tr("pill.code.usage.input"), fmt(tokens.map(|t| t.0)), t.pane, 6.))
-                    .child(cell(tr("pill.code.usage.output"), fmt(tokens.map(|t| t.1)), t.pane, 6.))
-                    .child(cell(tr("pill.code.usage.cache"), fmt(tokens.map(|t| t.2)), t.pane, 6.))
-                    .child(cell(tr("pill.code.usage.cost"), chat.map(|c| format!("${:.2}", c.total_cost)).unwrap_or_else(|| "—".into()), t.pane, 6.)),
-            )
-            .into_any_element()
-    }
-
-    fn agent_map(&self, cx: &mut Context<Self>) -> AnyElement {
-        let t = t();
-        let scheme = *gpui_m3::Theme::of(cx);
-        let chat = self.active_chat();
-        let tasks: Vec<super::usage::Task> = chat.map(|c| c.tasks.clone()).unwrap_or_default();
-        // Lo más reciente primero, como en la referencia.
-        let running: Vec<&Task> = tasks.iter().filter(|t| t.status == "running").rev().collect();
-        let finished: Vec<&Task> = tasks.iter().filter(|t| t.status != "running").rev().collect();
-        let failed = finished.iter().filter(|t| t.status == "failed").count();
-        // Los subagentes que delegó con `atic_delegate` también cuentan.
-        let (sub_working, sub_done, sub_failed) = chat.map(|c| self.children_counts(&c.key)).unwrap_or_default();
-        let working_count = running.len() + sub_working;
-        let finished_count = finished.len() - failed + sub_done;
-        let failed_count = failed + sub_failed;
-        let count = |text: String, color: gpui::Hsla, dot: bool| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .text_size(px(12.))
-                .text_color(color)
-                .when(dot, |el| el.child(div().size(px(6.)).rounded_full().bg(color)))
-                .child(text)
-        };
-        let head = div()
-            .flex()
-            .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().text_size(px(20.)).font_weight(FontWeight(750.)).child(tr("pill.code.usage.agents")))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .child(count(tf("pill.code.usage.working", &[("count", &working_count)]), if working_count == 0 { t.muted } else { scheme.primary }, true))
-                            .child(count(tf("pill.code.usage.finished", &[("count", &finished_count)]), t.muted, false))
-                            .when(failed_count > 0, |el| el.child(count(tf("pill.code.usage.failedCount", &[("count", &failed_count)]), scheme.error, false))),
-                    ),
-            )
-            .child(Self::close_button("agents-close", cx));
-        let title = chat.map(|c| c.title.clone()).filter(|t| !super::chat::is_default_title(t)).unwrap_or_else(|| tr("pill.code.usage.mainConversation").into());
-        let model = chat.and_then(|c| c.model.clone()).map(|m| super::config::model_name(&[], &m)).unwrap_or_default();
-        let main = div()
+        let header = div()
             .flex()
             .items_center()
             .gap(px(8.))
-            .px(px(10.))
-            .py(px(8.))
-            .rounded(px(12.))
-            .bg(t.hover)
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(div().size(px(8.)).rounded_full().bg(if chat.is_some_and(|c| c.busy) { scheme.primary } else { scheme.success }))
-            .child(div().flex_1().min_w(px(0.)).truncate().child(title))
-            .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model));
-        let popover = Popover::new("agent-map").origin(Corner::BottomRight).width(px(420.)).padding(px(16.)).radius(px(28.)).gap(px(12.)).max_h(px(520.)).child(head).child(main);
-        // Los subagentes que delegó con `atic_delegate`, con su estado; un clic los abre.
-        let delegated = chat.and_then(|c| self.subagent_map(c, cx));
-        if tasks.is_empty() {
-            return match delegated {
-                Some(delegated) => popover.child(delegated).into_any_element(),
-                None => popover.child(div().text_color(t.muted).child(tr("pill.code.usage.noTasks"))).into_any_element(),
-            };
+            .child(div().flex_1().min_w(px(0.)).child(IconTabs::new("usage-tabs", tabs, selected).on_change(move |tab, window, cx| set_tab(&tab, window, cx))))
+            .child(Self::close_button("pop-close", cx));
+        let width = if pop == Pop::Agents { 420. } else { 380. };
+        let mut menu = Menu::new("usage-pop").width(width).max_h(px(520.)).origin(Corner::BottomRight).pin_to_anchor(true).content_key(pop as u64).header(header);
+        for item in match pop {
+            Pop::Usage => self.usage_items(cx),
+            Pop::Agents => self.agents_items(cx),
+            Pop::Remote => self.remote_items(cx),
+        } {
+            menu = menu.item(item);
         }
-        let popover = popover.when_some(delegated, |popover, delegated| popover.child(delegated));
-        let section = |label: String| div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(label);
-        let mut working = div().flex().flex_col().gap(px(4.));
-        if running.is_empty() {
-            working = working.child(div().px(px(10.)).text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.usage.nothingWorking")));
-        }
-        for task in &running {
-            working = working.child(self.task_row(task, cx));
-        }
-        let mut popover = popover.child(section(tr("pill.code.usage.workingNow").into())).child(working);
-        if !finished.is_empty() {
-            let open = self.agents_done_open;
-            popover = popover.child(
+        menu.into_any_element()
+    }
+
+    /// El contenido de «Cuenta y uso»: el héroe de contexto con su número y su barra (el %
+    /// real que ya calcula el código), el aviso cuando una ventana pasa del 80 % (qué ventana
+    /// y cuándo se reinicia; sin botón porque «compactar» no se puede pedir desde aquí), la
+    /// cuenta y el plan en una línea, cada ventana con su barra y el turno en otra línea.
+    fn usage_items(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = t();
+        let scheme = *gpui_m3::Theme::of(cx);
+        let chat = self.active_chat();
+        let context = chat.and_then(|c| c.context);
+        let info = self.usage.clone().unwrap_or_default();
+        let ratio = context.map(|(used, max)| if max > 0 { used as f32 / max as f32 } else { 0. }).unwrap_or(0.);
+        let pct = (ratio.clamp(0., 1.) * 100.).round() as u32;
+        let mut items = Vec::new();
+        items.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(14.))
+                .px(px(10.))
+                .py(px(6.))
+                .child(div().flex_none().text_size(px(34.)).font_weight(FontWeight::SEMIBOLD).child(format!("{pct} %")))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        // Sin onda: `WavyProgress` anima a 30 fps aunque el valor no cambie, y
+                        // aquí rehacía la raíz de la ventana mientras el popover estaba abierto.
+                        .child(LinearProgress::new("usage-hero", ratio).height(px(12.)).danger(ratio >= 0.8))
+                        .child(div().text_size(px(12.)).text_color(t.muted).child(match context {
+                            Some((used, max)) => tf("pill.code.usage.contextTokens", &[("used", &fmt(Some(used))), ("max", &fmt(Some(max)))]),
+                            None => tr("pill.code.usage.contextNone").to_string(),
+                        })),
+                )
+                .into_any_element(),
+        );
+        // La ventana más llena que pasó del 80 %: qué ventana y cuándo se reinicia.
+        if let Some((label, percent, resets)) = info.windows.iter().filter(|w| w.1 >= 80.).max_by(|a, b| a.1.total_cmp(&b.1)).cloned() {
+            let title = if percent >= 100. { tr("pill.code.usage.limitReachedTitle") } else { tr("pill.code.usage.limitNearTitle") };
+            items.push(
                 div()
-                    .id("agents-done")
+                    .flex()
+                    .gap(px(10.))
+                    .mx(px(4.))
+                    .px(px(14.))
+                    .py(px(12.))
+                    .rounded(px(16.))
+                    .bg(scheme.error_container)
+                    .text_color(scheme.on_error_container)
+                    .child(Icon::new("alert").size(px(20.)).color(scheme.on_error_container))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                            .child(div().text_size(px(12.5)).child(format!("{label} · {} % · {resets}", percent.round()))),
+                    )
+                    .into_any_element(),
+            );
+        } else if context.is_some() && ratio >= 0.8 {
+            items.push(div().px(px(10.)).text_size(px(12.5)).text_color(t.muted).child(tr("pill.code.usage.contextHigh")).into_any_element());
+        }
+        if let Some(error) = info.error.clone() {
+            items.push(div().px(px(10.)).text_size(px(12.)).text_color(t.muted).child(error).into_any_element());
+        }
+        // La cuenta y el plan caben en una línea, con elipsis.
+        let account = match (&info.email, &info.plan) {
+            (Some(email), Some(plan)) => format!("{email} · {plan}"),
+            (Some(email), None) => email.clone(),
+            (None, Some(plan)) => plan.clone(),
+            (None, None) => String::new(),
+        };
+        if !account.is_empty() {
+            items.push(div().px(px(10.)).py(px(2.)).text_size(px(12.5)).text_color(t.muted).truncate().child(account).into_any_element());
+        }
+        for (index, (label, value, resets)) in info.windows.iter().enumerate() {
+            items.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .child(div().flex().justify_between().child(label.clone()).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{}%", value.round()))))
+                    .child(LinearProgress::new(("usage-window", index), *value / 100.).height(px(8.)).danger(*value >= 80.))
+                    .child(div().text_size(px(12.)).text_color(t.muted).child(resets.clone()))
+                    .into_any_element(),
+            );
+        }
+        // El turno también en una línea, con elipsis.
+        if let Some(chat) = chat {
+            let line = [
+                format!("{} {}", tr("pill.code.usage.input"), fmt(Some(chat.tokens.0))),
+                format!("{} {}", tr("pill.code.usage.output"), fmt(Some(chat.tokens.1))),
+                format!("{} {}", tr("pill.code.usage.cache"), fmt(Some(chat.tokens.2))),
+                format!("{} ${:.2}", tr("pill.code.usage.cost"), chat.total_cost),
+            ]
+            .join(" · ");
+            items.push(div().px(px(10.)).py(px(4.)).text_size(px(12.5)).text_color(t.muted).truncate().child(line).into_any_element());
+        }
+        items
+    }
+
+    /// El contenido de la pestaña «Agentes»: la conversación principal y una sola lista con
+    /// las tareas del SDK y los subagentes delegados (`subagent_map`), cada uno con su estado
+    /// y su tiempo en vivo. El reloj de 1 s que ya existe (`start_agent_clock`) los actualiza;
+    /// no se agrega otro continuo.
+    fn agents_items(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = t();
+        let scheme = *gpui_m3::Theme::of(cx);
+        let mut items = Vec::new();
+        let Some(chat) = self.active_chat() else {
+            items.push(div().px(px(10.)).py(px(8.)).text_color(t.muted).child(tr("pill.code.usage.noTasks")).into_any_element());
+            return items;
+        };
+        let title = if super::chat::is_default_title(&chat.title) { tr("pill.code.usage.mainConversation").to_string() } else { chat.title.clone() };
+        let model = chat.model.clone().map(|m| super::config::model_name(&[], &m)).unwrap_or_default();
+        items.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mx(px(4.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(12.))
+                .bg(t.hover)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(div().size(px(8.)).rounded_full().bg(if chat.busy { scheme.primary } else { scheme.success }))
+                .child(div().flex_1().min_w(px(0.)).truncate().child(title))
+                .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).font_weight(FontWeight::NORMAL).child(model))
+                .into_any_element(),
+        );
+        // Agentes y comandos van en bloques aparte: son cosas distintas (uno razona, el otro
+        // corre un proceso). Dentro de cada bloque, lo más reciente primero.
+        let is_command = |task: &Task| matches!(task.kind.as_str(), "local_bash" | "monitor");
+        let (sub_working, sub_done) = self.subagent_map(chat, cx).unwrap_or_default();
+        let mut agents_working: Vec<(Instant, AnyElement)> = Vec::new();
+        let mut agents_done: Vec<(Instant, AnyElement)> = Vec::new();
+        let mut commands_working: Vec<(Instant, AnyElement)> = Vec::new();
+        let mut commands_done: Vec<(Instant, AnyElement)> = Vec::new();
+        for task in chat.tasks.iter().rev() {
+            let row = (task.started, self.task_row(task, cx));
+            match (is_command(task), task.status == "running") {
+                (false, true) => agents_working.push(row),
+                (false, false) => agents_done.push(row),
+                (true, true) => commands_working.push(row),
+                (true, false) => commands_done.push(row),
+            }
+        }
+        agents_working.extend(sub_working);
+        agents_done.extend(sub_done);
+        for rows in [&mut agents_working, &mut agents_done, &mut commands_working, &mut commands_done] {
+            rows.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+        if agents_working.is_empty() && agents_done.is_empty() && commands_working.is_empty() && commands_done.is_empty() {
+            items.push(div().px(px(10.)).py(px(8.)).text_color(t.muted).child(tr("pill.code.usage.noTasks")).into_any_element());
+            return items;
+        }
+        let section = |label: String| div().px(px(4.)).text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(t.accent).child(label);
+        let blocks = [
+            (tr("pill.code.usage.agentsSection"), agents_working, agents_done, self.agents_done_open, "agents-done"),
+            (tr("pill.code.usage.commandsSection"), commands_working, commands_done, self.commands_done_open, "commands-done"),
+        ];
+        // Lo que está corriendo va primero, de los dos bloques; los terminados, plegados,
+        // después: así lo vivo se ve sin hacer scroll aunque haya decenas de terminados.
+        let mut finished = Vec::new();
+        for (title, working, done, open, id) in blocks {
+            if !working.is_empty() {
+                items.push(div().px(px(10.)).pt(px(8.)).child(section(format!("{title} · {}", working.len()))).into_any_element());
+                items.extend(working.into_iter().map(|(_, row)| row));
+            }
+            if !done.is_empty() {
+                finished.push((title, done, open, id));
+            }
+        }
+        for (title, done, open, id) in finished {
+            let count = done.len();
+            items.push(
+                div()
+                    .id(id)
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .min_h(px(40.))
+                    .px(px(10.))
                     .cursor_pointer()
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.agents_done_open = !view.agents_done_open;
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        if id == "agents-done" {
+                            view.agents_done_open = !view.agents_done_open;
+                        } else {
+                            view.commands_done_open = !view.commands_done_open;
+                        }
                         cx.notify();
                     }))
-                    .child(section(tf("pill.code.usage.finishedSection", &[("count", &finished.len())])))
-                    .child(gpui_m3::Icon::new(if open { "chevron-down" } else { "chevron-right" }).size(px(13.)).color(t.accent)),
+                    .child(div().text_size(px(12.5)).text_color(t.muted).child(format!("{title} · {}", tf("pill.code.usage.finishedSection", &[("count", &count)]))))
+                    .child(gpui_m3::Icon::new(if open { "chevron-down" } else { "chevron-right" }).size(px(13.)).color(t.muted))
+                    .into_any_element(),
             );
             if open {
-                let mut done = div().flex().flex_col().gap(px(4.));
-                for task in &finished {
-                    done = done.child(self.task_row(task, cx));
-                }
-                popover = popover.child(done);
+                items.extend(done.into_iter().map(|(_, row)| row));
             }
         }
-        popover.into_any_element()
+        items
+    }
+
+    /// El contenido de la pestaña «Remote»: el interruptor con su estado en palabras y la
+    /// leyenda de cada punto. El interruptor hace lo mismo que hacía el chip (prender o
+    /// apagar y avisar con un toast).
+    fn remote_items(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = t();
+        let scheme = *gpui_m3::Theme::of(cx);
+        let config = self.config();
+        let chat = self.active_chat();
+        let connected = chat.is_some_and(|c| c.remote_url.is_some() || c.remote_state.as_deref() == Some("connected"));
+        // Sin sesión todavía (nada enviado), no hay nada que conectar: se dice cuándo pasa.
+        let live = chat.is_some_and(|c| c.live);
+        let (dot, desc): (Option<gpui::Hsla>, String) = match (config.remote_control, connected) {
+            (false, _) => (None, tr("pill.code.usage.rcOffTip").to_string()),
+            (true, true) => (Some(scheme.success), tr("pill.code.usage.rcOnTip").to_string()),
+            (true, false) if !live => (Some(scheme.warning), tr("pill.code.view.rcPending").to_string()),
+            (true, false) => (Some(scheme.warning), tr("pill.code.usage.rcConnectingTip").to_string()),
+        };
+        let view = cx.weak_entity();
+        let switch = Switch::new(("rc-switch", 0usize), config.remote_control).on_toggle(move |now, _, cx| {
+            let _ = view.update(cx, |view, cx| {
+                view.set_config(|c| c.remote_control = now, cx);
+                view.show_toast(if now { tr("pill.code.usage.rcOnToast") } else { tr("pill.code.usage.rcOffToast") }, cx);
+            });
+        });
+        let mut items = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .mx(px(4.))
+                .px(px(10.))
+                .py(px(8.))
+                .min_h(px(56.))
+                .rounded(px(16.))
+                .bg(t.hover)
+                .child(div().flex_none().size(px(8.)).rounded_full().bg(dot.unwrap_or(scheme.outline_variant)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(13.)).child(tr("pill.code.usage.tabRemote")))
+                        .child(div().text_size(px(12.)).text_color(t.muted).child(desc)),
+                )
+                .child(switch)
+                .into_any_element(),
+        ];
+        let legend = |color: gpui::Hsla, label: &'static str| {
+            div().flex().items_center().gap(px(8.)).text_size(px(12.)).text_color(t.muted).child(div().flex_none().size(px(8.)).rounded_full().bg(color)).child(label)
+        };
+        items.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .px(px(14.))
+                .py(px(4.))
+                .child(legend(scheme.success, tr("pill.code.usage.rcLegendOn")))
+                .child(legend(scheme.warning, tr("pill.code.usage.rcLegendConnecting")))
+                .child(legend(scheme.outline_variant, tr("pill.code.usage.rcLegendOff")))
+                .into_any_element(),
+        );
+        items
     }
 
     /// Una fila del mapa de agentes: lo que hace, su tipo, el tiempo (en vivo
@@ -866,9 +1014,11 @@ impl CodeView {
             .id(SharedString::from(format!("task-row-{}", task.id)))
             .flex()
             .flex_col()
+            .justify_center()
             .gap(px(4.))
             .px(px(10.))
             .py(px(6.))
+            .min_h(px(44.))
             .rounded(px(12.))
             .cursor_pointer()
             .hover(|el| el.bg(t.hover))
@@ -897,7 +1047,7 @@ impl CodeView {
                     .child(div().flex_none().text_size(px(11.5)).text_color(t.muted).child(meta))
                     .when(live, |el| {
                         el.child(
-                            IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").size(px(28.)).tooltip(tr("pill.code.usage.stop")).on_click(cx.listener(
+                            IconButton::new(SharedString::from(format!("task-stop-{}", task.id)), "stop").tonal().danger(true).hover_morph(true).size(px(40.)).tooltip(tr("pill.code.usage.stop")).on_click(cx.listener(
                                 move |view, _: &ClickEvent, _, cx| {
                                     cx.stop_propagation();
                                     view.task_call("stopTask", json!({ "taskId": stop_id }), cx);

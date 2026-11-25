@@ -468,10 +468,19 @@ impl CodeView {
                 let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.compact_idle = on, cx));
             })
         };
+        let auto_compact = {
+            let view = view.clone();
+            let current = super::config::AUTO_COMPACT_CHOICES.iter().position(|n| *n == self.config().auto_compact_tokens).unwrap_or(0);
+            let labels: Vec<Segment> = super::config::AUTO_COMPACT_CHOICES.iter().map(|n| if *n == 0 { Segment::label(tr("pill.code.settingsSearch.autoCompactOff")) } else { Segment::label(format!("{}k", n / 1000)) }).collect();
+            SegmentedButtons::new("auto-compact-at", labels, current).on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.auto_compact_tokens = super::config::AUTO_COMPACT_CHOICES[index], cx));
+            })
+        };
         let conversations = ListGroup::new()
             .title(tr("pill.code.settingsSearch.conversations"))
             .custom_row(gpui_m3::SettingRow::new("follow-up-row", tr("pill.code.settingsSearch.followUp")).description(tr("pill.code.settingsSearch.followUpDesc")).control(follow))
-            .custom_row(gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle")).description(tr("pill.code.settingsSearch.compactIdleDesc")).control(compact));
+            .custom_row(gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle")).description(tr("pill.code.settingsSearch.compactIdleDesc")).control(compact))
+            .custom_row(gpui_m3::SettingRow::new("auto-compact-row", tr("pill.code.settingsSearch.autoCompact")).description(tr("pill.code.settingsSearch.autoCompactDesc")).control(auto_compact));
         let notify_labels = [tr("pill.code.settingsM3.notifySystem"), tr("pill.code.settingsM3.notifySound"), tr("pill.code.settingsM3.notifyBoth"), tr("pill.code.settingsM3.notifyOff")];
         let current_notify = NotifyMode::ALL.iter().position(|m| *m == self.configs.notify).unwrap_or(0);
         let notify = {
