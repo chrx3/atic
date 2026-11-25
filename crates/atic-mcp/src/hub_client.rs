@@ -311,6 +311,13 @@ impl Hub {
         self.post("/v1/wait", cuerpo, espera_s).await
     }
 
+    pub async fn read(
+        &self,
+        cuerpo: &crate::payload::ReadRequest,
+    ) -> Result<crate::payload::ReadChunk, HubFallo> {
+        self.post("/v1/read", cuerpo, 30).await
+    }
+
     pub async fn cancel(
         &self,
         cuerpo: &crate::payload::CancelRequest,

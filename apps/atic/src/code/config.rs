@@ -397,7 +397,18 @@ pub struct Configs {
     /// configuración de antes, sin el campo, queda con lo de fábrica: abrirla sola.
     #[serde(default)]
     pub split_pick: SplitPick,
+    /// Cuántos subagentes puede tener trabajando a la vez cada conversación. 0 es lo de
+    /// fábrica (`DEFAULT_SUBAGENT_LIMIT`): una configuración de antes no trae el campo.
+    #[serde(default)]
+    pub subagent_limit: usize,
 }
+
+/// Subagentes trabajando a la vez por conversación, mientras el usuario no elija otro tope.
+pub const DEFAULT_SUBAGENT_LIMIT: usize = 6;
+/// El tope más alto que se puede elegir.
+pub const MAX_SUBAGENT_LIMIT: usize = 20;
+/// Lo que sube el tope cada vez que se pide desde la tarjeta del error.
+pub const SUBAGENT_LIMIT_STEP: usize = 2;
 
 /// Al elegir una conversación con la vista dividida (Configuración → General).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +467,14 @@ pub fn sidebar_order(ids: &[u64], favorites: &[u64], order: &[u64]) -> Vec<u64> 
 }
 
 impl Configs {
+    /// El tope de subagentes trabajando a la vez por conversación.
+    pub fn subagent_limit(&self) -> usize {
+        match self.subagent_limit {
+            0 => DEFAULT_SUBAGENT_LIMIT,
+            n => n.min(MAX_SUBAGENT_LIMIT),
+        }
+    }
+
     pub fn load() -> Self {
         let mut configs: Self = crate::paths::file("code-claude.json")
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -682,6 +701,17 @@ mod tests {
         configs.permission_mode = Some("bypassPermissions".into());
         assert_eq!(configs.get(1).permission_mode, "bypassPermissions");
         assert_eq!(configs.get(7).permission_mode, "bypassPermissions");
+    }
+
+    #[test]
+    fn el_tope_de_subagentes_es_seis_salvo_que_se_elija_otro() {
+        let old: Configs = serde_json::from_str(r#"{ "by_workspace": {} }"#).unwrap();
+        assert_eq!(old.subagent_limit(), DEFAULT_SUBAGENT_LIMIT);
+        assert_eq!(DEFAULT_SUBAGENT_LIMIT, 6);
+        let chosen: Configs = serde_json::from_str(r#"{ "by_workspace": {}, "subagent_limit": 10 }"#).unwrap();
+        assert_eq!(chosen.subagent_limit(), 10);
+        let absurd: Configs = serde_json::from_str(r#"{ "by_workspace": {}, "subagent_limit": 500 }"#).unwrap();
+        assert_eq!(absurd.subagent_limit(), MAX_SUBAGENT_LIMIT);
     }
 
     #[test]

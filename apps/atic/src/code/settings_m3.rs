@@ -423,6 +423,16 @@ impl CodeView {
         cx.notify();
     }
 
+    /// El tope de subagentes trabajando a la vez: lo cambian el control de Ajustes y el botón
+    /// de la tarjeta de un subagente rechazado por el tope.
+    pub(super) fn set_subagent_limit(&mut self, limit: usize, cx: &mut Context<Self>) {
+        self.configs.subagent_limit = limit.clamp(1, super::config::MAX_SUBAGENT_LIMIT);
+        self.configs.save();
+        // Con más cupo, los que esperaban en la cola arrancan.
+        self.start_queued(cx);
+        cx.notify();
+    }
+
     /// «General»: conversaciones, avisos, chat y barra lateral (los ajustes de Atic Code que
     /// no son de un proyecto).
     fn general_tab(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -499,11 +509,29 @@ impl CodeView {
                 let _ = view.update(cx, |view, cx| view.set_orchestrator_decides(on, cx));
             })
         };
+        let limit_options = {
+            let mut options = vec![2, 4, 6, 8, 12, 16];
+            let current = self.configs.subagent_limit();
+            if !options.contains(&current) {
+                options.push(current);
+                options.sort_unstable();
+            }
+            options
+        };
+        let subagent_limit = {
+            let view = view.clone();
+            let current = limit_options.iter().position(|n| *n == self.configs.subagent_limit()).unwrap_or(0);
+            let options = limit_options.clone();
+            SegmentedButtons::new("subagent-limit", limit_options.iter().map(|n| Segment::label(n.to_string())).collect::<Vec<_>>(), current).on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| view.set_subagent_limit(options[index], cx));
+            })
+        };
         let chat = ListGroup::new()
             .title(tr("pill.code.settingsM3.chatTitle"))
             .custom_row(gpui_m3::SettingRow::new("send-key-row", tr("pill.code.settingsM3.sendWith")).description(tr("pill.code.settingsM3.sendWithDesc")).control(send))
             .custom_row(gpui_m3::SettingRow::new("hide-ok-row", tr("pill.code.settingsM3.hideOkTools")).description(tr("pill.code.settingsM3.hideOkToolsDesc")).control(hide_ok))
-            .custom_row(gpui_m3::SettingRow::new("orchestrator-decides-row", tr("pill.code.settingsM3.orchestratorDecides")).description(tr("pill.code.settingsM3.orchestratorDecidesDesc")).control(decides));
+            .custom_row(gpui_m3::SettingRow::new("orchestrator-decides-row", tr("pill.code.settingsM3.orchestratorDecides")).description(tr("pill.code.settingsM3.orchestratorDecidesDesc")).control(decides))
+            .custom_row(gpui_m3::SettingRow::new("subagent-limit-row", tr("pill.code.settingsM3.subagentLimit")).description(tr("pill.code.settingsM3.subagentLimitDesc")).control(subagent_limit));
         let sidebar_list = {
             let view = view.clone();
             gpui_m3::Switch::new("sidebar-list-switch", self.configs.sidebar_list).on_toggle(move |on, _, cx| {

@@ -438,6 +438,20 @@ pub struct EsperarTurno {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeerRespuesta {
+    /// Id de la sesión del subagente (la que devolvió atic_delegate).
+    pub session: String,
+    /// Desde qué carácter leer; sin valor, desde el principio. Usa el `offset`
+    /// del aviso de recorte o el `next_offset` de la lectura anterior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    /// Cuántos caracteres leer (por defecto 16000, máximo 48000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CortarTurno {
     pub session: String,
 }
@@ -637,7 +651,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_delegate",
-        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok, Antigravity) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel. Si pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (stalled): no terminó ni se detuvo; sigue sin él, espéralo o córtalo con atic_cancel."
+        description = "Encarga una tarea a otro agente (Claude, Codex, Cursor, OpenCode, Grok, Antigravity) como subagente. Recibe solo text, sin tu historial: escribe un encargo que baste solo (objetivo, rutas, lo descartado, qué entregar). Por defecto no espera: devuelve el id de la sesión y su resultado te llega solo como mensaje cuando termine; termina tu turno. Usa mode: \"wait\" solo si este turno necesita el resultado. Guarda session para atic_cancel. Si ya hay muchos subagentes trabajando, devuelve status queued: queda en cola y arranca solo al liberarse un cupo. Si pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (stalled): no terminó ni se detuvo; sigue sin él, espéralo o córtalo con atic_cancel."
     )]
     async fn atic_delegate(
         &self,
@@ -757,8 +771,32 @@ impl AticServer {
     }
 
     #[tool(
+        name = "atic_read",
+        description = "Lee un trozo de la última respuesta de un subagente tuyo, sin darle otro turno. Úsala cuando su resultado llegó recortado («recortado: van N de M caracteres»): pasa offset con ese N y sigue con next_offset hasta que sea null. Para no gastar contexto, lee solo lo que necesites."
+    )]
+    async fn atic_read(
+        &self,
+        params: Parameters<LeerRespuesta>,
+    ) -> Result<CallToolResult, McpError> {
+        let hub = match hub_client::locate().await {
+            Ok(h) => h,
+            Err(e) => return Self::error(e),
+        };
+        let p = params.0;
+        let pedido = payload::ReadRequest {
+            session: p.session,
+            offset: p.offset,
+            limit: p.limit,
+        };
+        match hub.read(&pedido).await {
+            Ok(r) => Self::exito(&r),
+            Err(e) => Self::error(e),
+        }
+    }
+
+    #[tool(
         name = "atic_cancel",
-        description = "Interrumpe el turno en curso de una sesión. La sesión sigue viva."
+        description = "Interrumpe el turno en curso de una sesión. La sesión sigue viva. Si el subagente estaba en cola esperando un cupo, lo saca de la cola."
     )]
     async fn atic_cancel(
         &self,

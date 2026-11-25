@@ -972,6 +972,9 @@ pub struct CodeView {
     perm_split: Option<String>,
     /// Se cerró el aviso de «El orquestador decide» en las tarjetas de subagentes (por sesión).
     subagent_hint_closed: bool,
+    /// Subagentes pedidos con el tope lleno: su clave y su encargo, en el orden en que se
+    /// pidieron. Arrancan solos al liberarse un cupo (`start_queued`).
+    queued_children: Vec<(String, String)>,
     /// Dónde quedó la caja de texto en el último cuadro: en Expressive los
     /// menús se abren sobre ella, como en la referencia.
     composer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -1635,6 +1638,7 @@ impl CodeView {
             perm_typing: false,
             perm_split: None,
             subagent_hint_closed: false,
+            queued_children: Vec::new(),
             composer_bounds: Rc::new(Cell::new(None)),
             composer_area_h: Rc::new(Cell::new(0.)),
             side_morph: Default::default(),

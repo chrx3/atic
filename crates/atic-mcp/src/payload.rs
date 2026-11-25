@@ -28,6 +28,8 @@ pub enum OutcomeStatus {
     /// El hijo sigue en su turno pero lleva mucho rato sin dar señales: puede
     /// estar pegado. No terminó ni se detuvo; el `hint` dice qué hacer.
     Stalled,
+    /// El tope de subagentes está lleno: el hijo espera un cupo y arranca solo.
+    Queued,
 }
 
 /// Un permiso que el hijo tiene esperando.
@@ -176,6 +178,28 @@ pub struct WaitRequest {
     pub session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_s: Option<u64>,
+}
+
+/// Un trozo de la última respuesta de un subagente, sin darle otro turno.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadRequest {
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+}
+
+/// El trozo leído: `next_offset` es desde donde seguir, o `null` si ya llegó al final.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReadChunk {
+    pub session: String,
+    pub backend: String,
+    pub offset: u64,
+    pub text: String,
+    pub total: u64,
+    pub next_offset: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

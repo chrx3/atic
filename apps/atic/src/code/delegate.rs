@@ -17,6 +17,7 @@
 //! aprobarlos solo si su propio modo ya no pregunta (`parent_may_allow`); y ningún hijo
 //! deja hacer más que su padre, sea Claude o un agente ACP (`capped_mode`, `capped_acp_mode`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -40,6 +41,7 @@ Las tareas comunes no necesitan estas herramientas.
 - Tienes `atic_delegate` para encargarle trabajo a otro agente: Claude, Codex, Cursor, OpenCode, Grok o Antigravity. Usa tu herramienta nativa de subagentes (Agent o Task) cuando el hijo es de tu mismo proveedor y modelo, sin ajustes distintos de los tuyos. Usa `atic_delegate` cuando el usuario pida otro proveedor u otro modelo, o un agente por su nombre.
 - Las herramientas de Atic pueden llegar diferidas o tarde: si no las ves, cárgalas con ToolSearch (`select:mcp__atic__atic_delegate,mcp__atic__atic_list_agents`) antes de darlas por ausentes. No lances a mano la CLI del otro agente (`codex exec`, `cursor-agent`…): delega con `atic_delegate`.
 - Antes del primer `atic_delegate` de la conversación, llama una vez a `atic_list_agents` (y a `atic_list_models` si el usuario nombró un modelo). Si el agente o el modelo no está disponible, dilo. No cambies a otro sin que te lo pidan. Con OpenCode, `atic_list_agents` y `atic_list_models` traen tus `subscriptions` (Go, Zen, claves) con su estado, y cada modelo su `requires` y si está `available`: elige uno con `available: true`, de preferencia `opencode-go/…` (la suscripción); los `opencode/…` de pago cobran saldo de Zen.
+- Si ya hay muchos subagentes trabajando, el nuevo queda en cola (`queued`) y arranca solo al liberarse un cupo: no lo vuelvas a pedir. Si un resultado llega recortado, léelo entero con `atic_read` (con `offset`) en vez de pedirle de nuevo al subagente.
 - El hijo no ve esta conversación: recibe solo `text`. Escribe un encargo que baste solo: el objetivo, las rutas que importan, lo que ya descartaste, las restricciones y qué debe entregar.
 - `atic_delegate` no espera por defecto: cuando el hijo termine, su resultado te llega solo como un mensaje `<atic-subagent>` con su `session`, `status` y `result`. Sigue su `hint`: termina tu turno. No llames `atic_wait` ni consultes en bucle. Usa `mode: \"wait\"` solo si este mismo turno necesita el resultado. Si un subagente pasa mucho rato sin dar señales, te llega un aviso de que parece pegado (`stalled`): no terminó ni se detuvo; sigue sin él, o córtalo con `atic_cancel` y delega de nuevo.
 - Cada revisión o re-chequeo nuevo es un `atic_delegate` nuevo, con el encargo, los hallazgos y las objeciones. Los arreglos chicos que salgan de una revisión, hazlos tú. Si te piden seguir sin un delegado, o con menos, corta los que sobran con `atic_cancel`.
@@ -50,11 +52,13 @@ Las tareas comunes no necesitan estas herramientas.
 const SERVER: &str = "atic";
 /// Quien pide con esta profundidad (o más) ya no puede delegar: hijo y nieto, nada más.
 const MAX_DEPTH: u64 = 2;
-/// Hijos trabajando a la vez por cada padre.
-const MAX_CHILDREN: usize = 4;
 /// El tope de la respuesta que viaja al padre.
 const MAX_REPLY: usize = 16_000;
-const CLIPPED: &str = "\n\n… (recortado; pide el resto con atic_prompt)";
+/// Cuántos hijos de un mismo padre pueden esperar un cupo (`atic_delegate` con el tope lleno).
+const MAX_QUEUED: usize = 30;
+/// Cuánto devuelve `atic_read` por llamada si no se pide otra cosa, y lo más que devuelve.
+const READ_DEFAULT: usize = 16_000;
+const READ_MAX: usize = 48_000;
 /// Cuánto del input de una herramienta se muestra al pedir un permiso.
 const MAX_INPUT: usize = 600;
 /// El padre de un hijo pedido desde fuera de Atic Code (una CLI suelta).
@@ -67,6 +71,7 @@ const STALL_AFTER: Duration = Duration::from_secs(15 * 60);
 const STALL_RECHECK: Duration = Duration::from_secs(60);
 
 const HINT_ASYNC: &str = "Cuando termine, su resultado te llega solo como mensaje. Termina tu turno: no lo esperes ni consultes su estado.";
+const HINT_QUEUED: &str = "Ya hay tantos subagentes trabajando como permite el tope, así que este quedó en cola: arranca solo cuando se libere un cupo y su resultado te llega como mensaje. Termina tu turno; puedes cortarlo con atic_cancel.";
 const HINT_TIMEOUT: &str = "Sigue trabajando; su resultado te llegará solo como mensaje. Termina tu turno.";
 const HINT_TIMEOUT_EXTERNAL: &str = "Sigue trabajando. Pide su resultado con atic_wait cuando lo necesites.";
 const HINT_PERMISSION: &str = "El subagente espera un permiso, que el usuario contesta en Atic Code. No lo apruebes por él: con atic_permission solo puedes rechazarlo (deny), o aprobarlo si tu propio modo de permisos ya no pregunta. Termina tu turno; su resultado te llega solo como mensaje cuando el usuario conteste.";
@@ -640,7 +645,9 @@ pub fn clip_reply(text: &str) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}{CLIPPED}", &text[..end])
+    let read = text[..end].chars().count();
+    let total = text.chars().count();
+    format!("{}\n\n… (recortado: van {read} de {total} caracteres; sigue con atic_read, offset {read})", &text[..end])
 }
 
 /// Un campo corto del despertar: sin `&` ni `<` sueltos.
@@ -753,6 +760,8 @@ pub enum ChildState {
     Done,
     Failed,
     Stopped,
+    /// Pedido con el tope de subagentes lleno: arranca solo cuando se libere un cupo.
+    Queued,
     /// Creado y sin turno (`atic_spawn` sin `atic_prompt`).
     Idle,
     /// Ya no está entre las conversaciones abiertas (se cerró, o es de otra sesión de Atic).
@@ -958,6 +967,24 @@ fn pending_permissions(chat: &Chat) -> Vec<Value> {
         .collect()
 }
 
+/// El trozo de `text` que pide `atic_read`: `limit` caracteres desde `offset` (contados en
+/// caracteres, como el aviso de `clip_reply`), y desde dónde seguir (`next_offset`, `null`
+/// al llegar al final).
+fn read_slice(session: &str, backend: &str, text: &str, offset: usize, limit: Option<usize>) -> Value {
+    let limit = limit.unwrap_or(READ_DEFAULT).clamp(1, READ_MAX);
+    let total = text.chars().count();
+    let chunk: String = text.chars().skip(offset).take(limit).collect();
+    let end = offset.saturating_add(chunk.chars().count());
+    json!({
+        "session": session,
+        "backend": backend,
+        "offset": offset.min(total),
+        "text": chunk,
+        "total": total,
+        "next_offset": (end < total).then_some(end),
+    })
+}
+
 fn wait_for(seconds: Option<u64>) -> u64 {
     seconds.unwrap_or(hub::WAIT_DEFAULT).clamp(1, hub::WAIT_MAX)
 }
@@ -1034,6 +1061,16 @@ struct PermissionBody {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct ReadBody {
+    session: String,
+    /// Desde qué carácter de la respuesta; sin valor, desde el principio.
+    offset: Option<usize>,
+    /// Cuántos caracteres, hasta `READ_MAX`.
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct RenameBody {
     session: String,
@@ -1084,6 +1121,7 @@ impl CodeView {
             "/v1/permission" => Some(self.hub_permission(body, &caller, cx)),
             "/v1/spawn" => Some(self.hub_spawn(body, &caller)),
             "/v1/rename" => Some(self.hub_rename(body, &caller)),
+            "/v1/read" => Some(self.hub_read(body, &caller)),
             _ => None,
         };
         let answer = answer.unwrap_or_else(|| Err(HubFault::new("not_found", format!("no existe la ruta {method} {path}"))));
@@ -1236,7 +1274,10 @@ impl CodeView {
     /// Crea la conversación hija (sin mandarle nada todavía). Va en el espacio y la
     /// carpeta del padre; no cambia la conversación a la vista. Quién es el padre lo dice
     /// el token del pedido (`caller`), no su cuerpo.
-    fn create_child(&mut self, request: &DelegateBody, caller: &Caller) -> Result<String, HubFault> {
+    ///
+    /// Con el tope de subagentes lleno: `queue` deja al hijo esperando un cupo (el `bool` que
+    /// devuelve dice que quedó en cola; `start_queued` lo arranca) y, sin `queue`, falla.
+    fn create_child(&mut self, request: &DelegateBody, caller: &Caller, queue: bool) -> Result<(String, bool), HubFault> {
         let decides = self.configs.orchestrator_decides;
         let parent = match caller {
             Caller::Session(key) => {
@@ -1272,8 +1313,14 @@ impl CodeView {
             return Err(HubFault::new("depth_exceeded", "un subagente de un subagente no puede delegar más: haz la tarea tú mismo"));
         }
         let working = self.chats.iter().filter(|c| c.busy && c.delegation.as_ref().is_some_and(|d| d.parent == parent_id)).count();
-        if working >= MAX_CHILDREN {
+        let waiting = self.queued_children.iter().filter(|(queued, _)| self.chats.iter().any(|c| c.key == *queued && c.delegation.as_ref().is_some_and(|d| d.parent == parent_id))).count();
+        // Con alguien esperando en la cola, el nuevo va detrás aunque justo haya un cupo.
+        let full = working >= self.configs.subagent_limit() || waiting > 0;
+        if full && !queue {
             return Err(HubFault::new("too_many_children", format!("ya tienes {working} subagentes trabajando: espera sus resultados o corta alguno con atic_cancel")));
+        }
+        if full && waiting >= MAX_QUEUED {
+            return Err(HubFault::new("queue_full", format!("ya tienes {waiting} subagentes esperando un cupo: espera sus resultados o corta alguno con atic_cancel")));
         }
         let cli = match request.backend.as_deref().map(str::trim).filter(|b| !b.is_empty() && *b != "auto") {
             None => parent_cli,
@@ -1294,7 +1341,14 @@ impl CodeView {
             let roots: Vec<PathBuf> = roots.iter().map(|root| real_path(root)).collect();
             if !cwd_allowed(&real_path(&dir), &roots) {
                 if !external {
-                    return Err(bad_request("esa carpeta está fuera del proyecto de esta conversación: el subagente trabaja en su carpeta, en otra del mismo proyecto o en un worktree del mismo repositorio"));
+                    let allowed: Vec<String> = roots.iter().map(|root| root.display().to_string()).collect();
+                    let mut fault = bad_request(format!(
+                        "la carpeta «{}» está fuera del proyecto de esta conversación: el subagente trabaja en una carpeta del proyecto ({}) o en un worktree del mismo repositorio. Crea la carpeta dentro del proyecto, o pídelo sin `cwd` para que trabaje en la tuya",
+                        dir.display(),
+                        allowed.join(", ")
+                    ));
+                    fault.data = Some(json!({ "cwd": dir.display().to_string(), "allowed": allowed }));
+                    return Err(fault);
                 }
                 // Desde fuera se puede pedir cualquier carpeta: su techo ya no deja un modo
                 // que no pregunta (`external_ceiling`).
@@ -1382,7 +1436,51 @@ impl CodeView {
             last: None,
         });
         self.chats.push(chat);
-        Ok(key)
+        Ok((key, full))
+    }
+
+    /// Arranca a los hijos en cola mientras su padre tenga cupo, el más antiguo primero.
+    /// Se llama cuando un hijo termina o se corta, y cuando sube el tope.
+    pub(super) fn start_queued(&mut self, cx: &mut Context<Self>) {
+        let limit = self.configs.subagent_limit();
+        let mut started: HashMap<String, usize> = HashMap::new();
+        let mut at = 0;
+        while at < self.queued_children.len() {
+            let key = self.queued_children[at].0.clone();
+            let Some(parent) = self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).map(|d| d.parent.clone()) else {
+                // El hijo ya no existe: se cerró estando en cola.
+                self.queued_children.remove(at);
+                continue;
+            };
+            let working = self.chats.iter().filter(|c| c.busy && c.delegation.as_ref().is_some_and(|d| d.parent == parent)).count();
+            let now = started.entry(parent).or_default();
+            if working + *now >= limit {
+                at += 1;
+                continue;
+            }
+            *now += 1;
+            let (_, text) = self.queued_children.remove(at);
+            tracing::info!(key = %key, "atic code: sale de la cola un subagente");
+            self.start_child_turn(&key, text, cx);
+        }
+    }
+
+    /// Saca a `key` de la cola (lo cortó quien lo pidió): sus esperas reciben `cancelled`.
+    /// `false` si no estaba en la cola.
+    fn drop_queued(&mut self, key: &str) -> bool {
+        let Some(at) = self.queued_children.iter().position(|(queued, _)| queued == key) else {
+            return false;
+        };
+        self.queued_children.remove(at);
+        if let Some(delegation) = self.chats.iter_mut().find(|c| c.key == key).and_then(|c| c.delegation.as_mut()) {
+            delegation.wake = false;
+            let result = outcome(key, &delegation.backend, "cancelled", "", None, Duration::ZERO, Vec::new());
+            for (_, waiter) in delegation.waiters.drain(..) {
+                let _ = waiter.send(Ok(result.clone()));
+            }
+            delegation.last = Some(result);
+        }
+        true
     }
 
     /// Le manda un turno al hijo: desde ahora su resultado despierta al padre.
@@ -1489,7 +1587,9 @@ impl CodeView {
             Some(seconds) => self.add_waiter(key, reply, seconds, cx),
             None => {
                 let backend = self.chats.iter().find(|c| c.key == key).and_then(|c| c.delegation.as_ref()).map(|d| d.backend.clone()).unwrap_or_default();
-                let _ = reply.send(Ok(outcome(key, &backend, "running", "", Some(HINT_ASYNC), Duration::ZERO, Vec::new())));
+                let queued = self.queued_children.iter().any(|(queued, _)| queued == key);
+                let (status, hint) = if queued { ("queued", HINT_QUEUED) } else { ("running", HINT_ASYNC) };
+                let _ = reply.send(Ok(outcome(key, &backend, status, "", Some(hint), Duration::ZERO, Vec::new())));
             }
         }
     }
@@ -1506,8 +1606,8 @@ impl CodeView {
             let _ = reply.send(Err(bad_request("falta `text`: el encargo para el subagente")));
             return;
         }
-        let key = match self.create_child(&request, caller) {
-            Ok(key) => key,
+        let (key, queued) = match self.create_child(&request, caller, true) {
+            Ok(created) => created,
             Err(fault) => {
                 let _ = reply.send(Err(fault));
                 return;
@@ -1518,8 +1618,13 @@ impl CodeView {
         let wait = (external || request.mode.as_deref() == Some("wait")).then(|| wait_for(request.wait_s));
         // Quién la pidió: de fuera (el token de `hub.json`) no hay madre a la que mostrarla
         // ni despertar, y la respuesta espera al hijo.
-        tracing::info!(key = %key, backend = ?request.backend, caller = ?caller, external, "atic code: tarea delegada");
-        self.start_child_turn(&key, role_prefix(request.role.as_deref(), &request.text), cx);
+        tracing::info!(key = %key, backend = ?request.backend, caller = ?caller, external, queued, "atic code: tarea delegada");
+        let text = role_prefix(request.role.as_deref(), &request.text);
+        if queued {
+            self.queued_children.push((key.clone(), text));
+        } else {
+            self.start_child_turn(&key, text, cx);
+        }
         self.answer_started(&key, wait, reply, cx);
     }
 
@@ -1550,8 +1655,12 @@ impl CodeView {
         if request.text.trim().is_empty() {
             return Err(bad_request("falta `text`"));
         }
+        let queued = self.queued_children.iter().any(|(key, _)| *key == request.session);
         let chat = self.owned_mut(caller, &request.session)?;
         let external = chat.delegation.as_ref().is_some_and(|d| d.external);
+        if queued {
+            return Err(HubFault::new("busy", "el subagente sigue en cola esperando un cupo: espera su resultado o córtalo con atic_cancel"));
+        }
         if chat.busy {
             return Err(HubFault::new("busy", "el subagente sigue trabajando: espera su resultado o córtalo con atic_cancel"));
         }
@@ -1568,6 +1677,7 @@ impl CodeView {
             }
         };
         let parent_allows = self.parent_allows(&request.session);
+        let queued = self.queued_children.iter().any(|(key, _)| *key == request.session);
         let chat = match self.owned_mut(caller, &request.session) {
             Ok(chat) => chat,
             Err(fault) => {
@@ -1582,7 +1692,7 @@ impl CodeView {
             let _ = reply.send(Ok(outcome(&chat.key, &delegation.backend, "permission_required", "", Some(hint), elapsed, pending_permissions(chat))));
             return;
         }
-        if chat.busy {
+        if chat.busy || queued {
             self.add_waiter(&request.session, reply, wait_for(request.wait_s), cx);
             return;
         }
@@ -1622,6 +1732,11 @@ impl CodeView {
     /// Detiene el turno del hijo; su resultado ya no despierta al padre.
     fn hub_cancel(&mut self, body: Value, caller: &Caller, cx: &mut Context<Self>) -> HubReply {
         let request: SessionBody = parse(body)?;
+        self.owned_mut(caller, &request.session)?;
+        // En cola no hay turno que cortar: basta con sacarlo.
+        if self.drop_queued(&request.session) {
+            return Ok(json!({ "session": request.session, "status": "cancelled" }));
+        }
         let chat = self.owned_mut(caller, &request.session)?;
         if let Some(delegation) = chat.delegation.as_mut() {
             delegation.wake = false;
@@ -1635,6 +1750,8 @@ impl CodeView {
     /// Cierra el proceso del hijo; queda en la lista para leerlo o retomarlo.
     fn hub_close(&mut self, body: Value, caller: &Caller, cx: &mut Context<Self>) -> HubReply {
         let request: SessionBody = parse(body)?;
+        self.owned_mut(caller, &request.session)?;
+        self.drop_queued(&request.session);
         let chat = self.owned_mut(caller, &request.session)?;
         let live = chat.live;
         let Some(delegation) = chat.delegation.as_mut() else {
@@ -1649,6 +1766,8 @@ impl CodeView {
         if live {
             self.retire(&request.session, cx);
         }
+        // Cerrar a un hijo que trabajaba libera su cupo.
+        self.start_queued(cx);
         Ok(json!({ "session": request.session, "status": "closed" }))
     }
 
@@ -1688,8 +1807,18 @@ impl CodeView {
     /// Crea el hijo sin mandarle nada; el primer turno va con `atic_prompt`.
     fn hub_spawn(&mut self, body: Value, caller: &Caller) -> HubReply {
         let request: DelegateBody = parse(body)?;
-        let key = self.create_child(&request, caller)?;
+        let (key, _) = self.create_child(&request, caller, false)?;
         Ok(json!({ "session": key }))
+    }
+
+    /// Un trozo de la última respuesta del hijo, sin darle otro turno: lo que `atic_delegate`
+    /// recortó (`clip_reply`) y lo que sigue. Solo quien lo delegó.
+    fn hub_read(&mut self, body: Value, caller: &Caller) -> HubReply {
+        let request: ReadBody = parse(body)?;
+        let chat = self.owned_mut(caller, &request.session)?;
+        let backend = chat.delegation.as_ref().map(|d| d.backend.clone()).unwrap_or_default();
+        let text = chat.last_reply();
+        Ok(read_slice(&request.session, &backend, &text, request.offset.unwrap_or(0), request.limit))
     }
 
     fn hub_rename(&mut self, body: Value, caller: &Caller) -> HubReply {
@@ -1729,12 +1858,15 @@ impl CodeView {
             delivered |= waiter.send(Ok(result.clone())).is_ok();
         }
         let wake = std::mem::take(&mut delegation.wake);
-        if delivered || !wake {
-            return;
+        let woken = (!delivered && wake).then(|| {
+            let message = wake_message(key, &title, &delegation.backend, delegation.role.as_deref(), ended.as_str(), delegation.started.elapsed(), &reply);
+            (delegation.parent.clone(), message)
+        });
+        if let Some((parent, message)) = woken {
+            self.wake_parent(&parent, message, cx);
         }
-        let message = wake_message(key, &title, &delegation.backend, delegation.role.as_deref(), ended.as_str(), delegation.started.elapsed(), &reply);
-        let parent = delegation.parent.clone();
-        self.wake_parent(&parent, message, cx);
+        // El hijo terminó: su cupo es del siguiente en la cola.
+        self.start_queued(cx);
     }
 
     /// El proceso de un hijo se cerró a mitad de turno: lo que esperaba recibe `failed`.
@@ -1818,6 +1950,9 @@ impl CodeView {
         let Some(chat) = child else {
             return ChildState::Gone;
         };
+        if self.queued_children.iter().any(|(key, _)| *key == chat.key) {
+            return ChildState::Queued;
+        }
         let permission = chat.permissions.first().map(permission_tool);
         let last = chat.delegation.as_ref().and_then(|d| d.last.as_ref()).and_then(|v| v.get("status")).and_then(Value::as_str);
         child_state(chat.busy, permission.as_deref(), last)
@@ -1856,10 +1991,24 @@ mod tests {
         assert_eq!(clip_reply("corto"), "corto");
         let long = "ñ".repeat(MAX_REPLY);
         let clipped = clip_reply(&long);
-        assert!(clipped.ends_with(CLIPPED));
-        let head = clipped.strip_suffix(CLIPPED).unwrap();
+        let (head, note) = clipped.split_once("\n\n… (recortado").unwrap();
         assert!(head.len() <= MAX_REPLY);
         assert!(head.chars().all(|c| c == 'ñ'));
+        // Dice cuánto se leyó y desde dónde seguir con `atic_read`.
+        assert!(note.contains("van 8000 de 16000 caracteres") && note.contains("offset 8000"), "{note}");
+    }
+
+    #[test]
+    fn atic_read_sigue_donde_quedo_la_respuesta_recortada() {
+        let text = "ñ".repeat(10);
+        let first = read_slice("c1", "opencode", &text, 0, Some(4));
+        assert_eq!((first["text"].as_str(), first["total"].as_u64(), first["next_offset"].as_u64()), (Some("ññññ"), Some(10), Some(4)));
+        let last = read_slice("c1", "opencode", &text, 8, Some(4));
+        assert_eq!((last["text"].as_str(), last["next_offset"].is_null()), (Some("ññ"), true));
+        // Pasado el final: vacío y sin más que leer.
+        let past = read_slice("c1", "opencode", &text, 50, None);
+        assert_eq!((past["text"].as_str(), past["offset"].as_u64(), past["next_offset"].is_null()), (Some(""), Some(10), true));
+        assert_eq!(read_slice("c1", "opencode", &text, 0, Some(0))["text"].as_str().map(str::len), Some(2), "el mínimo es un carácter");
     }
 
     #[test]

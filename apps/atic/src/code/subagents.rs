@@ -114,6 +114,7 @@ fn state_badge(state: &ChildState, elapsed: Option<u64>) -> Div {
         ChildState::Done => (Icon::new("check").size(px(13.)).color(tokens.ok).into_any_element(), tr("pill.code.delegate.stateDone").to_string(), tokens.muted),
         ChildState::Failed => (Icon::new("x").size(px(13.)).color(tokens.bad).into_any_element(), tr("pill.code.delegate.stateFailed").to_string(), tokens.bad),
         ChildState::Stopped => (svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.muted).into_any_element(), tr("pill.code.delegate.stateStopped").to_string(), tokens.muted),
+        ChildState::Queued => (svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.muted).into_any_element(), tr("pill.code.delegate.stateQueued").to_string(), tokens.muted),
         ChildState::Idle => (svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.muted).into_any_element(), tr("pill.code.delegate.stateIdle").to_string(), tokens.muted),
         ChildState::Gone => (svg().path("icons/circle-dot.svg").size(px(13.)).text_color(tokens.muted).into_any_element(), tr("pill.code.delegate.stateGone").to_string(), tokens.muted),
     };
@@ -245,8 +246,30 @@ impl CodeView {
                 .child(action(SharedString::from(format!("{id}-answer")), tr("pill.code.delegate.answerPermission").to_string(), "shield", self.open_chat_listener(child.key.clone(), cx)));
             under = Some(div().px(px(14.)).pb(px(10.)).child(row));
         }
-        if let Some(error) = error.filter(|e| !e.trim().is_empty()) {
-            under = Some(div().px(px(14.)).pb(px(10.)).child(super::tools::output(format!("{id}-error"), &error, 4, None, true)));
+        // El tope de subagentes lo frenó (error) o espera un cupo (en cola): ofrece subirlo.
+        let error = error.filter(|e| !e.trim().is_empty());
+        let at_limit = error.as_ref().is_some_and(|e| e.contains("too_many_children")) || state == ChildState::Queued;
+        let current = self.configs.subagent_limit();
+        let next = (current + super::config::SUBAGENT_LIMIT_STEP).min(super::config::MAX_SUBAGENT_LIMIT);
+        let raise = (at_limit && next > current).then(|| {
+            let listener = cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.set_subagent_limit(next, cx);
+                view.show_toast(tf("pill.code.delegate.limitRaised", &[("n", &next.to_string())]), cx);
+            });
+            action(SharedString::from(format!("{id}-raise")), tf("pill.code.delegate.raiseLimit", &[("n", &next.to_string())]), "plus", Box::new(move |event, window, cx| listener(event, window, cx)))
+        });
+        if error.is_some() || raise.is_some() {
+            under = Some(
+                div()
+                    .px(px(14.))
+                    .pb(px(10.))
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(4.))
+                    .children(error.map(|error| div().w_full().child(super::tools::output(format!("{id}-error"), &error, 4, None, true))))
+                    .children(raise),
+            );
         }
 
         let meta = [
@@ -384,7 +407,7 @@ impl CodeView {
                 ChildState::Working | ChildState::Permission(_) | ChildState::Starting => working += 1,
                 ChildState::Failed => failed += 1,
                 ChildState::Done | ChildState::Stopped => done += 1,
-                ChildState::Idle | ChildState::Gone => {}
+                ChildState::Idle | ChildState::Queued | ChildState::Gone => {}
             }
         }
         (working, done, failed)

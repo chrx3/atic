@@ -464,7 +464,7 @@ fn identify(request: &Request, token: &str) -> Option<Caller> {
 /// contesta el transporte (`health`).
 pub fn route(method: &str, path: &str) -> Result<bool, HubFault> {
     const GETS: [&str; 4] = ["/v1/health", "/v1/agents", "/v1/models", "/v1/sessions"];
-    const POSTS: [&str; 9] = ["/v1/delegate", "/v1/prompt", "/v1/wait", "/v1/cancel", "/v1/close", "/v1/permission", "/v1/spawn", "/v1/rename", "/v1/health"];
+    const POSTS: [&str; 10] = ["/v1/delegate", "/v1/prompt", "/v1/wait", "/v1/cancel", "/v1/close", "/v1/permission", "/v1/spawn", "/v1/rename", "/v1/read", "/v1/health"];
     let known = GETS.contains(&path) || POSTS.contains(&path);
     if !known {
         return Err(HubFault::new("not_found", format!("no existe la ruta {path}")));
