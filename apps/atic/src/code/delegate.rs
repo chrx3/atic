@@ -631,6 +631,18 @@ fn cwd_allowed(dir: &Path, roots: &[PathBuf]) -> bool {
         || git_common_dir(dir).is_some_and(|common| roots.iter().any(|root| git_common_dir(root).as_ref() == Some(&common)))
 }
 
+/// Las rutas sin repetir, en su orden (la carpeta de la conversación suele ser también una del
+/// proyecto).
+fn unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut unique: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    unique
+}
+
 /// La ruta de verdad (sin `..` ni enlaces), para comparar carpetas.
 fn real_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -1351,8 +1363,14 @@ impl CodeView {
         if !available {
             return Err(HubFault::new("backend_unavailable", format!("{} no está instalado o no está listo en esta máquina", backend_of(cli))));
         }
-        if let Some(dir) = request.cwd.as_deref().map(PathBuf::from).filter(|dir| dir.is_dir()) {
-            let roots: Vec<PathBuf> = roots.iter().map(|root| real_path(root)).collect();
+        // Una carpeta relativa es relativa a la de quien delega. Si no existe se avisa: callar y
+        // trabajar en otra carpeta es peor que un error claro.
+        let wanted_cwd = request.cwd.as_deref().map(str::trim).filter(|dir| !dir.is_empty()).map(|dir| cwd.join(dir));
+        if let Some(dir) = wanted_cwd.as_ref().filter(|dir| !dir.is_dir()) {
+            return Err(bad_request(format!("la carpeta «{}» no existe: créala antes de delegar, o pídelo sin `cwd` para que trabaje en la tuya", dir.display())));
+        }
+        if let Some(dir) = wanted_cwd {
+            let roots = unique_paths(roots.iter().map(|root| real_path(root)).collect());
             if !cwd_allowed(&real_path(&dir), &roots) {
                 if !external {
                     let allowed: Vec<String> = roots.iter().map(|root| root.display().to_string()).collect();
@@ -2033,6 +2051,12 @@ mod tests {
         assert!(head.chars().all(|c| c == 'ñ'));
         // Dice cuánto se leyó y desde dónde seguir con `atic_read`.
         assert!(note.contains("van 8000 de 16000 caracteres") && note.contains("offset 8000"), "{note}");
+    }
+
+    #[test]
+    fn las_carpetas_permitidas_no_se_repiten() {
+        let paths = ["/p/atic", "/p/atic", "/p/android", "/p/atic"].map(PathBuf::from).to_vec();
+        assert_eq!(unique_paths(paths), ["/p/atic", "/p/android"].map(PathBuf::from).to_vec());
     }
 
     #[test]
