@@ -1045,6 +1045,8 @@ struct DelegateBody {
     text: String,
     permission_mode: Option<String>,
     model: Option<String>,
+    /// Cuánto razona el hijo: uno de los `efforts` de `/v1/models`.
+    effort: Option<String>,
     label: Option<String>,
     /// Quién dice ser y a qué profundidad: solo se le cree a quien pide desde fuera.
     parent: Option<String>,
@@ -1182,6 +1184,24 @@ impl CodeView {
     /// del agente ACP); vacío si todavía no se leyeron.
     fn hub_models(&self, backend: &str) -> HubReply {
         let cli = backend_cli(backend).ok_or_else(|| HubFault::new("unknown_backend", format!("no conozco el agente «{backend}»")))?;
+        // Los esfuerzos que admite el agente, de menor a mayor: lo que va en `effort` al delegar.
+        let efforts: Vec<String> = match cli {
+            None => super::config::EFFORTS.iter().map(|(id, _)| id.to_string()).collect(),
+            Some(cli) => {
+                let mut values: Vec<String> = self
+                    .acp_drafts
+                    .get(cli)
+                    .into_iter()
+                    .flat_map(|draft| draft.options.iter().filter(|o| o.category == "thought_level"))
+                    .flat_map(|option| option.choices.iter())
+                    .filter(|choice| choice.value != "default")
+                    .map(|choice| choice.value.clone())
+                    .collect();
+                values.sort_by_key(|value| super::acp::effort_rank(value));
+                values.dedup();
+                values
+            }
+        };
         let models: Vec<Value> = match cli {
             None => self.models.iter().filter(|(id, _)| !id.is_empty()).map(|(id, name)| json!({ "id": id, "name": name })).collect(),
             Some(cli) => {
@@ -1216,12 +1236,12 @@ impl CodeView {
                     })
                     .collect();
                 if cli == "opencode" {
-                    return Ok(json!({ "models": models, "subscriptions": super::subscriptions::to_json(&subs) }));
+                    return Ok(json!({ "models": models, "efforts": efforts, "subscriptions": super::subscriptions::to_json(&subs) }));
                 }
                 models
             }
         };
-        Ok(json!({ "models": models }))
+        Ok(json!({ "models": models, "efforts": efforts }))
     }
 
     /// Las conversaciones que ve quien pide (`sees`): no las demás del usuario.
@@ -1390,11 +1410,29 @@ impl CodeView {
         // Lo pedido para el hijo, si no deja hacer más que su padre.
         let ceiling = capped_mode(request.permission_mode.as_deref(), &ceiling);
         let model = request.model.clone().filter(|m| !m.trim().is_empty());
+        let effort = request.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
+        // Un hijo Claude: el esfuerzo tiene que ser uno de los de Claude Code. Los de un agente
+        // ACP se validan más abajo contra sus propias opciones.
+        let claude_effort = match (cli, effort) {
+            (None, Some(effort)) => match super::config::EFFORTS.iter().find(|(id, _)| id.eq_ignore_ascii_case(effort)) {
+                Some((id, _)) => Some(id.to_string()),
+                None => {
+                    let ids: Vec<&str> = super::config::EFFORTS.iter().map(|(id, _)| *id).collect();
+                    let mut fault = bad_request(format!("Claude no tiene el esfuerzo «{effort}»; usa uno de: {}", ids.join(", ")));
+                    fault.data = Some(json!({ "efforts": ids }));
+                    return Err(fault);
+                }
+            },
+            _ => None,
+        };
         let key = self.new_key();
         let mut chat = Chat::new(key.clone(), workspace, cwd);
         chat.acp = cli;
         match cli {
-            None => chat.want_model = model,
+            None => {
+                chat.want_model = model;
+                chat.want_effort = claude_effort;
+            }
             Some(cli) => {
                 let mut config = self.acp_drafts.get(cli).cloned().unwrap_or_default();
                 if let Some(model) = model {
@@ -1442,6 +1480,22 @@ impl CodeView {
                         }
                         // Sin la lista del agente todavía: se pide igual al abrir la sesión.
                         None => config.options.push(AcpOption { id: "model".into(), name: "Modelo".into(), category: "model".into(), current: model, choices: Vec::new() }),
+                    }
+                }
+                if let Some(effort) = effort {
+                    match config.options.iter().find(|o| o.category == "thought_level").map(|o| (o.id.clone(), o.choices.clone())) {
+                        Some((id, choices)) => match choices.iter().find(|c| c.value.eq_ignore_ascii_case(effort) || c.name.eq_ignore_ascii_case(effort)) {
+                            Some(choice) => config.set(&id, &choice.value),
+                            None => {
+                                let values: Vec<String> = choices.iter().filter(|c| c.value != "default").map(|c| c.value.clone()).collect();
+                                let mut fault = bad_request(format!("{} no tiene el esfuerzo «{effort}»; usa uno de: {}", backend_of(Some(cli)), values.join(", ")));
+                                fault.data = Some(json!({ "efforts": values }));
+                                return Err(fault);
+                            }
+                        },
+                        // Sin la lista del agente todavía no se sabe si tiene esfuerzo: se deja el suyo.
+                        None if config.options.is_empty() => {}
+                        None => return Err(bad_request(format!("{} no tiene esfuerzo configurable", backend_of(Some(cli))))),
                     }
                 }
                 cap_acp_config(&mut config, cli, &ceiling, decides);

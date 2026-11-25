@@ -25,6 +25,7 @@ async fn el_directorio_tiene_forma_y_la_delegacion_vuelve_con_sesion() {
                 role: Some("general".into()),
                 permission_mode: None,
                 model: None,
+                effort: None,
                 label: None,
                 parent: None,
                 depth: 0,

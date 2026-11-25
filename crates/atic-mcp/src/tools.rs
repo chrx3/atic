@@ -349,6 +349,13 @@ pub struct AbrirSesion {
     /// llamada falla con la lista de ids válidos. Vacío = el del agente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Cuánto razona el agente hijo: uno de los `efforts` del modelo en
+    /// `atic_list_models` (p. ej. `low`, `medium`, `high`, `xhigh`, `max`). Más
+    /// esfuerzo es más lento y gasta más cuota: `low` para retoques y
+    /// preguntas simples, `high` para trabajo normal, `xhigh` o `max` para
+    /// migraciones y errores difíciles. Vacío = el del agente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// Sin valor, el agente hereda el modo de permisos de quien lo abre. Atic
     /// nunca le da más que eso: un modo que deja hacer más se recorta al del
     /// padre. Los permisos que pida los contesta el usuario en Atic Code.
@@ -424,6 +431,13 @@ pub struct Delegar {
     /// llamada falla con la lista de ids válidos. Vacío = el del agente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Cuánto razona el agente hijo: uno de los `efforts` del modelo en
+    /// `atic_list_models` (p. ej. `low`, `medium`, `high`, `xhigh`, `max`). Más
+    /// esfuerzo es más lento y gasta más cuota: `low` para retoques y
+    /// preguntas simples, `high` para trabajo normal, `xhigh` o `max` para
+    /// migraciones y errores difíciles. Vacío = el del agente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -522,7 +536,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_list_models",
-        description = "Lista los modelos que acepta un agente (id, nombre, esfuerzos). Llámala cuando el usuario nombre un modelo, antes de pasarlo en `model` a atic_spawn o atic_delegate: el id que va en `model` es el de esta lista."
+        description = "Lista los modelos que acepta un agente (id, nombre) y los `efforts` que admite (esfuerzo de razonamiento, de menor a mayor). Llámala cuando el usuario nombre un modelo, antes de pasarlo en `model` a atic_spawn o atic_delegate: el id que va en `model` es el de esta lista. Para elegir cuánto razona el hijo, pasa uno de `efforts` en `effort`."
     )]
     async fn atic_list_models(
         &self,
@@ -576,6 +590,7 @@ impl AticServer {
             backend: p.backend.as_str().to_string(),
             cwd: p.cwd,
             model: p.model,
+            effort: p.effort,
             permission_mode: p.permission_mode.map(|m| m.as_str().to_string()),
             label: p.label,
             parent: Some(padre(self.host.as_deref())),
@@ -688,6 +703,7 @@ impl AticServer {
             role: p.role.map(|r| r.as_str().to_string()),
             permission_mode: p.permission_mode.map(|m| m.as_str().to_string()),
             model: p.model,
+            effort: p.effort,
             label: p.label,
             parent: Some(padre(self.host.as_deref())),
             depth: profundidad(),
