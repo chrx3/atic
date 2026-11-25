@@ -680,6 +680,20 @@ fn stall_message(key: &str, title: &str, backend: &str, role: Option<&str>, elap
     subagent_message(&lead, key, title, backend, role, "event", elapsed,&format!("Lleva {minutes} minutos sin actividad. {HINT_STALLED}"))
 }
 
+/// El mensaje que le avisa al padre que un hijo espera un permiso que le toca contestar a él:
+/// la misma etiqueta que el despertar, con el permiso (id, herramienta y qué quiere hacer) y
+/// qué hacer. Va como `event`: el hijo sigue en su turno.
+fn permission_message(key: &str, title: &str, backend: &str, role: Option<&str>, elapsed: Duration, permissions: &[Value], hint: &str) -> String {
+    let lead = format!("El subagente {key} ({backend}) espera un permiso y te toca contestarlo a ti (estado permission_required). Lo de result es un aviso de Atic, no su respuesta.");
+    let field = |permission: &Value, name: &str| permission.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let list = permissions
+        .iter()
+        .map(|p| format!("- id {} · {} · {} · {}", field(p, "id"), field(p, "tool"), field(p, "description"), field(p, "input")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    subagent_message(&lead, key, title, backend, role, "event", elapsed, &format!("{hint}\n\n{list}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn subagent_message(lead: &str, key: &str, title: &str, backend: &str, role: Option<&str>, status: &str, elapsed: Duration, reply: &str) -> String {
     let role = role.map(str::trim).filter(|r| !r.is_empty()).map(|r| format!("<role>{}</role>\n", escape_field(r))).unwrap_or_default();
@@ -1899,21 +1913,44 @@ impl CodeView {
     /// Un hijo pide un permiso: lo saben quienes esperan su resultado. El usuario lo ve en
     /// la tarjeta del hijo en la conversación padre («pide permiso: …» con «Abrir para
     /// contestar»), que lee los permisos del hijo, y en su fila de la barra.
-    pub(super) fn delegate_permission(&mut self, key: &str) {
+    ///
+    /// Si nadie lo espera (el padre delegó sin esperar y terminó su turno) y el padre es quien
+    /// lo contesta (`decides`, o su modo no pregunta), se le despierta con el permiso: sin
+    /// esto el hijo se quedaba parado hasta que el usuario lo notara.
+    pub(super) fn delegate_permission(&mut self, key: &str, cx: &mut Context<Self>) {
         let decides = self.configs.orchestrator_decides;
         let parent_allows = self.parent_allows(key);
         let Some(chat) = self.chats.iter_mut().find(|c| c.key == key && c.delegation.is_some()) else {
             return;
         };
         let permissions = pending_permissions(chat);
+        // Un agente ACP al que el orquestador deja pasar ya lo contestó `prepare_permission`.
+        if permissions.is_empty() {
+            return;
+        }
+        let title = chat.title.clone();
         let Some(delegation) = chat.delegation.as_mut() else {
             return;
         };
         let hint = permission_hint(delegation.external, decides, parent_allows);
-        let result = outcome(key, &delegation.backend, "permission_required", "", Some(hint), delegation.started.elapsed(), permissions);
+        let result = outcome(key, &delegation.backend, "permission_required", "", Some(hint), delegation.started.elapsed(), permissions.clone());
+        let mut delivered = false;
         for (_, waiter) in delegation.waiters.drain(..) {
-            let _ = waiter.send(Ok(result.clone()));
+            delivered |= waiter.send(Ok(result.clone())).is_ok();
         }
+        let parent_answers = !delegation.external && delegation.wake && (decides || parent_allows);
+        if delivered || !parent_answers {
+            return;
+        }
+        let message = permission_message(key, &title, &delegation.backend, delegation.role.as_deref(), delegation.started.elapsed(), &permissions, hint);
+        let parent = delegation.parent.clone();
+        self.wake_parent(&parent, message, cx);
+    }
+
+    /// ¿Contesta el orquestador los permisos de `key`? Es un subagente de una conversación de
+    /// Atic Code y el usuario dejó que quien delega decida por sus hijos.
+    pub(super) fn parent_decides_for(&self, key: &str) -> bool {
+        self.configs.orchestrator_decides && self.chats.iter().any(|c| c.key == key && c.delegation.as_ref().is_some_and(|d| !d.external))
     }
 
     /// Se detuvo `parent`: sus hijos que trabajan también se detienen, y ninguno lo
@@ -2009,6 +2046,14 @@ mod tests {
         let past = read_slice("c1", "opencode", &text, 50, None);
         assert_eq!((past["text"].as_str(), past["offset"].as_u64(), past["next_offset"].is_null()), (Some(""), Some(10), true));
         assert_eq!(read_slice("c1", "opencode", &text, 0, Some(0))["text"].as_str().map(str::len), Some(2), "el mínimo es un carácter");
+    }
+
+    #[test]
+    fn el_aviso_de_permiso_lleva_el_id_y_lo_que_pide() {
+        let perms = vec![json!({ "id": "r1", "tool": "Bash", "description": "borrar tmp", "input": "{\"command\":\"rm -r tmp\"}" })];
+        let message = permission_message("c2", "bench", "opencode", None, Duration::from_secs(5), &perms, HINT_PERMISSION_DECIDES);
+        assert!(message.contains("<status>event</status>") && message.contains("id r1 · Bash · borrar tmp"), "{message}");
+        assert!(message.contains("atic_permission"));
     }
 
     #[test]

@@ -420,6 +420,19 @@ impl CodeView {
     pub(super) fn set_orchestrator_decides(&mut self, on: bool, cx: &mut Context<Self>) {
         self.configs.orchestrator_decides = on;
         self.configs.save();
+        // Los permisos que ya esperaban en subagentes ACP se contestan ahora.
+        if on {
+            let waiting: Vec<String> = self.chats.iter().filter(|c| !c.permissions.is_empty() && c.delegation.as_ref().is_some_and(|d| !d.external)).map(|c| c.key.clone()).collect();
+            for key in waiting {
+                self.allow_pending_acp(&key, cx);
+                self.deny_plan_for_orchestrator(&key, cx);
+            }
+            // Un subagente Claude parado en una pregunta o un plan: se le avisa al padre.
+            let stuck: Vec<String> = self.chats.iter().filter(|c| c.acp.is_none() && !c.permissions.is_empty() && c.delegation.as_ref().is_some_and(|d| !d.external)).map(|c| c.key.clone()).collect();
+            for key in stuck {
+                self.delegate_permission(&key, cx);
+            }
+        }
         cx.notify();
     }
 

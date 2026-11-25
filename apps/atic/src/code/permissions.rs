@@ -119,6 +119,8 @@ fn options(question: &Value) -> Vec<(String, Option<String>)> {
 
 /// Lo que va al agente si sigue planificando (también desde el celular).
 pub(super) const KEEP_PLANNING: &str = "El usuario quiere seguir planificando.";
+/// Lo que se le contesta a un subagente en plan cuyo orquestador decide (`deny_plan_for_orchestrator`).
+const PLAN_AS_REPLY: &str = "Quien te delegó la tarea pidió solo el análisis, no cambios: no salgas del modo plan. Entrega ese mismo informe completo como respuesta final en texto, sin resumirlo (veredicto, hallazgos con archivo:línea y la corrección propuesta).";
 
 /// Tope de lo que viaja al celular de una solicitud (el plan entero puede ser largo).
 const PHONE_DETAIL_MAX: usize = 8 * 1024;
@@ -488,11 +490,29 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Un subagente cuyo orquestador decide por él pide salir del modo plan: el padre lo abrió
+    /// en plan porque quería el análisis, no cambios, así que el plan es su resultado. Se le
+    /// contesta aquí que lo entregue como respuesta final, sin despertar al padre (un turno de
+    /// modelo para decir siempre lo mismo).
+    pub(super) fn deny_plan_for_orchestrator(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.parent_decides_for(key) {
+            return;
+        }
+        let plans: Vec<String> = self.chats.iter().filter(|c| c.key == key).flat_map(|c| c.permissions.iter()).filter(|p| p.tool == "ExitPlanMode").map(|p| p.request_id.clone()).collect();
+        for request in plans {
+            self.reply_permission(key, &request, |_| json!({ "behavior": "deny", "message": PLAN_AS_REPLY }), cx);
+        }
+    }
+
     /// Un agente ACP no tiene un modo «sin preguntar» que Atic conozca: con «Permitir todo»,
     /// lo que pida se permite solo (una vez cada cosa) mientras dure. Las preguntas y el plan
     /// siguen esperando al usuario.
-    fn allow_pending_acp(&mut self, key: &str, cx: &mut Context<Self>) {
-        if !allows_all(key) {
+    ///
+    /// Lo mismo para un subagente cuyo orquestador decide por él (Configuración → General):
+    /// un agente ACP no tiene el modo que no pregunta, y sin esto se quedaba esperando al
+    /// usuario aunque nadie fuera a mirarlo.
+    pub(super) fn allow_pending_acp(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !allows_all(key) && !self.parent_decides_for(key) {
             return;
         }
         let pending: Vec<String> = self
@@ -1135,6 +1155,7 @@ impl CodeView {
     /// Al llegar una pregunta se crean sus campos «Otro…».
     pub(super) fn prepare_permission(&mut self, key: &str, cx: &mut Context<Self>) {
         self.allow_pending_acp(key, cx);
+        self.deny_plan_for_orchestrator(key, cx);
         let pending: Vec<(String, usize)> = self
             .chats
             .iter()

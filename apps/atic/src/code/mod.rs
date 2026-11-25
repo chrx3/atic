@@ -1939,7 +1939,7 @@ impl CodeView {
                 }
                 if event == "permission" {
                     self.prepare_permission(&key, cx);
-                    self.delegate_permission(&key);
+                    self.delegate_permission(&key, cx);
                 }
                 // Un subagente cuyo proceso se cerró a mitad de turno no va a terminar.
                 if event == "closed" {
