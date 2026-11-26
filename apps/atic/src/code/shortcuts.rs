@@ -88,7 +88,7 @@ use Kind::{Edit, Fixed, Info};
 const NEXT_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-down", "ctrl-tab") } else { ("ctrl-tab", "ctrl-pagedown") };
 const PREV_CHAT: (&str, &str) = if cfg!(target_os = "macos") { ("ctrl-alt-up", "ctrl-shift-tab") } else { ("ctrl-shift-tab", "ctrl-pageup") };
 
-pub const TABLE: [Shortcut; 44] = [
+pub const TABLE: [Shortcut; 45] = [
     s("palette", "General", "pill.code.shortcuts.palette", "ctrl-k", GENERAL, Edit, true),
     s("palette_alt", "General", "pill.code.shortcuts.paletteAlt", "ctrl-p", GENERAL, Edit, true),
     s("new_conversation", "General", "pill.code.shortcuts.newConversation", "ctrl-n", GENERAL, Edit, true),
@@ -129,6 +129,7 @@ pub const TABLE: [Shortcut; 44] = [
     s("toggle_terminal_t", "Terminal", "pill.code.shortcuts.toggleTerminalT", "ctrl-t", GENERAL, Edit, false),
     s("new_terminal", "Terminal", "pill.code.shortcuts.newTerminal", "ctrl-shift-t", GENERAL, Edit, false),
     s("editor_save", "Editor", "pill.code.shortcuts.editorSave", "ctrl-s", "", Info, false),
+    s("editor_go_to_line", "Editor", "pill.code.shortcuts.goToLine", "ctrl-g", "", Info, false),
     s("editor_undo", "Editor", "pill.code.shortcuts.editorUndo", "ctrl-z", "", Info, false),
     s("editor_indent", "Editor", "pill.code.shortcuts.editorIndent", "tab", "", Info, false),
     s("editor_close", "Editor", "pill.code.shortcuts.editorClose", "escape", "", Info, false),

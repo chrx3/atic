@@ -17,10 +17,56 @@ pub struct FileChange {
     /// La carpeta dentro del repositorio («» si está en la raíz).
     pub dir: String,
     /// `N` sin seguimiento, `A` agregado, `M` modificado, `D` borrado,
-    /// `R` renombrado (las letras de la referencia).
+    /// `R` renombrado (las letras de la referencia). Se deriva de las dos
+    /// columnas sin romper a quien ya la usa.
     pub status: char,
+    /// La columna izquierda de git (`X`): lo preparado.
+    pub staged: char,
+    /// La columna derecha (`Y`): lo sin preparar.
+    pub worktree: char,
+    /// En un renombre, el nombre viejo (solo el nombre, sin carpeta).
+    pub from: Option<String>,
     pub added: usize,
     pub removed: usize,
+}
+
+/// En qué sección del panel va un archivo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Staged,
+    Work,
+    Untracked,
+    Conflict,
+}
+
+impl FileChange {
+    /// Dos en conflicto (`UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD`).
+    pub fn is_conflict(&self) -> bool {
+        matches!(
+            (self.staged, self.worktree),
+            ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
+        )
+    }
+
+    pub fn section(&self) -> Section {
+        if self.is_conflict() {
+            Section::Conflict
+        } else if (self.staged, self.worktree) == ('?', '?') {
+            Section::Untracked
+        } else if self.staged != ' ' {
+            Section::Staged
+        } else {
+            Section::Work
+        }
+    }
+
+    /// «viejo → nuevo» en renombres; si no, el nombre.
+    pub fn display_name(&self) -> String {
+        match &self.from {
+            Some(from) => format!("{from} → {}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +75,14 @@ pub struct Repo {
     /// La raíz del repositorio (o la carpeta, si no es uno).
     pub root: PathBuf,
     pub branch: Option<String>,
+    /// `(por subir, por bajar)` respecto del remoto; `None` sin remoto.
+    pub ahead_behind: Option<(usize, usize)>,
+    /// Lo preparado (`git diff --cached --numstat`): suma y quita.
+    pub staged_added: usize,
+    pub staged_removed: usize,
+    /// Lo sin preparar (`git diff --numstat`): suma y quita.
+    pub work_added: usize,
+    pub work_removed: usize,
     pub files: Vec<FileChange>,
     /// Una carpeta del espacio que no es un repositorio git.
     pub is_repo: bool,
@@ -37,7 +91,14 @@ pub struct Repo {
     pub error: Option<String>,
 }
 
-fn git(dir: &Path) -> Command {
+impl Repo {
+    /// Los archivos de una sección, en el orden en que van en el panel.
+    pub fn in_section(&self, section: Section) -> Vec<&FileChange> {
+        self.files.iter().filter(|f| f.section() == section).collect()
+    }
+}
+
+pub(crate) fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(dir);
     #[cfg(windows)]
@@ -55,8 +116,9 @@ fn output(command: &mut Command) -> Option<Vec<u8>> {
 }
 
 /// Corre git y trae su salida, o por qué falló (sin git, repo roto, sin permiso).
-/// El panel distingue así un repo limpio de uno que no se pudo leer.
-fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+/// El panel distingue así un repo limpio de uno que no se pudo leer. Todo va
+/// como argumentos (nunca por shell).
+pub(crate) fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     match git(dir).args(args).output() {
         Ok(output) if output.status.success() => Ok(output.stdout),
         Ok(output) => {
@@ -84,7 +146,7 @@ pub fn status(folders: &[PathBuf]) -> Vec<Repo> {
                     out.push(repo(&root));
                 }
             }
-            None => out.push(Repo { name: short(folder), root: folder.clone(), branch: None, files: Vec::new(), is_repo: false, error: None }),
+            None => out.push(Repo { name: short(folder), root: folder.clone(), branch: None, ahead_behind: None, staged_added: 0, staged_removed: 0, work_added: 0, work_removed: 0, files: Vec::new(), is_repo: false, error: None }),
         }
     }
     out
@@ -97,6 +159,7 @@ fn short(path: &Path) -> String {
 fn repo(root: &Path) -> Repo {
     let name = short(root);
     let branch = output(git(root).args(["rev-parse", "--abbrev-ref", "HEAD"])).and_then(line);
+    let ahead_behind = upstream_counts(root);
     let status = run(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
     let entries = status.as_ref().map(|raw| parse_status(raw)).unwrap_or_default();
     // Si el estado falló, los archivos van vacíos pero no está limpio: se avisa.
@@ -104,25 +167,45 @@ fn repo(root: &Path) -> Repo {
     let counts = output(git(root).args(["diff", "--numstat", "-z", "HEAD"]))
         .map(|raw| parse_numstat(&raw))
         .unwrap_or_default();
+    // Lo preparado y lo sin preparar, por sección (`--cached` y el árbol).
+    let staged = summed_numstat(root, &["diff", "--cached", "--numstat", "-z"]);
+    let work = summed_numstat(root, &["diff", "--numstat", "-z"]);
     let files = entries
         .into_iter()
-        .map(|(rel, status)| {
-            let path = root.join(&rel);
-            let (added, removed) = counts.get(&rel).copied().unwrap_or_else(|| {
-                if matches!(status, 'A' | 'N') {
+        .map(|entry| {
+            let path = root.join(&entry.rel);
+            let (added, removed) = counts.get(&entry.rel).copied().unwrap_or_else(|| {
+                if matches!(entry.status, 'A' | 'N') {
                     (count_lines(&path), 0)
                 } else {
                     (0, 0)
                 }
             });
-            let (dir, name) = match rel.rsplit_once('/') {
+            let (dir, name) = match entry.rel.rsplit_once('/') {
                 Some((dir, name)) => (dir.to_string(), name.to_string()),
-                None => (String::new(), rel.clone()),
+                None => (String::new(), entry.rel.clone()),
             };
-            FileChange { path, name, dir, status, added, removed }
+            FileChange { path, name, dir, status: entry.status, staged: entry.staged, worktree: entry.worktree, from: entry.from, added, removed }
         })
         .collect();
-    Repo { name, root: root.to_path_buf(), branch, files, is_repo: true, error }
+    Repo { name, root: root.to_path_buf(), branch, ahead_behind, staged_added: staged.0, staged_removed: staged.1, work_added: work.0, work_removed: work.1, files, is_repo: true, error }
+}
+
+/// `(por subir, por bajar)` contra el remoto (`@{u}...HEAD`): la izquierda son
+/// los del remoto que faltan aquí y la derecha los de aquí que faltan allá.
+/// Sin remoto, `None` (y el panel no muestra las flechas).
+fn upstream_counts(root: &Path) -> Option<(usize, usize)> {
+    let out = run(root, &["rev-list", "--left-right", "--count", "@{u}...HEAD"]).ok()?;
+    let text = String::from_utf8_lossy(&out);
+    let mut parts = text.split_whitespace();
+    let (behind, ahead) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?);
+    Some((ahead, behind))
+}
+
+/// Suma y quita de un `git diff --numstat -z` (preparado o del árbol).
+fn summed_numstat(root: &Path, args: &[&str]) -> (usize, usize) {
+    let counts = output(git(root).args(args)).map(|raw| parse_numstat(&raw)).unwrap_or_default();
+    counts.values().fold((0, 0), |(added, removed), (a, r)| (added + a, removed + r))
 }
 
 /// Lo que cambió en `dir` para el celular (`phone.rs`): la rama y, por archivo, su ruta
@@ -154,25 +237,40 @@ fn within(prefix: &str, files: impl Iterator<Item = (String, char, usize, usize)
         .collect()
 }
 
+/// Una entrada de `git status --porcelain=v1 -z`: las dos columnas y, en
+/// renombres, de dónde viene.
+struct RawEntry {
+    rel: String,
+    status: char,
+    staged: char,
+    worktree: char,
+    from: Option<String>,
+}
+
 /// `git status --porcelain=v1 -z`: `XY ruta\0`; los renombres traen la ruta
 /// vieja en la entrada siguiente.
-fn parse_status(raw: &[u8]) -> Vec<(String, char)> {
+fn parse_status(raw: &[u8]) -> Vec<RawEntry> {
     let mut out = Vec::new();
     let mut entries = raw.split(|b| *b == 0).filter(|e| e.len() > 3);
     while let Some(entry) = entries.next() {
         let (x, y) = (entry[0], entry[1]);
         let path = String::from_utf8_lossy(&entry[3..]).into_owned();
+        let from = if x == b'R' || x == b'C' {
+            entries.next().map(|old| {
+                let old = String::from_utf8_lossy(old).into_owned();
+                old.rsplit('/').next().unwrap_or(&old).to_string()
+            })
+        } else {
+            None
+        };
         let status = match (x, y) {
             (b'?', _) => 'N',
             (b'A', _) => 'A',
             (b'D', _) | (_, b'D') => 'D',
-            (b'R', _) | (b'C', _) => {
-                entries.next();
-                'R'
-            }
+            (b'R', _) | (b'C', _) => 'R',
             _ => 'M',
         };
-        out.push((path, status));
+        out.push(RawEntry { rel: path, status, staged: x as char, worktree: y as char, from });
     }
     out
 }
@@ -217,8 +315,9 @@ mod tests {
     #[test]
     fn lee_el_estado_con_nuevos_borrados_y_renombres() {
         let raw = b" M src/a.rs\0?? nuevo.txt\0R  b.rs\0viejo.rs\0 D borrado.rs\0A  agregado.rs\0";
+        let parsed: Vec<(String, char)> = parse_status(raw).into_iter().map(|e| (e.rel, e.status)).collect();
         assert_eq!(
-            parse_status(raw),
+            parsed,
             vec![
                 ("src/a.rs".to_string(), 'M'),
                 ("nuevo.txt".to_string(), 'N'),
@@ -227,6 +326,58 @@ mod tests {
                 ("agregado.rs".to_string(), 'A'),
             ]
         );
+    }
+
+    #[test]
+    fn guarda_las_dos_columnas_y_el_origen_de_los_renombres() {
+        // `M.`, `.M`, `MM`, `A.`, `??`, `UU` y `R.` con su origen.
+        let raw = b"M  a.rs\0 M b.rs\0MM c.rs\0A  d.rs\0?? e.rs\0UU f.rs\0R  g.rs\0viejo.rs\0";
+        let parsed = parse_status(raw);
+        let cols: Vec<(char, char, char, Option<&str>)> =
+            parsed.iter().map(|e| (e.status, e.staged, e.worktree, e.from.as_deref())).collect();
+        assert_eq!(
+            cols,
+            vec![
+                ('M', 'M', ' ', None),
+                ('M', ' ', 'M', None),
+                ('M', 'M', 'M', None),
+                ('A', 'A', ' ', None),
+                ('N', '?', '?', None),
+                ('M', 'U', 'U', None),
+                ('R', 'R', ' ', Some("viejo.rs")),
+            ]
+        );
+        // Las secciones del panel: preparado, sin preparar, sin seguimiento y conflictos.
+        let sections: Vec<Section> = parsed.iter().map(|e| change_of(e).section()).collect();
+        assert_eq!(
+            sections,
+            vec![
+                Section::Staged,
+                Section::Work,
+                Section::Work,
+                Section::Staged,
+                Section::Untracked,
+                Section::Conflict,
+                Section::Staged,
+            ]
+        );
+        // Un `DU` también es conflicto.
+        assert!(change_of(&parse_status(b"DU h.rs\0")[0]).is_conflict());
+    }
+
+    #[cfg(test)]
+    fn change_of(entry: &RawEntry) -> FileChange {
+        FileChange {
+            path: PathBuf::from(&entry.rel),
+            name: entry.rel.clone(),
+            dir: String::new(),
+            status: entry.status,
+            staged: entry.staged,
+            worktree: entry.worktree,
+            from: entry.from.clone(),
+            added: 0,
+            removed: 0,
+        }
     }
 
     #[test]
@@ -242,7 +393,7 @@ mod tests {
     fn el_estado_fallido_se_distinguen_de_un_repo_limpio() {
         // `git -C` en una carpeta que no existe falla: no es que esté limpio.
         assert!(run(std::path::Path::new("/definitivamente/no/existe-atic"), &["status", "--porcelain=v1", "-z"]).is_err());
-        let clean = Repo { name: "r".into(), root: PathBuf::from("/r"), branch: Some("main".into()), files: Vec::new(), is_repo: true, error: None };
+        let clean = Repo { name: "r".into(), root: PathBuf::from("/r"), branch: Some("main".into()), ahead_behind: None, staged_added: 0, staged_removed: 0, work_added: 0, work_removed: 0, files: Vec::new(), is_repo: true, error: None };
         let broken = Repo { error: Some("fatal: repo roto".into()), ..clean.clone() };
         assert!(clean.error.is_none());
         assert!(broken.error.is_some());

@@ -17,7 +17,7 @@ use gpui_m3::{Banner, Button, CodeEditor, CodeEditorEvent, Dialog, SyntaxLines};
 
 use super::overlay;
 use super::style::t;
-use super::{panel, same_path, CodeView, Side};
+use super::{panel, same_path, CodeView, GoToLine, Side};
 
 /// Lo más grande que se abre para editar (el mismo tope que el visor).
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -31,7 +31,10 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const CONTEXT: &str = "M3CodeEditor";
 
 pub fn bind_keys(cx: &mut App, keys: &[String]) {
-    cx.bind_keys(keys.iter().map(|key| KeyBinding::new(key, gpui::NoAction, Some(CONTEXT))));
+    // Ctrl+G (⌘G en macOS) dentro del editor es «Ir a línea»: no se anula como
+    // los demás atajos de Atic Code, sino que salta a una línea del archivo.
+    cx.bind_keys(keys.iter().filter(|key| key.as_str() != "ctrl-g").map(|key| KeyBinding::new(key, gpui::NoAction, Some(CONTEXT))));
+    cx.bind_keys([KeyBinding::new("ctrl-g", super::GoToLine, Some(CONTEXT))]);
 }
 
 /// Lo que muestra una pestaña: el editor, una imagen, o el motivo por el que no se puede
@@ -55,6 +58,8 @@ pub(super) struct Open {
     pub body: Body,
     /// El archivo cambió en el disco y el editor tiene cambios propios: no se pisó.
     pub stale: bool,
+    /// Un `.md` mirado como vista previa en vez de texto (`preview`).
+    pub preview: bool,
 }
 
 /// Las pestañas de archivos abiertos y lo que depende de ellas.
@@ -66,6 +71,8 @@ pub(super) struct Tabs {
     /// El archivo con cambios sin guardar que se quiere cerrar (el diálogo).
     pub confirm: Option<PathBuf>,
     pub confirm_last: overlay::Last<PathBuf>,
+    /// El diálogo «Ir a línea» del editor.
+    pub goto: Option<Entity<gpui_m3::TextField>>,
     /// El archivo cuyo chip de contexto se quitó con la X (vuelve al cambiar de pestaña).
     skip: Option<PathBuf>,
     /// Al dibujar, el foco pasa al editor (se abrió un archivo).
@@ -190,6 +197,26 @@ pub(super) fn uses_tabs(text: &str) -> bool {
     tabs > spaces
 }
 
+/// Se puede mirar como vista previa: un Markdown.
+pub(super) fn is_markdown(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(ext.as_str(), "md" | "mdx" | "markdown")
+}
+
+/// «42» o «42:7» a línea y columna (desde 1), si caen dentro del archivo.
+pub(super) fn parse_goto(text: &str, lines: usize) -> Option<(usize, usize)> {
+    let (line, col) = match text.trim().split_once(':') {
+        Some((line, col)) => (line.trim(), col.trim()),
+        None => (text.trim(), "1"),
+    };
+    let line: usize = line.parse().ok()?;
+    let col: usize = if col.is_empty() { 1 } else { col.parse().ok()? };
+    if line == 0 || line > lines.max(1) || col == 0 {
+        return None;
+    }
+    Some((line, col))
+}
+
 /// El texto del archivo, o por qué no se puede editar.
 pub(super) fn read_text(path: &Path) -> Result<String, String> {
     match std::fs::metadata(path) {
@@ -242,7 +269,7 @@ impl CodeView {
             Some(index) => index,
             None => {
                 let body = self.load_body(&path, cx);
-                self.tabs.files.push(Open { path, body, stale: false });
+                self.tabs.files.push(Open { path, body, stale: false, preview: false });
                 self.tabs.files.len() - 1
             }
         };
@@ -494,6 +521,94 @@ impl CodeView {
         cx.notify();
     }
 
+    /// «Ir a línea» (Ctrl+G con el editor enfocado, o su botón): pide la línea y salta a ella.
+    pub(super) fn go_to_line(&mut self, _: &GoToLine, window: &mut Window, cx: &mut Context<Self>) {
+        if self.side != Some(Side::File) {
+            return;
+        }
+        let Some(index) = self.tabs.active.filter(|i| *i < self.tabs.files.len()) else {
+            return;
+        };
+        if !matches!(self.tabs.files[index].body, Body::Editor(_)) {
+            return;
+        }
+        let field = cx.new(|cx| {
+            gpui_m3::TextField::new(cx)
+                .select_all_on_focus(true)
+                .restore_on_cancel(true)
+                .placeholder(crate::i18n::t("pill.code.editor.goToPlaceholder"))
+        });
+        cx.subscribe(&field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
+            gpui_m3::TextFieldEvent::Submitted(_) => view.commit_goto(cx),
+            gpui_m3::TextFieldEvent::Cancelled => {
+                view.tabs.goto = None;
+                cx.notify();
+            }
+            gpui_m3::TextFieldEvent::Changed(_) => {}
+        })
+        .detach();
+        field.read(cx).focus(window);
+        self.tabs.goto = Some(field);
+        cx.notify();
+    }
+
+    fn commit_goto(&mut self, cx: &mut Context<Self>) {
+        let text = self.tabs.goto.as_ref().map(|field| field.read(cx).text().trim().to_string()).unwrap_or_default();
+        let current = self.tabs.active.filter(|i| *i < self.tabs.files.len());
+        let editor = current.and_then(|i| match &self.tabs.files[i].body {
+            Body::Editor(editor) => Some(editor.clone()),
+            Body::Image | Body::Note(_) => None,
+        });
+        let Some(editor) = editor else {
+            self.tabs.goto = None;
+            cx.notify();
+            return;
+        };
+        let lines = editor.read(cx).text().lines().count();
+        match parse_goto(&text, lines) {
+            Some((line, col)) => {
+                editor.update(cx, |editor, cx| editor.go_to(line - 1, col - 1, cx));
+                self.tabs.goto = None;
+            }
+            None => self.show_toast(crate::i18n::t("pill.code.editor.lineInvalid").to_string(), cx),
+        }
+        cx.notify();
+    }
+
+    /// El diálogo «Ir a línea», sobre el panel.
+    pub(super) fn goto_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let field = self.tabs.goto.clone()?;
+        Some(
+            Dialog::new("goto-line")
+                .icon("info")
+                .title(crate::i18n::t("pill.code.editor.goToTitle"))
+                .width(px(320.))
+                .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.tabs.goto = None;
+                    cx.notify();
+                }))
+                .child(div().child(field))
+                .action(Button::new("goto-cancel", crate::i18n::t("pill.code.editor.cancel")).text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.tabs.goto = None;
+                    cx.notify();
+                })))
+                .action(
+                    Button::new("goto-ok", crate::i18n::t("pill.code.editor.goToLine"))
+                        .filled()
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.commit_goto(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Alterna el Markdown entre texto y vista previa (solo `.md`).
+    fn toggle_md_preview(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(open) = self.tabs.files.get_mut(index) {
+            open.preview = !open.preview;
+        }
+        cx.notify();
+    }
+
     // --- Lo que se dibuja ---
 
     /// El cuerpo del panel con el editor: el aviso de «cambió en el disco» y el texto (la
@@ -505,6 +620,17 @@ impl CodeView {
         };
         let open = &self.tabs.files[index];
         let content = match &open.body {
+            Body::Editor(editor) if open.preview && is_markdown(&open.path) => {
+                let text = editor.read(cx).text();
+                div()
+                    .id("md-preview")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
+                    .p(px(16.))
+                    .child(super::view::markdown_live(&format!("md-preview-{}", open.path.display()), &text, false, cx))
+                    .into_any_element()
+            }
             Body::Editor(editor) => div()
                 .flex_1()
                 .min_h(px(0.))
@@ -576,6 +702,26 @@ impl CodeView {
                     cx.notify();
                 })))
         });
+        // La barra del editor: «Ir a línea» y, en un `.md`, alternar texto y vista previa.
+        let toolbar = matches!(open.body, Body::Editor(_)).then(|| {
+            let preview_label = if open.preview { crate::i18n::t("pill.code.editor.editCode") } else { crate::i18n::t("pill.code.editor.preview") };
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .py(px(4.))
+                .child(div().flex_1())
+                .child(Button::new("editor-goto", crate::i18n::t("pill.code.editor.goToLine")).text().on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
+                    view.go_to_line(&GoToLine, window, cx)
+                })))
+                .when(is_markdown(&open.path), |el| {
+                    el.child(Button::new("editor-preview", preview_label).text().on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.toggle_md_preview(index, cx)
+                    })))
+                })
+        });
         div()
             .flex_1()
             .min_h(px(0.))
@@ -583,6 +729,7 @@ impl CodeView {
             .flex_col()
             .bg(super::view::code_bg())
             .when_some(stale, |el, banner| el.child(div().px(px(8.)).py(px(6.)).child(banner)))
+            .when_some(toolbar, |el, bar| el.child(bar))
             .child(content)
             .into_any_element()
     }
@@ -683,6 +830,25 @@ mod tests {
     fn las_imagenes_se_miran_y_el_svg_se_edita() {
         assert!(is_image(Path::new("/x/gato.GIF")) && is_image(Path::new("a.png")) && is_image(Path::new("b.jpeg")));
         assert!(!is_image(Path::new("logo.svg")) && !is_image(Path::new("main.rs")) && !is_image(Path::new("sin_extension")));
+    }
+
+    #[test]
+    fn el_markdown_se_puede_mirar_como_vista_previa() {
+        assert!(is_markdown(Path::new("notas.md")) && is_markdown(Path::new("README.MDX")));
+        assert!(!is_markdown(Path::new("main.rs")) && !is_markdown(Path::new("nota.txt")));
+    }
+
+    #[test]
+    fn ir_a_linea_acepta_linea_y_columna_si_existen() {
+        assert_eq!(parse_goto("42", 100), Some((42, 1)));
+        assert_eq!(parse_goto(" 7:3 ", 100), Some((7, 3)));
+        assert_eq!(parse_goto("100", 100), Some((100, 1)));
+        // Fuera del archivo, cero o texto: no vale.
+        assert_eq!(parse_goto("0", 100), None);
+        assert_eq!(parse_goto("101", 100), None);
+        assert_eq!(parse_goto("hola", 100), None);
+        assert_eq!(parse_goto("12:0", 100), None);
+        assert_eq!(parse_goto("", 100), None);
     }
 
     use super::*;

@@ -174,6 +174,7 @@ pub(crate) fn grid_of(console: &Console, fonts: &[Font; 4], palette: &console::P
         cursor,
         cols,
         selection: marked,
+        marks: GridMarks::default(),
     }
 }
 
@@ -237,16 +238,51 @@ pub(crate) struct Grid {
     pub(crate) cols: usize,
     /// Lo marcado por fila visible: (columna inicial, fin exclusivo).
     pub(crate) selection: Vec<Option<(usize, usize)>>,
+    /// La búsqueda, el enlace bajo el cursor y el texto del IME: van sobre la
+    /// grilla pero bajo el texto (o en el cursor).
+    pub(crate) marks: GridMarks,
+}
+
+/// Un tramo resaltado por la búsqueda en una fila visible (columnas de
+/// terminal, fin exclusivo): `current` es la coincidencia a la vista.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FindHl {
+    pub(crate) row: usize,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) current: bool,
+}
+
+/// El enlace bajo el cursor (con Cmd apretado) en una fila visible.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LinkHl {
+    pub(crate) row: usize,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+}
+
+/// Lo que la terminal dibuja sobre la grilla: la búsqueda (`find`, con la
+/// coincidencia a la vista marcada), el enlace bajo el cursor y el texto a
+/// medio componer del IME (en el cursor).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GridMarks {
+    pub(crate) find: Vec<FindHl>,
+    pub(crate) link: Option<LinkHl>,
+    pub(crate) marked: Option<String>,
 }
 
 /// Cómo se dibuja la grilla: el margen, el color del cursor y el del contorno
-/// del cursor cuando la consola no tiene el foco, y el de la selección.
+/// del cursor cuando la consola no tiene el foco, el de la selección, el de la
+/// búsqueda (y el de la coincidencia a la vista) y el del enlace bajo el cursor.
 #[derive(Clone, Copy)]
 pub(crate) struct GridLook {
     pub(crate) pad: f32,
     pub(crate) cursor: u32,
     pub(crate) idle: u32,
     pub(crate) selection: u32,
+    pub(crate) find: u32,
+    pub(crate) find_current: u32,
+    pub(crate) link: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,6 +294,7 @@ pub(crate) fn paint_grid(
     font_size: f32,
     focused: bool,
     look: GridLook,
+    font: &Font,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -284,6 +321,15 @@ pub(crate) fn paint_grid(
             window.paint_quad(gpui::fill(
                 Bounds::new(point(px(origin.0 + *from as f32 * cw), px(y)), size(px((*to - *from) as f32 * cw), px(lh))),
                 console::term(look.selection).opacity(0.35),
+            ));
+        }
+        // La búsqueda va sobre la selección y bajo el texto: la coincidencia a
+        // la vista, más fuerte.
+        for mark in grid.marks.find.iter().filter(|mark| mark.row == index) {
+            let (color, opacity) = if mark.current { (look.find_current, 0.55) } else { (look.find, 0.3) };
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(px(origin.0 + mark.from as f32 * cw), px(y)), size(px((mark.to - mark.from) as f32 * cw), px(lh))),
+                console::term(color).opacity(opacity),
             ));
         }
         if row.text.trim_end().is_empty() {
@@ -331,6 +377,16 @@ pub(crate) fn paint_grid(
                 console::term(color),
             ));
         }
+        // El enlace bajo el cursor (con Cmd apretado): subrayado del acento.
+        if let Some(link) = grid.marks.link.filter(|link| link.row == index) {
+            window.paint_quad(gpui::fill(
+                Bounds::new(
+                    point(px(origin.0 + link.from as f32 * cw), px(y + baseline + 2. * z)),
+                    size(px((link.to - link.from) as f32 * cw), px(z.max(1.0))),
+                ),
+                console::term(look.link),
+            ));
+        }
     }
     if let Some((row, col, shape)) = grid.cursor {
         let x = origin.0 + col.min(grid.cols) as f32 * cw;
@@ -365,6 +421,28 @@ pub(crate) fn paint_grid(
                     gpui::BorderStyle::Solid,
                 ));
             }
+        }
+    }
+    // El texto a medio componer del IME, en el cursor y subrayado: sin él no se
+    // ve lo que se está escribiendo con una tecla muerta (`kit::input`).
+    if let (Some(marked), Some((row, col, _))) = (grid.marks.marked.as_ref(), grid.cursor) {
+        if !marked.is_empty() {
+            let runs = vec![TextRun {
+                len: marked.len(),
+                font: font.clone(),
+                color: console::term(look.cursor),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }];
+            let line = window.text_system().shape_line(marked.clone().into(), px(font_size), &runs, None);
+            let x = origin.0 + col.min(grid.cols) as f32 * cw;
+            let y = origin.1 + row as f32 * lh;
+            let _ = line.paint(point(px(x), px(y)), px(lh), window, cx);
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(px(x), px(y + baseline + 2. * z)), size(px(cw.max(8.)), px(z.max(1.0)))),
+                console::term(look.cursor),
+            ));
         }
     }
 }

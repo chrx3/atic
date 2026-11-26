@@ -540,7 +540,6 @@ impl CodeView {
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.choose_agent(cli, cx);
                         view.configs.set_last_agent(cli);
-                        view.close_menus(cx);
                     }))
             };
             group = group.child(segment);
@@ -774,10 +773,14 @@ impl CodeView {
                 line.chosen = Some(*value == option.current);
                 line.sublabel = detail.clone().or_else(|| (many && !self.more_models).then(|| entry_group.clone()).flatten());
                 let (config, value) = (config.clone(), value.clone());
+                // Elegir el modelo cierra el menú; las demás opciones (variante, etc.) lo dejan abierto.
+                let is_model = option.category == "model";
                 line.click = Some(boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.remember_acp_choice(Some(config.as_str()), &value);
                     view.set_acp_option(config.clone(), value.clone(), cx);
-                    view.close_menus(cx);
+                    if is_model {
+                        view.close_menus(cx);
+                    }
                 })));
                 out.push(Entry::Line(line));
             }
@@ -1235,7 +1238,6 @@ impl CodeView {
                         let click = boxed(cx.listener(move |view, _: &ClickEvent, _, cx| {
                             view.choose_agent(cli, cx);
                             view.configs.set_last_agent(cli);
-                            view.close_menus(cx);
                         }));
                         choices.push((Pick { id: ("agent", index), label: name, click }, cli == current));
                     }

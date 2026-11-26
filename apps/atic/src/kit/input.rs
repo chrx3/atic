@@ -13,7 +13,8 @@
 //! Si se escribiera el texto desde `key_down`, la marca saldría sola y la
 //! vocal no se juntaría con ella (`´a`).
 //!
-//! No se dibuja el texto marcado: una terminal no tiene dónde ponerlo.
+//! El texto marcado se dibuja en el cursor (`kit::paint_grid`), subrayado: sin
+//! él no se ve lo que se está escribiendo con una tecla muerta.
 
 use std::ops::Range;
 

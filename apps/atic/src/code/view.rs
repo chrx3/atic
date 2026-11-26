@@ -25,7 +25,7 @@ use super::SessionInfo;
 use super::config;
 use super::backdrop;
 use super::enter::Enter;
-use super::git::{FileChange, Repo};
+use super::git::{FileChange, Repo, Section};
 use super::{Attachment, CodeView, Menu, Side, COMPOSER, LOOSE};
 use crate::kit::chrome;
 use super::split::{controls_pane, fit, zone_in, zone_preview, ChatDrag, Fit};
@@ -420,6 +420,7 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::attach_action))
             .on_action(cx.listener(Self::show_files_action))
             .on_action(cx.listener(Self::show_changes_action))
+            .on_action(cx.listener(Self::go_to_line))
             .on_action(cx.listener(Self::open_folder_action))
             .on_action(cx.listener(Self::clear_conversation_action))
             .on_action(cx.listener(Self::toggle_terminal_action))
@@ -477,7 +478,16 @@ impl Render for CodeView {
                 covered = true;
                 el.child(dialog)
             })
+            .when_some(self.file_op_dialog(cx), |el, dialog| {
+                covered = true;
+                el.child(dialog)
+            })
+            .when_some(self.goto_dialog(cx), |el, dialog| {
+                covered = true;
+                el.child(dialog)
+            })
             .when(self.close_confirm, |el| el.child(self.confirm_close_dialog(cx)))
+            .when_some(self.git_confirm_dialog(cx), |el, dialog| el.child(dialog))
             .when_some(self.pop_layer(window, cx), |el, pop| {
                 covered = true;
                 el.child(pop)
@@ -4154,12 +4164,26 @@ impl CodeView {
     fn files(&mut self, roots: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.file_search.read(cx).text().trim().to_string();
         let body = if query.is_empty() { self.file_tree(roots, window, cx).into_any_element() } else { self.file_results(&query, roots.len() > 1, cx) };
+        let this = cx.weak_entity();
+        let ignored = gpui_m3::Switch::new("tree-ignored", self.tree_state.show_ignored()).on_toggle(move |on, _, cx| {
+            let _ = this.update(cx, |view, _| view.set_show_ignored(on));
+        });
         div()
             .flex_1()
             .min_h(px(0.))
             .flex()
             .flex_col()
             .child(div().px(px(10.)).pb(px(8.)).child(self.file_search.clone()))
+            .child(
+                div()
+                    .px(px(10.))
+                    .pb(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(ignored)
+                    .child(div().text_size(px(12.5)).text_color(muted()).child(crate::i18n::t("pill.code.view.showIgnored"))),
+            )
             .child(body)
     }
 
@@ -4226,6 +4250,15 @@ impl CodeView {
                 div().px(px(10.)).py(px(6.)).text_size(px(12.)).text_color(muted()).child(crate::i18n::tf(
                     "pill.code.view.searchCapped",
                     &[("n", &super::files::MAX_RESULTS)],
+                )),
+            );
+        }
+        // Con el índice lleno, lo que no entró no sale ni afinando: se avisa.
+        if index.len() >= super::files::MAX_INDEX {
+            list = list.child(
+                div().px(px(10.)).py(px(6.)).text_size(px(12.)).text_color(muted()).child(crate::i18n::tf(
+                    "pill.code.view.indexCapped",
+                    &[("n", &super::files::MAX_INDEX)],
                 )),
             );
         }
@@ -4305,7 +4338,7 @@ impl CodeView {
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.file_cursor = Some(click_path.clone());
                         if dir {
-                            view.explorer.toggle(&click_path, root);
+                            view.toggle_tree(&click_path, root);
                             cx.notify();
                         } else {
                             view.open_doc(click_path.clone(), false, cx);
@@ -4383,7 +4416,7 @@ impl CodeView {
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.file_cursor = Some(click_path.clone());
                         if dir {
-                            view.explorer.toggle(&click_path, root);
+                            view.toggle_tree(&click_path, root);
                             cx.notify();
                         } else {
                             view.open_doc(click_path.clone(), false, cx);
@@ -4428,6 +4461,15 @@ impl CodeView {
             if let Some(note) = note {
                 list = list.child(note);
             }
+        }
+        // Con el árbol recortado, lo que no entró no se ve: se avisa.
+        if self.explorer.truncated() {
+            list = list.child(
+                div().px(px(10.)).py(px(6.)).text_size(px(12.)).text_color(muted()).child(crate::i18n::tf(
+                    "pill.code.view.treeCapped",
+                    &[("n", &crate::kit::explorer::MAX_ROWS)],
+                )),
+            );
         }
         list
     }
@@ -4544,6 +4586,9 @@ impl CodeView {
         let count = repo.files.len();
         let clean = repo.is_repo && count == 0;
         let open = count > 0 && !self.collapsed_repos.contains(&repo.root);
+        // El +/− total de la tarjeta (contra HEAD, como el global de arriba).
+        let added: usize = repo.files.iter().map(|f| f.added).sum();
+        let removed: usize = repo.files.iter().map(|f| f.removed).sum();
         let header = div()
             .flex_1()
             .min_w(px(0.))
@@ -4565,6 +4610,11 @@ impl CodeView {
                         .text_size(px(11.))
                         .text_color(accent())
                         .child(count.to_string()),
+                )
+            })
+            .when(count > 0, |el| {
+                el.child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{added}"))).child(
+                    div().ml(px(6.)).font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{removed}")),
                 )
             })
             .child(div().flex_1())
@@ -4594,25 +4644,44 @@ impl CodeView {
                 }
             })
             .when_some(repo.branch.clone(), |el, branch| {
-                el.child(
-                    div()
-                        .h(px(24.))
-                        .px(px(8.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(5.))
-                        .rounded(px(8.))
-                        .bg(code_bg())
-                        .text_size(px(12.))
-                        .text_color(muted())
-                        .child(svg().path("icons/git-branch.svg").size(px(12.)).text_color(muted()))
-                        .child(branch),
-                )
+                // «rama ↑2 ↓1»: lo por subir y por bajar, solo con remoto.
+                let label = match repo.ahead_behind {
+                    Some((ahead, behind)) => format!("{branch} ↑{ahead} ↓{behind}"),
+                    None => branch,
+                };
+                let chip = div()
+                    .id(("branch", index))
+                    .h(px(24.))
+                    .px(px(8.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(5.))
+                    .rounded(px(8.))
+                    .bg(code_bg())
+                    .text_size(px(12.))
+                    .text_color(muted())
+                    .child(svg().path("icons/git-branch.svg").size(px(12.)).text_color(muted()))
+                    .child(label);
+                el.child(match repo.ahead_behind {
+                    Some((ahead, behind)) => chip.tooltip(crate::hover::tip_text(
+                        tf("pill.code.view.upDownTip", &[("ahead", &ahead), ("behind", &behind)]).into(),
+                    )),
+                    None => chip,
+                })
             });
+        // El mensaje y los botones (commit, subir, bajar) van sobre las secciones.
         let mut rows = div().flex().flex_col().pb(px(6.));
-        for (file_index, file) in repo.files.iter().enumerate() {
-            rows = rows.child(change_row(index * 10_000 + file_index, file, cx));
+        if open {
+            rows = rows.child(self.commit_row(index, repo, cx));
+        }
+        for section in [Section::Staged, Section::Work, Section::Untracked, Section::Conflict] {
+            let files: Vec<(usize, &FileChange)> =
+                repo.files.iter().enumerate().filter(|(_, f)| f.section() == section).collect();
+            if files.is_empty() {
+                continue;
+            }
+            rows = rows.child(self.section_block(index, repo, section, &files, cx));
         }
         let root = repo.root.clone();
         let toggle = cx.listener(move |view, open: &bool, _, cx| {
@@ -4660,6 +4729,214 @@ impl CodeView {
             .into_any_element()
     }
 
+    /// El mensaje de commit con su botón, y subir/bajar (con spinner en curso).
+    /// El botón va deshabilitado sin mensaje o sin nada preparado.
+    fn commit_row(&self, index: usize, repo: &Repo, cx: &mut Context<Self>) -> AnyElement {
+        let root = repo.root.clone();
+        let busy = self.git.busy.contains(&repo.root);
+        let field = self.commit_field(&repo.root, cx);
+        let can = self.can_commit(&repo.root, cx);
+        let commit_id = ("commit", index);
+        let commit_label = crate::i18n::t("pill.code.view.commit");
+        let commit_btn = if can {
+            let root = root.clone();
+            div()
+                .id(commit_id)
+                .h(px(30.))
+                .px(px(12.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .rounded(px(8.))
+                .bg(accent_soft())
+                .cursor_pointer()
+                .hover(|el| el.bg(hover_bg()))
+                .text_size(px(12.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(accent())
+                .tooltip(crate::hover::tip_text(crate::i18n::t("pill.code.view.commitTip").into()))
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.do_commit(root.clone(), cx)))
+                .child(commit_label.clone())
+        } else {
+            div()
+                .id(commit_id)
+                .h(px(30.))
+                .px(px(12.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .rounded(px(8.))
+                .bg(code_bg())
+                .text_size(px(12.5))
+                .text_color(faint())
+                .child(commit_label)
+        };
+        let push_label = crate::i18n::t("pill.code.view.pushTip");
+        let pull_label = crate::i18n::t("pill.code.view.pullTip");
+        let push = if busy {
+            div().id(("push-busy", index)).size(px(28.)).flex_none().flex().items_center().justify_center().child(gpui_m3::LoadingIndicator::new().size(px(14.)))
+        } else {
+            let root = root.clone();
+            div()
+                .id(("push", index))
+                .size(px(28.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip_text(push_label.into()))
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.do_push(root.clone(), cx)))
+                .child(svg().path("icons/arrow-up.svg").size(px(14.)).text_color(muted()))
+        };
+        let pull = if busy {
+            div().id(("pull-busy", index)).size(px(28.)).flex_none().flex().items_center().justify_center().child(gpui_m3::LoadingIndicator::new().size(px(14.)))
+        } else {
+            let root = root.clone();
+            div()
+                .id(("pull", index))
+                .size(px(28.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|el| el.bg(hover_bg()))
+                .tooltip(crate::hover::tip_text(pull_label.into()))
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.do_pull(root.clone(), cx)))
+                .child(svg().path("icons/download.svg").size(px(14.)).text_color(muted()))
+        };
+        div()
+            .px(px(6.))
+            .pb(px(2.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(div().flex_1().min_w(px(0.)).child(field))
+            .child(commit_btn)
+            .child(push)
+            .child(pull)
+            .into_any_element()
+    }
+
+    /// Una sección del repo (Preparados, Cambios, Sin seguimiento, Conflictos)
+    /// con su conteo, su +/− y su acción (preparar o sacar todo). Los conflictos
+    /// van en rojo, con icono de alerta.
+    fn section_block(
+        &self,
+        index: usize,
+        repo: &Repo,
+        section: Section,
+        files: &[(usize, &FileChange)],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (title, alert) = match section {
+            Section::Staged => (crate::i18n::t("pill.code.view.staged"), false),
+            Section::Work => (crate::i18n::t("pill.code.view.changes"), false),
+            Section::Untracked => (crate::i18n::t("pill.code.view.untracked"), false),
+            Section::Conflict => (crate::i18n::t("pill.code.view.conflicts"), true),
+        };
+        // El +/− de la sección: lo preparado y lo del árbol ya vienen sumados;
+        // lo sin seguimiento suma sus líneas (las cuenta el panel).
+        let (plus, minus) = match section {
+            Section::Staged => (repo.staged_added, repo.staged_removed),
+            Section::Work => (repo.work_added, repo.work_removed),
+            Section::Untracked => (files.iter().map(|(_, f)| f.added).sum(), 0),
+            Section::Conflict => (0, 0),
+        };
+        let root = repo.root.clone();
+        let mut head = div()
+            .px(px(14.))
+            .pt(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .text_size(px(12.))
+            .font_weight(FontWeight::SEMIBOLD);
+        head = if alert {
+            head.text_color(red())
+                .child(gpui_m3::Icon::new("alert").size(px(13.)).color(red()))
+                .child(div().child(title))
+        } else {
+            head.text_color(muted()).child(div().child(title))
+        };
+        head = head
+            .child(div().text_color(faint()).child(files.len().to_string()))
+            .when(plus + minus > 0, |el| {
+                el.child(div().font_family(mono()).text_color(green()).child(format!("+{plus}")))
+                    .child(div().font_family(mono()).text_color(red()).child(format!("−{minus}")))
+            })
+            .child(div().flex_1());
+        // La acción de la sección: preparar o sacar todo (los conflictos se resuelven a mano).
+        head = match section {
+            Section::Staged => {
+                let root = root.clone();
+                head.child(section_text_btn(
+                    ("unstage-all", index),
+                    crate::i18n::t("pill.code.view.unstageAll"),
+                    cx,
+                    move |view, cx| view.unstage_all(root.clone(), cx),
+                ))
+            }
+            Section::Work => {
+                let root = root.clone();
+                head.child(section_text_btn(
+                    ("stage-all-work", index),
+                    crate::i18n::t("pill.code.view.stageAll"),
+                    cx,
+                    move |view, cx| view.stage_section(root.clone(), Section::Work, cx),
+                ))
+            }
+            Section::Untracked => {
+                let root = root.clone();
+                head.child(section_text_btn(
+                    ("stage-all-untracked", index),
+                    crate::i18n::t("pill.code.view.stageAll"),
+                    cx,
+                    move |view, cx| view.stage_section(root.clone(), Section::Untracked, cx),
+                ))
+            }
+            Section::Conflict => head,
+        };
+        let mut body = div().flex().flex_col();
+        for &(file_index, file) in files {
+            body = body.child(change_row(index * 10_000 + file_index, &repo.root, file, cx));
+        }
+        div().flex().flex_col().child(head).child(body).into_any_element()
+    }
+
+    /// «¿Descartar los cambios?» (descartar siempre pregunta, como al cerrar con cambios).
+    fn git_confirm_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let confirm = self.git.confirm.as_ref()?;
+        let body = if confirm.untracked {
+            tf("pill.code.view.discardUntracked", &[("names", &confirm.display)])
+        } else {
+            tf("pill.code.view.discardTracked", &[("names", &confirm.display)])
+        };
+        Some(
+            gpui_m3::Dialog::new("git-discard")
+                .icon("info")
+                .title(crate::i18n::t("pill.code.view.discardTitle"))
+                .width(px(430.))
+                .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_discard(false, cx)))
+                .child(div().text_color(muted()).child(body))
+                .action(
+                    gpui_m3::Button::new("git-discard-cancel", crate::i18n::t("pill.code.editor.cancel"))
+                        .text()
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_discard(false, cx))),
+                )
+                .action(
+                    gpui_m3::Button::new("git-discard-ok", crate::i18n::t("pill.code.editor.discard"))
+                        .filled()
+                        .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.answer_discard(true, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn doc_body(&self) -> impl IntoElement {
         const LINE_H: f32 = 20.0;
         let doc = self.doc.as_ref().expect("visor abierto");
@@ -4678,7 +4955,7 @@ impl CodeView {
                     .size_full()
                     .overflow_y_scroll()
                     .p(px(10.))
-                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name).show_all_label(super::tools::show_all).fold_label(super::tools::folded)),
+                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name).show_all_label(super::tools::show_all).fold_label(super::tools::folded).nav(true)),
             );
         }
         let lines = doc.lines.clone();
@@ -4756,16 +5033,31 @@ fn tree_keys(
         .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&handle))
         .on_key_down(cx.listener(
         move |view, event: &gpui::KeyDownEvent, window, cx| {
+            // Cmd+Retroceso (Ctrl en el resto) elimina lo enfocado, tras confirmar.
+            if event.keystroke.key == "backspace" && (event.keystroke.modifiers.platform || event.keystroke.modifiers.control) {
+                cx.stop_propagation();
+                if let Some(target) = view.file_cursor.clone().or(Some(path.clone())) {
+                    view.delete_target(target, window, cx);
+                }
+                return;
+            }
             if event.keystroke.modifiers.modified() {
                 return;
             }
             let key = event.keystroke.key.as_str();
             match key {
+                // F2 renombra lo enfocado (el diálogo parte con su nombre).
+                "f2" => {
+                    cx.stop_propagation();
+                    if let Some(target) = view.file_cursor.clone().or(Some(path.clone())) {
+                        view.rename_target(target, window, cx);
+                    }
+                }
                 "enter" | "space" if !event.is_held => {
                     cx.stop_propagation();
                     view.file_cursor = Some(path.clone());
                     if dir {
-                        view.explorer.toggle(&path, root);
+                        view.toggle_tree(&path, root);
                         cx.notify();
                     } else {
                         view.open_doc(path.clone(), false, cx);
@@ -4796,13 +5088,13 @@ fn tree_keys(
                 "left" if dir && open => {
                     cx.stop_propagation();
                     view.file_cursor = Some(path.clone());
-                    view.explorer.toggle(&path, root);
+                    view.toggle_tree(&path, root);
                     cx.notify();
                 }
                 "right" if dir && !open => {
                     cx.stop_propagation();
                     view.file_cursor = Some(path.clone());
-                    view.explorer.toggle(&path, root);
+                    view.toggle_tree(&path, root);
                     cx.notify();
                 }
                 _ => {}
@@ -4882,15 +5174,71 @@ fn doc_diff(doc: &crate::kit::viewer::Doc, lines: &std::sync::Arc<Vec<crate::kit
     })
 }
 
-fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl IntoElement {
-    let (fg, bg) = match file.status {
-        'A' | 'N' => (green(), added_bg()),
-        'D' => (red(), removed_bg()),
-        _ => (amber(), code_bg()),
+/// Un botón chico de icono con tooltip (las acciones de cada fila y sección).
+fn icon_btn(
+    id: impl Into<gpui::ElementId>,
+    icon: &'static str,
+    tip: impl Into<SharedString>,
+    on_click: impl Fn(&mut CodeView, &mut Context<CodeView>) + 'static,
+    cx: &mut Context<CodeView>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .size(px(28.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .hover(|el| el.bg(hover_bg()))
+        .tooltip(crate::hover::tip_text(tip.into()))
+        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| on_click(view, cx)))
+        .child(svg().path(icon).size(px(14.)).text_color(muted()))
+        .into_any_element()
+}
+
+/// El «Preparar todo» / «Sacar todo» de una sección.
+fn section_text_btn(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    cx: &mut Context<CodeView>,
+    on_click: impl Fn(&mut CodeView, &mut Context<CodeView>) + 'static,
+) -> AnyElement {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .h(px(24.))
+        .px(px(8.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(accent())
+        .hover(|el| el.bg(hover_bg()))
+        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| on_click(view, cx)))
+        .child(label)
+        .into_any_element()
+}
+
+fn change_row(id: usize, root: &std::path::Path, file: &FileChange, cx: &mut Context<CodeView>) -> impl IntoElement {
+    // Los conflictos van en rojo, con icono de alerta en vez de la letra.
+    let conflict = file.is_conflict();
+    let (fg, bg) = if conflict {
+        (red(), removed_bg())
+    } else {
+        match file.status {
+            'A' | 'N' => (green(), added_bg()),
+            'D' => (red(), removed_bg()),
+            _ => (amber(), code_bg()),
+        }
     };
     let path = file.path.clone();
     let menu_path = file.path.clone();
-    div()
+    let root = root.to_path_buf();
+    let mut row = div()
         .id(("change", id))
         .tooltip(crate::hover::tip_text(SharedString::from(file.path.display().to_string())))
         .mx(px(6.))
@@ -4924,7 +5272,11 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
                 .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(fg)
-                .child(file.status.to_string()),
+                .child(if conflict {
+                    gpui_m3::Icon::new("alert").size(px(12.)).color(fg).into_any_element()
+                } else {
+                    file.status.to_string().into_any_element()
+                }),
         )
         .child(
             div()
@@ -4932,12 +5284,49 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
                 .min_w(px(0.))
                 .flex()
                 .flex_col()
-                .child(div().truncate().text_size(px(13.5)).child(file.name.clone()))
+                // En renombres: «viejo → nuevo».
+                .child(div().truncate().text_size(px(13.5)).child(file.display_name()))
                 .when(!file.dir.is_empty(), |el| el.child(div().truncate().text_size(px(11.5)).text_color(muted()).child(file.dir.clone()))),
         )
         .when(file.added + file.removed > 0, |el| el.child(gpui_m3::DiffBar::new(file.added, file.removed)))
         .when(file.added > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(green()).child(format!("+{}", file.added))))
-        .when(file.removed > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{}", file.removed))))
+        .when(file.removed > 0, |el| el.child(div().font_family(mono()).text_size(px(12.)).text_color(red()).child(format!("−{}", file.removed))));
+    // Las acciones de la fila: preparar, sacar de preparados o descartar (con
+    // confirmación). Los conflictos se resuelven a mano: sin botones.
+    match file.section() {
+        Section::Staged => {
+            let (root, path, name) = (root.clone(), file.path.clone(), file.display_name());
+            row = row.child(icon_btn(
+                ("unstage", id),
+                "icons/minus.svg",
+                tf("pill.code.view.unstageTip", &[("name", &name)]),
+                move |view, cx| view.unstage_paths(root.clone(), vec![path.clone()], cx),
+                cx,
+            ));
+        }
+        Section::Work | Section::Untracked => {
+            let untracked = file.section() == Section::Untracked;
+            let (root, path, name) = (root.clone(), file.path.clone(), file.display_name());
+            let (root_discard, path_discard) = (root.clone(), path.clone());
+            row = row
+                .child(icon_btn(
+                    ("stage", id),
+                    "icons/plus.svg",
+                    tf("pill.code.view.stageTip", &[("name", &name)]),
+                    move |view, cx| view.stage_paths(root.clone(), vec![path.clone()], cx),
+                    cx,
+                ))
+                .child(icon_btn(
+                    ("discard", id),
+                    "icons/trash.svg",
+                    tf("pill.code.view.discardTip", &[("name", &name)]),
+                    move |view, cx| view.request_discard(root_discard.clone(), vec![path_discard.clone()], untracked, cx),
+                    cx,
+                ));
+        }
+        Section::Conflict => {}
+    }
+    row
 }
 
 pub(super) fn todo_rows(list: &[(String, String)]) -> impl IntoElement {

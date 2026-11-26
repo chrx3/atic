@@ -36,10 +36,13 @@ mod editor;
 mod emulator;
 pub(crate) mod enter;
 mod file_menu;
+mod file_ops;
+mod file_state;
 mod files;
 mod find;
 mod fold_bar;
 pub(crate) mod git;
+mod git_actions;
 mod highlight;
 mod history_cache;
 mod hub;
@@ -72,6 +75,8 @@ pub(crate) mod style;
 mod subagents;
 mod subscriptions;
 mod swap;
+mod term_find;
+mod term_links;
 mod terminal;
 mod thread_list;
 mod tools;
@@ -109,7 +114,7 @@ use sidecar::{Incoming, Reply, Sidecar};
 
 actions!(
     atic_code,
-    [Send, SendAlt, AcceptSuggestion, CloseTab, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat, PrevMessage, NextMessage, NewTerminal, NextChat, PrevChat, ShowShortcuts]
+    [Send, SendAlt, AcceptSuggestion, CloseTab, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation, FindInChat, PrevMessage, NextMessage, NewTerminal, NextChat, PrevChat, ShowShortcuts, GoToLine]
 );
 
 /// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
@@ -776,6 +781,8 @@ pub struct CodeView {
     explorer: Explorer,
     /// Los repositorios del espacio con lo que cambió.
     repos: Vec<git::Repo>,
+    /// Lo que el panel de cambios está haciendo en git (push/pull, confirmar).
+    git: git_actions::GitState,
     /// Los grupos del panel de cambios plegados (por raíz).
     collapsed_repos: HashSet<PathBuf>,
     /// Se está actualizando git a pedido (el spinner del panel).
@@ -951,6 +958,10 @@ pub struct CodeView {
     /// El menú del clic derecho del panel Archivos (`file_menu.rs`).
     file_menu: Option<file_menu::FileTarget>,
     file_menu_last: overlay::Last<file_menu::FileTarget>,
+    /// El diálogo de crear, renombrar o eliminar del panel Archivos (`file_menu.rs`).
+    pub(super) file_op: Option<file_menu::FileOpState>,
+    /// Las carpetas abiertas de cada espacio y el interruptor de ignorados (`file_state.rs`).
+    tree_state: file_state::FileState,
     renaming: Option<sidebar::SessionRef>,
     rename_field: Entity<gpui_m3::TextField>,
     /// Se renombra desde el título de la barra superior (no desde la lista).
@@ -1399,6 +1410,8 @@ impl CodeView {
                 set_reduced_motion(cx);
                 // Lo de git pudo cambiar con la ventana atrás (el sondeo se detiene).
                 view.refresh_changes(cx);
+                // Y los archivos también: el árbol se relee al dibujar.
+                view.explorer.refresh();
                 // Lo que falte para chatear pudo hacerse fuera de Atic (`setup.rs`).
                 if view.setup.is_some_and(|setup| !setup.ready()) {
                     view.load_setup(false, cx);
@@ -1484,6 +1497,8 @@ impl CodeView {
                     view.focus_composer(window, cx);
                 }
             }
+            // Cmd+clic (Ctrl+clic fuera de macOS) sobre `ruta:línea` en la terminal.
+            terminal::TerminalEvent::OpenRef(text) => view.open_ref(text, cx),
             terminal::TerminalEvent::Error(error) => view.show_toast(error.clone(), cx),
         })
         .detach();
@@ -1554,6 +1569,7 @@ impl CodeView {
             history,
             explorer: Explorer::for_code(),
             repos: Vec::new(),
+            git: Default::default(),
             collapsed_repos: HashSet::new(),
             refreshing: false,
             file_search,
@@ -1652,6 +1668,8 @@ impl CodeView {
             session_menu: None,
             file_menu: None,
             file_menu_last: Default::default(),
+            file_op: None,
+            tree_state: file_state::FileState::load(),
             renaming: None,
             rename_field,
             rename_in_header: false,
@@ -1730,10 +1748,12 @@ impl CodeView {
             view.expand_first_open(id);
             view.warn_missing_folders(id, cx);
         }
+        view.restore_tree_state();
         view.load_history(cx);
         view.load_slow_facts(cx);
         view.load_setup(false, cx);
         view.watch_changes(cx);
+        view.watch_files(cx);
         view.watch_idle(cx);
         view.start_hub(cx);
         if std::env::var_os("CODE_DEMO").is_some() {
@@ -2647,6 +2667,7 @@ impl CodeView {
     }
 
     fn select_workspace(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.save_tree_state();
         self.workspaces.select(id);
         self.expand_first_open(id);
         if self.active_chat().is_some_and(|c| c.workspace != id) {
@@ -2659,6 +2680,7 @@ impl CodeView {
         self.repos.clear();
         self.file_index = None;
         self.explorer.refresh();
+        self.restore_tree_state();
         self.load_history_for(id, cx);
         self.refresh_changes(cx);
         self.warn_missing_folders(id, cx);
@@ -2708,6 +2730,7 @@ impl CodeView {
         }
         self.workspaces.remove(id);
         self.history.remove(&id);
+        self.tree_state.forget(id);
         if let Some(active) = self.active_workspace() {
             self.select_workspace(active, cx);
         }

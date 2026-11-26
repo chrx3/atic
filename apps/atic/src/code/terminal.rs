@@ -40,6 +40,7 @@ use crate::kit::{self, Cell, GridLook};
 use super::devices_view::{DevicesEvent, DevicesView};
 use super::preview::{self, Preview};
 use super::style::{self, t, Style};
+use super::{term_find, term_links};
 
 /// El contexto de teclas del panel.
 const CONTEXT: &str = "CodeTerminal";
@@ -98,6 +99,9 @@ pub enum TerminalEvent {
     Hidden,
     /// No se pudo abrir una terminal (va en un aviso).
     Error(String),
+    /// Cmd+clic (Ctrl+clic fuera de macOS) sobre `ruta:línea`: CodeView la
+    /// resuelve contra el espacio y la abre en el editor.
+    OpenRef(String),
 }
 
 /// Un CLI de agente que se puede abrir en una pestaña.
@@ -116,6 +120,8 @@ fn launchers() -> Vec<Launcher> {
 struct TermTab {
     id: u64,
     console: Console,
+    /// Con qué se arrancó: para volver a arrancar al terminar (Enter).
+    launch: Launch,
     /// El nombre del shell (`pwsh`, `powershell`) o del agente.
     shell: String,
     /// La marca con que los hooks reconocen esta consola (`agent_prompts`).
@@ -166,6 +172,26 @@ struct SelectDrag {
     history: usize,
 }
 
+/// Una coincidencia de la búsqueda en el espacio de alacritty: la línea y, en
+/// caracteres, dónde empieza y cuántos cubre.
+#[derive(Clone, Copy, Debug)]
+struct FindSpan {
+    line: i32,
+    col: usize,
+    len: usize,
+}
+
+/// El enlace bajo el cursor (con Cmd apretado): la pestaña, la línea y el tramo
+/// en columnas de terminal, con la historia de cuando se miró.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LinkHover {
+    tab: u64,
+    line: i32,
+    from: usize,
+    to: usize,
+    history: usize,
+}
+
 /// Con qué se armó la grilla guardada: si algo de esto cambia, se vuelve a armar.
 #[derive(PartialEq)]
 struct GridKey {
@@ -175,6 +201,8 @@ struct GridKey {
     offset: usize,
     fonts: [gpui::Font; 4],
     selection: Option<TermSelection>,
+    /// Las marcas (búsqueda, enlace, IME): van aparte porque cambian sin salida nueva.
+    marks: u64,
 }
 
 pub struct Terminals {
@@ -222,6 +250,23 @@ pub struct Terminals {
     term_menu: Option<Point<Pixels>>,
     /// Arrastrando una selección con el mouse, si hay arrastre.
     selecting: Option<SelectDrag>,
+    /// Con el mouse pedido por el programa: qué botón se apretó y en qué pestaña.
+    mouse_held: Option<(u64, u8)>,
+    /// La búsqueda en el historial, abierta, y su campo.
+    find_open: bool,
+    find_field: Entity<gpui_m3::TextField>,
+    /// Lo que se busca y dónde coincide (en el espacio de alacritty).
+    find_query: String,
+    find_matches: Vec<FindSpan>,
+    find_current: usize,
+    /// La historia con que se buscó (la salida nueva empuja el contenido).
+    find_history: usize,
+    /// Hay que devolver el foco a la terminal (se cerró la búsqueda con Esc).
+    find_refocus: bool,
+    /// El enlace bajo el cursor con Cmd (Ctrl fuera de macOS) apretado.
+    link_hover: Option<LinkHover>,
+    /// Cada cambio de las marcas (búsqueda, enlace, IME) rehace la grilla.
+    marks_rev: u64,
     /// La vista previa web: una pestaña más (`preview::TAB_ID`), si se abrió.
     preview: Option<Preview>,
     /// De qué conversación es la vista previa y las apartadas de las demás.
@@ -479,6 +524,20 @@ impl Terminals {
             _ => {}
         })
         .detach();
+        let find_field = cx.new(|cx| {
+            gpui_m3::TextField::new(cx)
+                .compact()
+                .placeholder(crate::i18n::t("pill.code.terminal.findHistory"))
+                .icon("search")
+                .select_all_on_focus(true)
+        });
+        cx.subscribe(&find_field, |this: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
+            gpui_m3::TextFieldEvent::Changed(text) => this.find_changed(text.to_string(), cx),
+            gpui_m3::TextFieldEvent::Submitted(_) => this.find_step(true, cx),
+            // Sin ventana aquí: se cierra y el foco vuelve en el próximo cuadro.
+            gpui_m3::TextFieldEvent::Cancelled => this.close_term_find(cx),
+        })
+        .detach();
         let address = cx.new(|cx| {
             gpui_m3::TextField::new(cx).compact().select_all_on_focus(true).placeholder(crate::i18n::t("pill.code.preview.address"))
         });
@@ -538,6 +597,16 @@ impl Terminals {
             agent_menu: None,
             term_menu: None,
             selecting: None,
+            mouse_held: None,
+            find_open: false,
+            find_field,
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_current: 0,
+            find_history: 0,
+            find_refocus: false,
+            link_hover: None,
+            marks_rev: 0,
             preview: None,
             preview_owners: preview::Owners::default(),
             preview_bounds: Rc::new(std::cell::Cell::new(None)),
@@ -1063,7 +1132,7 @@ impl Terminals {
             .get()
             .map(|bounds| grid_size(bounds, cell))
             .unwrap_or(GridSize { cols: 100, rows: 12 });
-        let console = Console::spawn(launch, size, (cell.w.round() as u16, cell.h as u16), self.wake.clone())
+        let console = Console::spawn(launch.clone(), size, (cell.w.round() as u16, cell.h as u16), self.wake.clone())
             .map_err(|error| tf("pill.code.terminal.openFailed", &[("error", &error)]))?;
         if let Some(command) = command.filter(|c| !c.is_empty()) {
             console.write(format!("{command}\r").into_bytes());
@@ -1076,6 +1145,7 @@ impl Terminals {
         self.tabs.push(TermTab {
             id,
             console,
+            launch,
             shell,
             token,
             agent,
@@ -1113,6 +1183,8 @@ impl Terminals {
         self.shown = false;
         self.term_menu = None;
         self.selecting = None;
+        self.mouse_held = None;
+        self.link_hover = None;
         cx.emit(TerminalEvent::Hidden);
         cx.notify();
     }
@@ -1134,6 +1206,8 @@ impl Terminals {
             self.agent_menu = None;
             self.term_menu = None;
             self.selecting = None;
+            self.mouse_held = None;
+            self.link_hover = None;
             cx.notify();
         }
     }
@@ -1167,6 +1241,12 @@ impl Terminals {
         };
         // Soltar la consola manda `Shutdown` al PTY (`Console::drop`).
         let tab = self.tabs.remove(index);
+        if self.mouse_held.is_some_and(|(id, _)| id == tab.id) {
+            self.mouse_held = None;
+        }
+        if self.link_hover.is_some_and(|hover| hover.tab == tab.id) {
+            self.link_hover = None;
+        }
         if let Some(token) = &tab.token {
             crate::agent_prompts::unregister(token);
         }
@@ -1245,7 +1325,7 @@ impl Terminals {
     /// de ella, y rehacerla en cada uno tomaba el candado de la consola que necesita el PTY.
     fn active_grid(&mut self, palette: &Palette, offset: usize) -> Option<Rc<kit::Grid>> {
         let tab = self.active.and_then(|id| self.tabs.iter().find(|tab| tab.id == id))?;
-        let key = GridKey { tab: tab.id, size: tab.console.size, palette: *palette, offset, fonts: self.fonts.clone(), selection: tab.selection };
+        let key = GridKey { tab: tab.id, size: tab.console.size, palette: *palette, offset, fonts: self.fonts.clone(), selection: tab.selection, marks: self.marks_rev };
         // Primero el aviso y después la grilla: lo que llegue mientras se arma vuelve a avisar.
         let dirty = tab.console.take_dirty();
         if let Some((cached, grid)) = &self.grid_cache {
@@ -1253,7 +1333,9 @@ impl Terminals {
                 return Some(grid.clone());
             }
         }
-        let grid = Rc::new(kit::grid_of(&tab.console, &self.fonts, palette, tab.selection));
+        let mut grid = kit::grid_of(&tab.console, &self.fonts, palette, tab.selection);
+        grid.marks = self.term_marks(tab, offset);
+        let grid = Rc::new(grid);
         self.grid_cache = Some((key, grid.clone()));
         Some(grid)
     }
@@ -1289,7 +1371,7 @@ impl Terminals {
         }
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let m = &ks.modifiers;
         if self.active_tab().is_none() {
@@ -1309,6 +1391,102 @@ impl Terminals {
                 cx.stop_propagation();
                 return;
             }
+        }
+        // Una terminal terminada se reinicia con Enter (hay una pista abajo).
+        if self.active_tab().is_some_and(|tab| tab.console.exited()) {
+            if ks.key.as_str() == "enter" && !m.control && !m.alt && !m.shift && !crate::keymap::primary_held(m) {
+                self.restart_tab(window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        // Ctrl+Mayús+←/→ mueve la pestaña activa.
+        if m.control && m.shift && !m.alt && !crate::keymap::primary_held(m) {
+            match ks.key.as_str() {
+                "left" => {
+                    self.move_tab(-1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "right" => {
+                    self.move_tab(1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Como Terminal.app: Cmd+←/→ van al inicio/fin de la línea y Opt+←/→ una
+        // palabra atrás/adelante, sin depender de `key_char` (que en macOS trae
+        // el carácter ya compuesto del teclado).
+        #[cfg(target_os = "macos")]
+        if m.platform && !m.control && !m.alt {
+            match ks.key.as_str() {
+                "left" => {
+                    self.type_text("\x01");
+                    cx.stop_propagation();
+                    return;
+                }
+                "right" => {
+                    self.type_text("\x05");
+                    cx.stop_propagation();
+                    return;
+                }
+                "home" => {
+                    self.scroll_edge(true, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "end" => {
+                    self.scroll_edge(false, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if m.alt && !m.platform && !m.control {
+            match ks.key.as_str() {
+                "left" => {
+                    self.type_text("\x1bb");
+                    cx.stop_propagation();
+                    return;
+                }
+                "right" => {
+                    self.type_text("\x1bf");
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Mayús+AvPág/RePág recorre el historial en vez de ir al programa.
+        if m.shift && !m.control && !m.alt && !crate::keymap::primary_held(m) {
+            match ks.key.as_str() {
+                "pageup" => {
+                    self.scroll_pages(1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "pagedown" => {
+                    self.scroll_pages(-1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Buscar en el historial: Cmd+F en macOS, Ctrl+Mayús+F en el resto.
+        let find_key = if cfg!(target_os = "macos") {
+            crate::keymap::primary_held(m) && !m.shift && !m.control && !m.alt && ks.key.as_str() == "f"
+        } else {
+            m.control && m.shift && !m.alt && ks.key.as_str() == "f"
+        };
+        if find_key {
+            self.open_term_find(window, cx);
+            cx.stop_propagation();
+            return;
         }
         // Ctrl+V pega (Ctrl+Mayús+V también, como en Windows Terminal).
         if crate::keymap::primary_held(m) && !m.alt && ks.key == "v" {
@@ -1403,9 +1581,284 @@ impl Terminals {
         cx.notify();
     }
 
-    /// Un clic en la consola: empieza (o extiende, con Mayús) la selección. Una
-    /// app de pantalla completa que pidió el mouse (vim, htop) se queda con
-    /// sus clics; con Mayús se marca igual (sus clics no se reportan).
+    /// Mueve la pestaña activa `dir` lugares (Ctrl+Mayús+←/→): se queda donde
+    /// está en los extremos.
+    fn move_tab(&mut self, dir: i32, cx: &mut Context<Self>) {
+        let len = self.tabs.len();
+        if len < 2 {
+            return;
+        }
+        let Some(active) = self.active else {
+            return;
+        };
+        let Some(pos) = self.tabs.iter().position(|tab| tab.id == active) else {
+            return;
+        };
+        let next = (pos as i32 + dir).clamp(0, len as i32 - 1) as usize;
+        if next == pos {
+            return;
+        }
+        let tab = self.tabs.remove(pos);
+        self.tabs.insert(next, tab);
+        cx.notify();
+    }
+
+    /// Vuelve a arrancar la consola activa, que había terminado (Enter): con lo
+    /// mismo que se abrió (el comando de una vez no se repite).
+    fn restart_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cell = self.cell(window);
+        let size = self.body.get().map(|bounds| grid_size(bounds, cell)).unwrap_or(GridSize { cols: 100, rows: 12 });
+        let Some(index) = self.active.and_then(|id| self.tabs.iter().position(|tab| tab.id == id)) else {
+            return;
+        };
+        let launch = self.tabs[index].launch.clone();
+        match Console::spawn(launch, size, (cell.w.round() as u16, cell.h as u16), self.wake.clone()) {
+            Ok(console) => {
+                let tab = &mut self.tabs[index];
+                tab.console = console;
+                tab.noted_exit = false;
+                tab.selection = None;
+                if let (Some(token), Some(cli)) = (tab.token.clone(), tab.agent) {
+                    crate::agent_prompts::register(&token, cli, tab.console.writer());
+                }
+                self.marks_rev += 1;
+                self.focus.focus(window);
+                cx.notify();
+            }
+            Err(error) => cx.emit(TerminalEvent::Error(tf("pill.code.terminal.openFailed", &[("error", &error)]))),
+        }
+    }
+
+    /// Al inicio (`top`) o al final del historial (Cmd+Inicio/Cmd+Fin).
+    fn scroll_edge(&mut self, top: bool, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab() {
+            let (_, history, _) = tab.console.scroll_state();
+            tab.console.scroll_to(if top { history } else { 0 });
+        }
+        cx.notify();
+    }
+
+    /// Tantas pantallas del historial hacia arriba (`pages` > 0) o abajo
+    /// (Mayús+AvPág/RePág).
+    fn scroll_pages(&mut self, pages: i32, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab() {
+            tab.console.scroll(tab.console.size.rows as i32 * pages);
+        }
+        cx.notify();
+    }
+
+    /// Cmd+F (Ctrl+Mayús+F fuera de macOS): abre la búsqueda del historial.
+    fn open_term_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_tab().is_none() {
+            return;
+        }
+        self.find_open = true;
+        self.find_query.clear();
+        self.find_matches.clear();
+        self.find_current = 0;
+        self.marks_rev += 1;
+        self.find_field.update(cx, |field, cx| field.set_text("", cx));
+        self.find_field.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Cierra la búsqueda (Esc): limpia las marcas y devuelve el foco.
+    fn close_term_find(&mut self, cx: &mut Context<Self>) {
+        if !self.find_open {
+            return;
+        }
+        self.find_open = false;
+        self.find_matches.clear();
+        self.marks_rev += 1;
+        // Sin ventana en este aviso: el foco vuelve en el próximo cuadro.
+        self.find_refocus = true;
+        cx.notify();
+    }
+
+    /// Cambió lo escrito: se busca de nuevo y se va a la primera coincidencia.
+    fn find_changed(&mut self, text: String, cx: &mut Context<Self>) {
+        if !self.find_open {
+            return;
+        }
+        self.find_query = text;
+        self.find_current = 0;
+        self.refresh_find();
+        self.reveal_current();
+        self.marks_rev += 1;
+        cx.notify();
+    }
+
+    /// Enter (siguiente) y Mayús+Enter (anterior).
+    fn find_step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.find_open {
+            return;
+        }
+        self.find_current = term_find::step_from(self.find_current, self.find_matches.len(), forward);
+        self.reveal_current();
+        self.marks_rev += 1;
+        cx.notify();
+    }
+
+    /// Vuelve a buscar en la foto actual del historial y la pantalla.
+    fn refresh_find(&mut self) {
+        let query = self.find_query.clone();
+        let snapshot = self.active_tab().map(|tab| {
+            let (_, history, _) = tab.console.scroll_state();
+            let rows = tab.console.size.rows;
+            let top = -(history as i32);
+            let lines: Vec<String> = (top..rows as i32).map(|line| tab.console.row_text(line).text).collect();
+            let spans = term_find::find_in_lines(&lines, &query)
+                .into_iter()
+                .map(|found| FindSpan { line: top + found.row as i32, col: found.col, len: found.len })
+                .collect();
+            (spans, history)
+        });
+        match snapshot {
+            Some((spans, history)) => {
+                self.find_matches = spans;
+                self.find_history = history;
+            }
+            None => self.find_matches.clear(),
+        }
+        if self.find_current >= self.find_matches.len() {
+            self.find_current = 0;
+        }
+    }
+
+    /// Lleva la vista hasta la coincidencia a la vista, si quedó fuera.
+    fn reveal_current(&mut self) {
+        if let Some(line) = self.find_matches.get(self.find_current).map(|span| span.line) {
+            self.reveal_span(line);
+        }
+    }
+
+    /// Si `line` (en el espacio de alacritty) quedó fuera de la vista, la mueve
+    /// hasta dejarla al medio.
+    fn reveal_span(&mut self, line: i32) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let (offset, history, screen) = tab.console.scroll_state();
+        let line = line - (history as i64 - self.find_history as i64) as i32;
+        if line >= -(offset as i32) && line <= screen as i32 - 1 - offset as i32 {
+            return;
+        }
+        let want = ((screen as i32 - 1 - 2 * line) / 2).clamp(0, history as i32);
+        tab.console.scroll_to(want as usize);
+    }
+
+    /// La celda bajo `at` (coordenadas de la ventana), dentro de la grilla: para
+    /// reportar el mouse al programa o mirar enlaces.
+    fn mouse_cell(&self, cell: Cell, at: Point<Pixels>) -> Option<(usize, usize)> {
+        let bounds = self.body.get()?;
+        let tab = self.active_tab()?;
+        let (col, row) = point_to_cell(bounds, cell, at);
+        Some((col.min(tab.console.size.cols.saturating_sub(1)), row.min(tab.console.size.rows.saturating_sub(1))))
+    }
+
+    /// Se soltó `button`: si lo había tomado el programa, se le avisa.
+    fn release_button(&mut self, button: u8, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let held = self.mouse_held.take();
+        let cell = self.cell(window);
+        if let (Some((id, held_button)), Some((col, row))) = (held, self.mouse_cell(cell, at)) {
+            if held_button == button {
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) {
+                    tab.console.click(button, false, col, row);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Con Cmd (Ctrl fuera de macOS) apretado: subraya el enlace bajo el cursor.
+    fn update_hover(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let cell = self.cell(window);
+        let found = self.mouse_cell(cell, at).and_then(|(col, row)| {
+            let tab = self.active_tab()?;
+            let (offset, history, _) = tab.console.scroll_state();
+            let line = row as i32 - offset as i32;
+            let text = tab.console.row_text(line);
+            let at = text.cols.get(col).copied().unwrap_or(text.text.chars().count());
+            let hit = term_links::link_at(&text.text, at)?;
+            let (from, to) = console::chars_to_cols(&text.cols, hit.from, hit.to);
+            (from < to).then_some(LinkHover { tab: tab.id, line, from, to, history })
+        });
+        if found != self.link_hover {
+            self.link_hover = found;
+            self.marks_rev += 1;
+            cx.notify();
+        }
+    }
+
+    /// Cmd+clic (Ctrl+clic fuera de macOS) sobre un enlace: las URLs van al
+    /// navegador y `ruta:línea` a CodeView. `true` si había un enlace.
+    fn open_link_at(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let cell = self.cell(window);
+        let hit = self.mouse_cell(cell, at).and_then(|(col, row)| {
+            let tab = self.active_tab()?;
+            let (offset, _, _) = tab.console.scroll_state();
+            let text = tab.console.row_text(row as i32 - offset as i32);
+            let at = text.cols.get(col).copied().unwrap_or(text.text.chars().count());
+            term_links::link_at(&text.text, at)
+        });
+        match hit {
+            Some(term_links::TermHit { link: term_links::TermLink::Url(url), .. }) => {
+                cx.open_url(&url);
+                true
+            }
+            Some(term_links::TermHit { link: term_links::TermLink::File { path, line }, .. }) => {
+                let text = match line {
+                    Some(line) => format!("{path}:{line}"),
+                    None => path,
+                };
+                cx.emit(TerminalEvent::OpenRef(text));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Lo resaltado sobre la grilla: la búsqueda, el enlace bajo el cursor y el
+    /// texto a medio componer del IME.
+    fn term_marks(&self, tab: &TermTab, offset: usize) -> kit::GridMarks {
+        let mut marks = kit::GridMarks::default();
+        let rows = tab.console.size.rows;
+        let cols = tab.console.size.cols;
+        let history = tab.console.scroll_state().1;
+        // La búsqueda: de líneas de alacritty a filas visibles.
+        if self.find_open {
+            let shift = history as i64 - self.find_history as i64;
+            for (index, span) in self.find_matches.iter().enumerate() {
+                let line = span.line - shift as i32;
+                let row = line + offset as i32;
+                if row < 0 || row >= rows as i32 {
+                    continue;
+                }
+                let text = tab.console.row_text(line);
+                let (from, to) = console::chars_to_cols(&text.cols, span.col, span.col + span.len);
+                let (from, to) = (from.min(cols), to.min(cols));
+                if from < to {
+                    marks.find.push(kit::FindHl { row: row as usize, from, to, current: index == self.find_current });
+                }
+            }
+        }
+        // El enlace bajo el cursor sigue al contenido como la selección.
+        if let Some(hover) = &self.link_hover {
+            if hover.tab == tab.id {
+                let line = hover.line - (history as i64 - hover.history as i64) as i32;
+                let row = line + offset as i32;
+                if row >= 0 && row < rows as i32 {
+                    marks.link = Some(kit::LinkHl { row: row as usize, from: hover.from.min(cols), to: hover.to.min(cols) });
+                }
+            }
+        }
+        marks.marked = self.marked.clone();
+        marks
+    }
+
+    /// Un clic en la consola: si el programa pidió el mouse ya se le reportó
+    /// (ver `console::click_bytes`) y no llega aquí; si no, empieza (o
+    /// extiende, con Mayús) la selección.
     fn begin_selection(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bounds) = self.body.get() else {
             return;
@@ -1478,6 +1931,12 @@ impl Terminals {
             self.selecting = None;
             return;
         };
+        // Fuera del cuerpo, la vista sigue al arrastre para marcar el historial.
+        if f32::from(at.y) < f32::from(bounds.top()) {
+            tab.console.scroll(4);
+        } else if f32::from(at.y) > f32::from(bounds.bottom()) {
+            tab.console.scroll(-4);
+        }
         let rows = tab.console.size.rows;
         let cols = tab.console.size.cols;
         let (col, row) = point_to_cell(bounds, cell, at);
@@ -1836,6 +2295,99 @@ impl Terminals {
                 .child(chip.label),
         )
     }
+
+    /// La búsqueda del historial: el campo, el contador «n de m» y los botones
+    /// para saltar entre coincidencias o cerrar.
+    fn term_find_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = t();
+        let count = if self.find_query.trim().is_empty() {
+            String::new()
+        } else if self.find_matches.is_empty() {
+            crate::i18n::t("pill.code.find.none").to_string()
+        } else {
+            tf("pill.code.find.count", &[("n", &(self.find_current + 1).to_string()), ("total", &self.find_matches.len().to_string())])
+        };
+        div()
+            .absolute()
+            .top(px(6.))
+            .right(px(24.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .px(px(6.))
+            .py(px(4.))
+            .rounded(px(10.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            // Mayús+Enter va a la anterior (Enter solo lo resuelve el campo).
+            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "enter" && event.keystroke.modifiers.shift {
+                    view.find_step(false, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(div().w(px(200.)).child(self.find_field.clone()))
+            .child(div().flex_none().min_w(px(52.)).text_size(px(12.)).text_color(t.muted).child(count))
+            .child(
+                gpui_m3::IconButton::new("term-find-prev", "chevron-up")
+                    .size(px(28.))
+                    .tooltip(crate::i18n::t("pill.code.find.prev"))
+                    .on_click(cx.listener(|view, _: &gpui::ClickEvent, _, cx| view.find_step(false, cx))),
+            )
+            .child(
+                gpui_m3::IconButton::new("term-find-next", "chevron-down")
+                    .size(px(28.))
+                    .tooltip(crate::i18n::t("pill.code.find.next"))
+                    .on_click(cx.listener(|view, _: &gpui::ClickEvent, _, cx| view.find_step(true, cx))),
+            )
+            .child(
+                gpui_m3::IconButton::new("term-find-close", "x")
+                    .size(px(28.))
+                    .tooltip(crate::i18n::t("pill.code.find.close"))
+                    .on_click(cx.listener(|view, _: &gpui::ClickEvent, _, cx| view.close_term_find(cx))),
+            )
+    }
+
+    /// El botón flotante para volver al final cuando se mira el historial.
+    fn bottom_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = t();
+        div()
+            .absolute()
+            .bottom(px(10.))
+            .right(px(22.))
+            .rounded(px(16.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .child(
+                gpui_m3::IconButton::new("term-bottom", "chevron-down")
+                    .size(px(32.))
+                    .tooltip(crate::i18n::t("pill.code.terminal.backToBottom"))
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        if let Some(tab) = this.active_tab() {
+                            tab.console.scroll_to(0);
+                        }
+                        cx.notify();
+                    })),
+            )
+    }
+
+    /// La pista sobre una terminal terminada: se reinicia con Enter.
+    fn restart_hint() -> impl IntoElement {
+        let t = t();
+        div()
+            .absolute()
+            .bottom(px(10.))
+            .left(px(14.))
+            .px(px(10.))
+            .py(px(4.))
+            .rounded(px(8.))
+            .bg(t.raised)
+            .text_size(px(12.))
+            .text_color(t.muted)
+            .child(crate::i18n::t("pill.code.terminal.restartHint"))
+    }
 }
 
 /// Un callback de `TabStrip` (que da la clave de la pestaña) sobre la vista.
@@ -1869,6 +2421,10 @@ impl Terminals {
 impl Render for Terminals {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.commit_rename_on_blur(window, cx);
+        // Se cerró la búsqueda con Esc: el foco vuelve a la terminal.
+        if std::mem::take(&mut self.find_refocus) {
+            self.focus.focus(window);
+        }
         let preview_on = self.shown() && self.preview_active();
         self.sync_preview(preview_on, window, cx);
         // Lo que pidió Dispositivos (instalar algo): en una pestaña, a la vista.
@@ -1888,6 +2444,10 @@ impl Render for Terminals {
         let scroll = self.active_tab().map(|tab| tab.console.scroll_state());
         let grid = self.active_grid(&palette, scroll.map_or(0, |(offset, _, _)| offset));
         let bar = scroll.filter(|&(_, history, _)| history > 0);
+        // Con el historial desplazado hacia arriba, el botón flotante vuelve al final.
+        let at_bottom = scroll.map_or(true, |(offset, _, _)| offset == 0);
+        let exited = self.active_tab().is_some_and(|tab| tab.console.exited());
+        let font = self.font.clone();
         let look = GridLook {
             pad: kit::GRID_PAD,
             cursor: style::rgb_of(t.accent),
@@ -1895,6 +2455,9 @@ impl Render for Terminals {
             // La terminal siempre es oscura: el acento translúcido se lee en
             // los dos temas, con el texto encima.
             selection: style::rgb_of(t.accent),
+            find: style::rgb_of(t.accent),
+            find_current: style::rgb_of(t.accent),
+            link: style::rgb_of(t.accent),
         };
         let window_h = f32::from(window.viewport_size().height);
         // A la derecha es una pestaña más del panel derecho (`panel.rs`): llena su cuerpo y
@@ -1971,12 +2534,54 @@ impl Render for Terminals {
                     .relative()
                     .flex_1()
                     .min_h(px(0.))
+                    // Con Cmd sobre un enlace, la mano: se puede abrir.
+                    .map(|el| if self.link_hover.is_some() { el.cursor_pointer() } else { el })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
                             this.focus.focus(window);
                             this.term_menu = None;
+                            // Cmd+clic (Ctrl+clic fuera de macOS) abre el enlace.
+                            if crate::keymap::primary_held(&event.modifiers)
+                                && !event.modifiers.shift
+                                && this.open_link_at(event.position, window, cx)
+                            {
+                                cx.notify();
+                                return;
+                            }
+                            // Con el mouse pedido por el programa, el clic va al
+                            // programa; con Mayús se marca igual.
+                            if !event.modifiers.shift {
+                                let cell = this.cell(window);
+                                if let Some((col, row)) = this.mouse_cell(cell, event.position) {
+                                    if let Some(tab) = this.active_tab() {
+                                        if tab.console.click(0, true, col, row) {
+                                            this.mouse_held = Some((tab.id, 0));
+                                            cx.notify();
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                             this.begin_selection(event, window, cx);
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.focus.focus(window);
+                            // Como el izquierdo, pero sin selección local.
+                            if !event.modifiers.shift {
+                                let cell = this.cell(window);
+                                if let Some((col, row)) = this.mouse_cell(cell, event.position) {
+                                    if let Some(tab) = this.active_tab() {
+                                        if tab.console.click(1, true, col, row) {
+                                            this.mouse_held = Some((tab.id, 1));
+                                            cx.notify();
+                                        }
+                                    }
+                                }
+                            }
                         }),
                     )
                     .on_mouse_down(
@@ -1984,11 +2589,64 @@ impl Render for Terminals {
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
                             this.focus.focus(window);
                             this.selecting = None;
+                            // Con el mouse pedido, el derecho va al programa (con
+                            // Mayús sale el menú igual).
+                            if !event.modifiers.shift {
+                                let cell = this.cell(window);
+                                if let Some((col, row)) = this.mouse_cell(cell, event.position) {
+                                    if let Some(tab) = this.active_tab() {
+                                        if tab.console.click(2, true, col, row) {
+                                            this.mouse_held = Some((tab.id, 2));
+                                            cx.notify();
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                             this.term_menu = Some(event.position);
                             cx.notify();
                             cx.stop_propagation();
                         }),
                     )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| this.release_button(0, event.position, window, cx)),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| this.release_button(1, event.position, window, cx)),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| this.release_button(2, event.position, window, cx)),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        // Arrastrando con un botón tomado por el programa: se le
+                        // reporta (según su modo: arrastre o nada).
+                        if let Some((id, button)) = this.mouse_held {
+                            let cell = this.cell(window);
+                            if let Some((col, row)) = this.mouse_cell(cell, event.position) {
+                                if let Some(tab) = this.tabs.iter().find(|tab| tab.id == id) {
+                                    tab.console.motion(button, true, col, row);
+                                }
+                            }
+                            return;
+                        }
+                        if crate::keymap::primary_held(&event.modifiers) && !event.modifiers.shift {
+                            this.update_hover(event.position, window, cx);
+                        } else if this.link_hover.take().is_some() {
+                            this.marks_rev += 1;
+                            cx.notify();
+                        } else if this.selecting.is_none() && event.pressed_button.is_none() && !event.modifiers.shift {
+                            // El movimiento suelto va al programa solo con MOUSE_MOTION.
+                            let cell = this.cell(window);
+                            if let Some((col, row)) = this.mouse_cell(cell, event.position) {
+                                if let Some(tab) = this.active_tab() {
+                                    tab.console.motion(3, false, col, row);
+                                }
+                            }
+                        }
+                    }))
                     .on_scroll_wheel(cx.listener(Self::scroll))
                     // Archivos e imágenes soltados (del Explorador o del portapapeles de Atic).
                     .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(style::t().hover))
@@ -2014,7 +2672,7 @@ impl Render for Terminals {
                                     },
                                     move |bounds, _, window, cx| {
                                         if let Some(grid) = &grid {
-                                            kit::paint_grid(grid.as_ref(), bounds, cell, 1.0, font_size, focused, look, window, cx);
+                                            kit::paint_grid(grid.as_ref(), bounds, cell, 1.0, font_size, focused, look, &font, window, cx);
                                         }
                                         // Arrastrando la selección: sigue al mouse aunque salga
                                         // del cuerpo (fase de captura, como la barra de
@@ -2050,6 +2708,9 @@ impl Render for Terminals {
                             ),
                     )
                     .when_some(bar, |el, (offset, history, screen)| el.child(scroll_bar(this.clone(), self.bar_drag.clone(), offset, history, screen)))
+                    .when(!at_bottom, |el| el.child(self.bottom_button(cx)))
+                    .when(self.find_open, |el| el.child(self.term_find_bar(cx)))
+                    .when(exited, |el| el.child(Self::restart_hint()))
                     .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone())))
                     .into_any_element()
             })
@@ -2273,6 +2934,7 @@ impl EntityInputHandler for Terminals {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked = None;
+        self.marks_rev += 1;
     }
 
     fn replace_text_in_range(
@@ -2283,6 +2945,7 @@ impl EntityInputHandler for Terminals {
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
+        self.marks_rev += 1;
         self.type_text(text);
         cx.notify();
     }
@@ -2296,6 +2959,7 @@ impl EntityInputHandler for Terminals {
         cx: &mut Context<Self>,
     ) {
         self.marked = (!text.is_empty()).then(|| text.to_string());
+        self.marks_rev += 1;
         cx.notify();
     }
 

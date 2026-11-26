@@ -114,6 +114,7 @@ pub struct Console {
 }
 
 /// Qué ejecutar: el programa y sus argumentos, y dónde.
+#[derive(Clone)]
 pub struct Launch {
     pub program: String,
     pub args: Vec<String>,
@@ -260,6 +261,33 @@ impl Console {
         }
     }
 
+    /// Un botón apretado (`press`) o soltado en la celda (`col`, `row`): al programa
+    /// si pidió el mouse (ver `click_bytes`); si no, `false` y es selección local.
+    /// `button` es 0 = izquierdo, 1 = medio, 2 = derecho.
+    pub fn click(&self, button: u8, press: bool, col: usize, row: usize) -> bool {
+        let mode = *self.term.lock().mode();
+        match click_bytes(mode, button, press, false, col, row) {
+            Some(bytes) => {
+                self.write(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// El puntero movido con el botón apretado (arrastre) o suelto: al programa si
+    /// pidió esos eventos (`MOUSE_DRAG` o `MOUSE_MOTION`); si no, `false`.
+    pub fn motion(&self, button: u8, held: bool, col: usize, row: usize) -> bool {
+        let mode = *self.term.lock().mode();
+        match click_bytes(mode, button, held, true, col, row) {
+            Some(bytes) => {
+                self.write(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// El título que puso el programa (OSC 0/2) para la pestaña, si hay uno.
     pub fn title(&self) -> Option<String> {
         self.shared.title.lock().ok().and_then(|slot| slot.clone())
@@ -361,6 +389,53 @@ pub fn wheel_bytes(mode: TermMode, lines: i32, col: usize, row: usize) -> Option
         return Some(key.repeat(times));
     }
     None
+}
+
+/// Lo que un clic o el movimiento del puntero le mandan al programa que pidió el
+/// mouse (vim, htop, `less --mouse`): `button` es 0 = izquierdo, 1 = medio,
+/// 2 = derecho; `press` dice si se apretó (si no, se soltó) y `motion` si el
+/// puntero se movió (arrastre con el botón apretado, o suelto). `None` si el
+/// programa no pidió esos eventos: el gesto es selección local.
+///
+/// Como `wheel_bytes`: en SGR (1006) si el programa la pidió, en UTF-8 si pidió
+/// esa, y si no en el formato normal (cada número + 32 en un byte). El arrastre
+/// solo va con `MOUSE_DRAG` o `MOUSE_MOTION`, y el movimiento suelto solo con
+/// `MOUSE_MOTION`; apretar y soltar van con cualquiera de los tres.
+pub fn click_bytes(mode: TermMode, button: u8, press: bool, motion: bool, col: usize, row: usize) -> Option<Vec<u8>> {
+    let any = TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION;
+    if !mode.intersects(any) {
+        return None;
+    }
+    if motion && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+        return None;
+    }
+    if motion && !press && !mode.contains(TermMode::MOUSE_MOTION) {
+        return None;
+    }
+    // Apretar: el botón; soltar: 3; en movimiento se suma 32. Suelto sin botón
+    // es 3 + 32 = 35.
+    let mut code = if press { button.min(2) } else { 3 };
+    if motion {
+        code += 32;
+    }
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let end = if press || motion { 'M' } else { 'm' };
+        return Some(format!("\x1b[<{code};{};{}{end}", col + 1, row + 1).into_bytes());
+    }
+    let mut out = vec![0x1b, b'[', b'M', 32 + code];
+    if mode.contains(TermMode::UTF8_MOUSE) {
+        // Las coordenadas + 32 en UTF-8 (iguales que siempre bajo la columna 223).
+        for n in [col, row] {
+            let mut buf = [0u8; 4];
+            let text = char::from_u32(n as u32 + 33).unwrap_or('\u{7f}').encode_utf8(&mut buf);
+            out.extend_from_slice(text.as_bytes());
+        }
+    } else {
+        let at = |n: usize| (n + 33).min(255) as u8;
+        out.push(at(col));
+        out.push(at(row));
+    }
+    Some(out)
 }
 
 // --- Selección -------------------------------------------------------------
@@ -760,6 +835,28 @@ mod tests {
         let mouse = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
         assert_eq!(wheel_bytes(mouse, -1, 4, 9), Some(b"\x1b[<65;5;10M".to_vec()));
         assert_eq!(wheel_bytes(TermMode::MOUSE_REPORT_CLICK, 1, 0, 0), Some(vec![0x1b, b'[', b'M', 96, 33, 33]));
+    }
+
+    #[test]
+    fn los_clics_van_al_programa_solo_si_los_pidio() {
+        // Un shell: nada que reportar, el clic es selección local.
+        assert_eq!(click_bytes(TermMode::default(), 0, true, false, 0, 0), None);
+        assert_eq!(click_bytes(TermMode::default(), 0, false, false, 0, 0), None);
+        let click = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        // Apretar el izquierdo y soltar el derecho, en la celda del puntero.
+        assert_eq!(click_bytes(click, 0, true, false, 4, 9), Some(b"\x1b[<0;5;10M".to_vec()));
+        assert_eq!(click_bytes(click, 2, false, false, 0, 0), Some(b"\x1b[<3;1;1m".to_vec()));
+        // Sin SGR: el formato normal, cada número + 32 en un byte.
+        assert_eq!(click_bytes(TermMode::MOUSE_REPORT_CLICK, 1, true, false, 0, 0), Some(vec![0x1b, b'[', b'M', 33, 33, 33]));
+        assert_eq!(click_bytes(TermMode::MOUSE_REPORT_CLICK | TermMode::UTF8_MOUSE, 0, true, false, 0, 0), Some(vec![0x1b, b'[', b'M', 32, 33, 33]));
+        // El arrastre solo con DRAG o MOTION; el movimiento suelto solo con MOTION.
+        assert_eq!(click_bytes(click, 0, true, true, 0, 0), None);
+        assert_eq!(click_bytes(click, 0, false, true, 0, 0), None);
+        let drag = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
+        assert_eq!(click_bytes(drag, 0, true, true, 1, 2), Some(b"\x1b[<32;2;3M".to_vec()));
+        assert_eq!(click_bytes(drag, 0, false, true, 0, 0), None);
+        let motion = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        assert_eq!(click_bytes(motion, 3, false, true, 0, 0), Some(b"\x1b[<35;1;1M".to_vec()));
     }
 
     #[test]
