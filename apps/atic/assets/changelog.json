@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.7.8",
-      "date": "2026-11-25",
+      "date": "2026-11-26",
       "items": [
         {
           "kind": "improved",
@@ -21,13 +21,13 @@
         },
         {
           "kind": "new",
-          "es": "Ajustes › General: «Autocompactar al llegar a» compacta la conversación sola al pasar de 150k, 200k, 300k o 500k tokens de contexto",
-          "en": "Settings › General: “Auto-compact at” compacts the conversation on its own once the context passes 150k, 200k, 300k or 500k tokens"
+          "es": "Ajustes › General: «Autocompactar al llegar a» compacta la conversación sola al pasar de 150k, 200k, 300k o 500k tokens de contexto; avisa antes de que el próximo mensaje compacte, y esta opción y las de Conversaciones valen para todos los proyectos o solo para uno",
+          "en": "Settings › General: “Auto-compact at” compacts the conversation on its own once the context passes 150k, 200k, 300k or 500k tokens; it warns before the next message compacts, and this option and the Conversations ones apply to all projects or just one"
         },
         {
           "kind": "improved",
-          "es": "Los subagentes muestran con qué modelo y esfuerzo trabajan, y al delegar se puede pedir el esfuerzo",
-          "en": "Subagents show the model and effort they work with, and the effort can be requested when delegating"
+          "es": "Los subagentes muestran con qué modelo y esfuerzo trabajan, al delegar se puede pedir el esfuerzo y Antigravity ya aparece como subagente",
+          "en": "Subagents show the model and effort they work with, the effort can be requested when delegating, and Antigravity now shows up as a subagent"
         },
         {
           "kind": "improved",
