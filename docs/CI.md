@@ -5,7 +5,7 @@ Tres piezas:
 - **`.github/workflows/ci.yml`**: los tests, en cada push y PR a `main` y
   `dev`.
 - **`.github/workflows/release.yml`**: el release de macOS y Windows, de
-  punta a punta, como borrador. Reemplaza a `release-macos.yml`.
+  punta a punta, hasta dejar el release publicado. Reemplaza a `release-macos.yml`.
 - **`PILL_SELFTEST=arranque`**: la autoprueba de arranque de la pill
   (`apps/atic/src/selftest.rs`), que el release corre con el paquete ya armado
   antes de publicar.
@@ -101,14 +101,16 @@ compuerta antes de la clave.
 | macos-intel | `macos-15-intel` | **Verify** del mismo `.app.tar.gz` en un Mac Intel de verdad (la pill pide macOS 13 o más nuevo). Hace checkout solo de `scripts/`, así la autoprueba no puede usar el `agent.mjs` del repo |
 | windows | `windows-latest` | `win-env.ps1` y `build-installer.ps1` (NSIS en la versión fijada, por Chocolatey). **Verify**: instala en silencio (`/S /NORUN /D=…`; `/NORUN` no abre la pill) en una carpeta aparte esperando solo al instalador (5 min como mucho), comprueba los archivos, corre `scripts/selftest.ps1` con la pill instalada y anota el sha256 del instalador |
 | listo | ubuntu | La compuerta: preflight, `macos-universal`, `macos-intel` y `windows` en verde, y `tests` en verde u omitido **solo** si lo omitió ci-previo con `ok=true`. Con un tag deja un `::notice::` y un resumen con el enlace a la corrida: publicar queda esperando la aprobación del environment `release` (GitHub además avisa al revisor por correo o en su app) |
-| publicar | ubuntu; environment `release` solo con un tag | Comprueba que los archivos son los del Verify (sha256), compila `atic-sign` antes de que la clave toque el disco, firma para el updater el `.app.tar.gz` (`darwin`) y el instalador (`windows-x86_64`), verifica cada `.sig` (`atic-sign --verify`) contra la clave pública de la app (`PUBKEY` de `updater.rs`), arma `latest.json` con `darwin-aarch64`, `darwin-x86_64` y `windows-x86_64`, y con un tag deja todo en un release **borrador** |
+| publicar | ubuntu; environment `release` solo con un tag | Comprueba que los archivos son los del Verify (sha256), compila `atic-sign` antes de que la clave toque el disco, firma para el updater el `.app.tar.gz` (`darwin`) y el instalador (`windows-x86_64`), verifica cada `.sig` (`atic-sign --verify`) contra la clave pública de la app (`PUBKEY` de `updater.rs`), arma `latest.json` con `darwin-aarch64`, `darwin-x86_64` y `windows-x86_64`, y con un tag sube todo a un borrador y lo **publica** ya completo (como *latest*) |
 
 Lo que conserva de `release-macos.yml` y de los commits `1237d65` y `6634ffb`:
 
 - **Firma estable obligatoria**: sin el `.p12` el job de macOS se detiene antes
   de compilar; nunca firma ad-hoc (invalidaría los permisos al actualizar).
-- **Revisión antes de publicar**: solo borradores. El updater lee
-  `releases/latest`, así que nadie recibe nada hasta que lo publiques a mano.
+- **Freno antes de publicar**: el release sale publicado, así que el freno es
+  la aprobación del environment `release`, que se pide antes de firmar. Los
+  archivos se suben a un borrador y se publica al final, con todo adentro; si
+  algo falla antes, queda el borrador y un re-run lo retoma.
   Si el release del tag ya está publicado, el preflight falla antes de
   compilar; si alguien lo publica mientras se compila, publicar falla sin
   tocarlo (los archivos quedan en el artefacto `atic-release`). El environment
@@ -149,9 +151,9 @@ una vez con las tres plataformas, sin fusionar entre dos máquinas.
   git tag v0.6.2 && git push origin v0.6.2
   ```
 
-  Queda un borrador en Releases con `Atic.app.tar.gz` y su `.sig`, el `.dmg`,
-  `Atic_<versión>_x64-setup.exe` y su `.sig`, y `latest.json`. Revísalo y
-  publícalo a mano (marcándolo como *latest*).
+  Tras aprobar el environment `release`, queda publicado en Releases (como
+  *latest*) con `Atic.app.tar.gz` y su `.sig`, el `.dmg`,
+  `Atic_<versión>_x64-setup.exe` y su `.sig`, y `latest.json`.
 - **Probar sin release**: Actions → *Release* → *Run workflow*. Hace todo
   menos tocar releases y firma con una clave de prueba; los archivos quedan
   en el artefacto `atic-prueba` (7 días), que **no** sirve para publicar. El
@@ -162,10 +164,11 @@ una vez con las tres plataformas, sin fusionar entre dos máquinas.
   dos suben el tag, y un tag `v*` dispara `release.yml`:
   - si el script ya publicó el release, el preflight del workflow falla
     («ya está publicado») y no toca nada; es esperable;
-  - si el workflow llega antes que la publicación del script, deja un
-    borrador con su propio `latest.json`; el script después sube encima
+  - si el workflow llega antes que la publicación del script, publica el
+    release con su propio `latest.json`; el script después sube encima
     (`--clobber`) y fusiona con `scripts/updater-manifest.mjs`. Revisa el
-    release antes de darlo por bueno, o cancela el run en Actions.
+    release antes de darlo por bueno, o cancela el run en Actions (antes de
+    aprobar el environment `release`).
 
   Para que el workflow publique, sube solo el tag
   (`git push origin vX.Y.Z`) y no corras los scripts con `-Publish`.

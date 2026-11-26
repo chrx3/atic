@@ -31,13 +31,15 @@ name: Release
 # - publicar: comprueba que los archivos son los mismos que pasaron el Verify
 #   (sha256), los firma para el updater (atic-sign), verifica cada .sig contra
 #   la clave pública de la app, arma latest.json con las tres plataformas
-#   (conservando las que ya tenga el release) y, solo con un tag, deja todo en
-#   un release BORRADOR. Ningún usuario lo recibe (el updater lee
-#   releases/latest) hasta que lo publiques a mano.
+#   (conservando las que ya tenga el release) y, solo con un tag, sube todo a
+#   un borrador y lo PUBLICA ya completo (la .app, el .dmg, el instalador, sus
+#   firmas y latest.json): desde ahí el updater lo ve en releases/latest.
+#   El freno es la aprobación del environment «release», antes de firmar.
 #
 # Disparadores:
 # - Tag vX.Y.Z (git push origin vX.Y.Z): todo lo anterior y el borrador,
-#   firmado con la clave de verdad en el environment «release».
+#   firmado con la clave de verdad en el environment «release», y el release
+#   publicado.
 # - Run workflow (workflow_dispatch): lo mismo sin tocar releases y firmando
 #   con una clave de prueba creada en el job (sin environment ni secrets del
 #   updater); los archivos quedan como artefacto «atic-prueba» (7 días) y no
@@ -627,11 +629,11 @@ jobs:
           tests="pasaron en esta corrida"
           if [[ "$TESTS" == skipped ]]; then tests="ya pasaron en el CI de main"; fi
           if [[ "$PUBLISH" == true ]]; then
-            echo "::notice title=Falta aprobar $TAG::Builds y Verify en verde; los tests $tests. Firmar y publicar (borrador) espera la aprobación del environment «release»: $url"
+            echo "::notice title=Falta aprobar $TAG::Builds y Verify en verde; los tests $tests. Firmar y publicar espera la aprobación del environment «release»: $url"
             {
               echo "### $TAG espera tu aprobación"
               echo
-              echo "Builds y Verify en verde; los tests $tests. **Firmar y publicar (borrador)** espera la aprobación del environment \`release\`."
+              echo "Builds y Verify en verde; los tests $tests. **Firmar y publicar** espera la aprobación del environment \`release\`."
               echo
               echo "Apruébalo en [la corrida]($url) → *Review deployments*."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -640,7 +642,7 @@ jobs:
           fi
 
   publicar:
-    name: Firmar y publicar (borrador)
+    name: Firmar y publicar
     needs: [resolver, listo]
     # Explícito: sin `if`, GitHub salta este job si algún job anterior de la
     # cadena quedó omitido (los tests, cuando el CI de main ya pasó), aunque
@@ -773,7 +775,10 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Subir al release (borrador)
+      # Los archivos se suben a un borrador y el release se publica al final,
+      # con todo adentro: nadie ve un release a medias. Si falla antes de
+      # publicar, queda el borrador y un re-run lo retoma.
+      - name: Subir y publicar el release
         if: needs.resolver.outputs.publish == 'true'
         run: |
           files=(out/Atic.app.tar.gz out/Atic.app.tar.gz.sig "out/Atic_${VERSION}_universal.dmg"
@@ -789,7 +794,8 @@ jobs:
           else
             gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes -- "${files[@]}"
           fi
-          echo "Borrador listo: https://github.com/${GITHUB_REPOSITORY}/releases (revísalo y publícalo a mano)" >> "$GITHUB_STEP_SUMMARY"
+          gh release edit "$TAG" --draft=false --latest
+          echo "Release publicado: https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Limpiar la clave
         if: always()
