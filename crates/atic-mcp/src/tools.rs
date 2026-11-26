@@ -342,6 +342,10 @@ pub struct ListarSesiones {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AbrirSesion {
     pub backend: BackendId,
+    /// Carpeta donde trabaja el subagente (relativa a la tuya o absoluta). Debe existir y estar
+    /// dentro del proyecto de esta conversación, o ser un worktree del mismo repositorio: una
+    /// carpeta fuera del proyecto, como la temporal de tu CLI, se rechaza. Sin `cwd` trabaja en
+    /// la tuya; si necesitas una carpeta aparte, créala dentro del proyecto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Id del modelo, de `atic_list_models`. Atic también reconoce el nombre
@@ -412,6 +416,10 @@ pub struct Delegar {
     /// `plan` | `patch` | `review` | `apply`. Solo se usa con `"auto"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<DelegateKind>,
+    /// Carpeta donde trabaja el subagente (relativa a la tuya o absoluta). Debe existir y estar
+    /// dentro del proyecto de esta conversación, o ser un worktree del mismo repositorio: una
+    /// carpeta fuera del proyecto, como la temporal de tu CLI, se rechaza. Sin `cwd` trabaja en
+    /// la tuya; si necesitas una carpeta aparte, créala dentro del proyecto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub text: String,

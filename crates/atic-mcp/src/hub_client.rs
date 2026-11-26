@@ -77,16 +77,13 @@ impl HubFallo {
             HubFallo::Error(e) => {
                 // El agente necesita el código y `data` para resolver casos
                 // como `ambiguous_session` sin tener que adivinar qué pasó.
-                // Se mantiene como texto porque MCP lo entrega en un bloque
-                // de error, pero conserva la forma estructurada del contrato.
-                let mut detalle = serde_json::json!({
-                    "code": e.code,
-                    "message": e.message,
-                });
-                if let Some(data) = &e.data {
-                    detalle["data"] = data.clone();
+                // Un `bad_request` ya lo dice todo en el mensaje: sus datos
+                // solo lo repetirían en JSON, así que no se agregan.
+                let mut texto = format!("Atic respondió con un error ({}): {}", e.code, e.message);
+                if let Some(data) = e.data.as_ref().filter(|_| e.code != "bad_request") {
+                    texto.push_str(&format!("\nDatos: {data}"));
                 }
-                format!("Atic respondió con un error: {detalle}")
+                texto
             }
             HubFallo::Red(m) => format!("No se pudo hablar con Atic: {m}."),
         }
@@ -367,6 +364,16 @@ mod tests {
         assert_eq!(elegir_tokens(None, "compartido".into()), ("compartido".to_string(), None));
         assert_eq!(elegir_tokens(Some("  ".into()), "compartido".into()), ("compartido".to_string(), None));
         assert_eq!(elegir_tokens(Some("compartido".into()), "compartido".into()), ("compartido".to_string(), None));
+    }
+
+    #[test]
+    fn un_bad_request_se_lee_como_frase_sin_el_json_repetido() {
+        let fallo = HubFallo::Error(HubError {
+            code: "bad_request".into(),
+            message: "la carpeta «/tmp/x» está fuera del proyecto.".into(),
+            data: Some(serde_json::json!({"cwd": "/tmp/x", "allowed": ["/proyecto"]})),
+        });
+        assert_eq!(fallo.mensaje(), "Atic respondió con un error (bad_request): la carpeta «/tmp/x» está fuera del proyecto.");
     }
 
     #[test]
