@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -138,6 +138,25 @@ pub fn session_token(key: &str) -> Option<String> {
     let token = new_token()?;
     sessions.push((token.clone(), key.to_string()));
     Some(token)
+}
+
+/// Los procesos de los agentes ACP: (pid, clave de su conversación). Sirve para reconocer
+/// a quien pide sin el token de su conversación (p. ej. Antigravity, que usa su propio
+/// `atic` registrado a mano en vez del que le pasa Atic Code).
+static AGENT_PIDS: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+
+/// Anota el proceso del agente de la conversación `key` (su pid lo da el daemon al lanzarlo
+/// y en la foto al volver la pill).
+pub fn register_agent_pid(key: &str, pid: u32) {
+    let mut pids = AGENT_PIDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    pids.retain(|(_, owner)| owner != key);
+    pids.push((pid, key.to_string()));
+}
+
+/// La conversación a la que pertenece alguno de los procesos de `chain` (un proceso y sus
+/// ancestros, del más cercano al más lejano).
+fn session_of_chain(chain: &[u32], pids: &[(u32, String)]) -> Option<String> {
+    chain.iter().find_map(|pid| pids.iter().find(|(known, _)| known == pid).map(|(_, key)| key.clone()))
 }
 
 /// ¿Tiene la forma de los tokens de `new_token`?
@@ -460,6 +479,38 @@ fn identify(request: &Request, token: &str) -> Option<Caller> {
     caller_of(given, token, &sessions)
 }
 
+/// Un pedido «de fuera» que en realidad viene de un agente que corre en una conversación
+/// de Atic Code (su `atic-mcp` cuelga del proceso del agente): se le da esa conversación.
+/// Solo en Unix: mira qué proceso tiene el otro extremo de la conexión (`lsof`) y sube por
+/// sus padres (`ps`).
+#[cfg(unix)]
+fn session_of_peer(peer: SocketAddr) -> Option<String> {
+    use std::process::Command;
+    if AGENT_PIDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty() {
+        return None;
+    }
+    let lsof = if cfg!(target_os = "macos") { "/usr/sbin/lsof" } else { "lsof" };
+    let listing = Command::new(lsof).args(["-nP", &format!("-iTCP:{}", peer.port()), "-sTCP:ESTABLISHED", "-Fp"]).output().ok()?;
+    let own = std::process::id();
+    let client = String::from_utf8_lossy(&listing.stdout).lines().filter_map(|line| line.strip_prefix('p')?.parse::<u32>().ok()).find(|pid| *pid != own)?;
+    let mut chain = vec![client];
+    while chain.len() < 16 {
+        let parent = Command::new("/bin/ps").args(["-o", "ppid=", "-p", &chain[chain.len() - 1].to_string()]).output().ok()?;
+        let Ok(parent) = String::from_utf8_lossy(&parent.stdout).trim().parse::<u32>() else { break };
+        if parent <= 1 {
+            break;
+        }
+        chain.push(parent);
+    }
+    let pids = AGENT_PIDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    session_of_chain(&chain, &pids)
+}
+
+#[cfg(not(unix))]
+fn session_of_peer(_peer: SocketAddr) -> Option<String> {
+    None
+}
+
 /// Las rutas que se atienden: `Ok(true)` si la atiende Atic Code, `Ok(false)` si la
 /// contesta el transporte (`health`).
 pub fn route(method: &str, path: &str) -> Result<bool, HubFault> {
@@ -527,19 +578,31 @@ pub fn response(reply: &HubReply) -> Vec<u8> {
 /// Una conexión: lee el pedido, lo pasa a Atic Code y escribe lo que conteste.
 fn serve(stream: TcpStream, token: &str, calls: &UnboundedSender<HubCall>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let peer = stream.peer_addr().ok();
     let mut reader = BufReader::new(&stream);
     let reply = match read_request(&mut reader) {
         Err(error) if error == "conexión cerrada" => return,
         Err(error) => Err(HubFault::new("bad_request", error)),
-        Ok(request) => answer(request, token, calls),
+        Ok(request) => answer(request, token, calls, peer),
     };
     let _ = (&stream).write_all(&response(&reply));
     let _ = (&stream).flush();
 }
 
-fn answer(request: Request, token: &str, calls: &UnboundedSender<HubCall>) -> HubReply {
+fn answer(request: Request, token: &str, calls: &UnboundedSender<HubCall>, peer: Option<SocketAddr>) -> HubReply {
     let Some(caller) = identify(&request, token) else {
         return Err(HubFault::new("unauthorized", "el token no es el de esta sesión de Atic Code"));
+    };
+    // Sin el token de su conversación, pero hijo del proceso de un agente de Atic Code: es de esa conversación.
+    let caller = match (caller, peer) {
+        (Caller::External, Some(peer)) => match session_of_peer(peer) {
+            Some(key) => {
+                tracing::info!(%key, "atic code: pedido sin token reconocido por el proceso de su agente");
+                Caller::Session(key)
+            }
+            None => Caller::External,
+        },
+        (caller, _) => caller,
     };
     if !route(&request.method, &request.path)? {
         return Ok(json!({ "ok": true }));
@@ -569,6 +632,20 @@ mod tests {
         // si cambia aquí, cambia allá, o el cliente corta antes y el subagente queda
         // creado con «error sending request».
         assert_eq!(answer_limit("/v1/delegate", &serde_json::json!({})), Duration::from_secs(600 + 30));
+    }
+
+    #[test]
+    fn un_proceso_hijo_se_reconoce_por_el_de_su_agente() {
+        let pids = vec![(100, "c1".to_string()), (200, "c2".to_string())];
+        // `atic-mcp` (500) cuelga de `serve` (150), que cuelga del agente (100).
+        assert_eq!(session_of_chain(&[500, 150, 100, 7], &pids), Some("c1".to_string()));
+        // El más cercano gana.
+        assert_eq!(session_of_chain(&[500, 200, 100], &pids), Some("c2".to_string()));
+        assert_eq!(session_of_chain(&[500, 7], &pids), None);
+        register_agent_pid("prueba-pid", 424242);
+        register_agent_pid("prueba-pid", 424243);
+        let known = AGENT_PIDS.lock().unwrap().iter().filter(|(_, key)| key == "prueba-pid").count();
+        assert_eq!(known, 1, "un pid nuevo reemplaza al anterior de la misma conversación");
     }
 
     fn read(text: &str) -> Result<Request, String> {

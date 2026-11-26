@@ -2331,6 +2331,9 @@ impl CodeView {
                 continue;
             };
             let tag = agent.get("tag").cloned().unwrap_or(Value::Null);
+            if let Some(pid) = agent.get("pid").and_then(Value::as_u64) {
+                hub::register_agent_pid(&key, pid as u32);
+            }
             let cli = agent.pointer("/meta/cli").or_else(|| tag.get("acp")).and_then(Value::as_str).and_then(acp::agent).map(|a| a.cli);
             let Some(cli) = cli else {
                 continue;

@@ -553,7 +553,11 @@ impl Session {
             // agente pudo arrancar antes de que se instalara Node.
             "path": atic_agents::exe::cached_path_var().map(|p| p.to_string_lossy().into_owned()),
         });
-        futures::executor::block_on(sidecar.call("procSpawn", params)).unwrap_or_else(|_| Err(tr("pill.code.acp.stopped").into()))?;
+        let spawned = futures::executor::block_on(sidecar.call("procSpawn", params)).unwrap_or_else(|_| Err(tr("pill.code.acp.stopped").into()))?;
+        // Su pid sirve para reconocer a su `atic-mcp` aunque no traiga el token de la conversación.
+        if let Some(pid) = spawned.get("pid").and_then(Value::as_u64) {
+            super::hub::register_agent_pid(&self.key, pid as u32);
+        }
         self.next.store(id_base(), Ordering::Relaxed);
         let _ = self.pipe.set(Pipe::Daemon { sidecar: sidecar.clone(), alive: AtomicBool::new(true) });
         Ok(())
