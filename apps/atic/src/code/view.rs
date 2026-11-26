@@ -4749,7 +4749,12 @@ fn tree_keys(
     window: &mut Window,
     cx: &mut Context<CodeView>,
 ) -> Stateful<Div> {
-    gpui_m3::interaction::keyboard_focus(el, focus_id, gpui::Corners::all(px(radius)), false, window, cx).on_key_down(cx.listener(
+    // Un clic en la fila le da el foco (gpui-m3 no lo hace solo): así las flechas y Enter
+    // funcionan justo después de clicar, sin tener que llegar con Tab.
+    let (_, handle, _) = gpui_m3::interaction::use_focus(focus_id, window, cx);
+    gpui_m3::interaction::keyboard_focus(el, focus_id, gpui::Corners::all(px(radius)), false, window, cx)
+        .on_mouse_down(MouseButton::Left, move |_, window, _| window.focus(&handle))
+        .on_key_down(cx.listener(
         move |view, event: &gpui::KeyDownEvent, window, cx| {
             if event.keystroke.modifiers.modified() {
                 return;
