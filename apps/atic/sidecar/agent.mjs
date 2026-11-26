@@ -79,6 +79,11 @@ function dlog(text) {
 }
 // Sin clientes ni nada trabajando, el proceso se cierra solo pasado este rato.
 const IDLE_EXIT_MS = Number(process.env.ATIC_SIDECAR_IDLE_MS) || 10 * 60_000;
+// Un agente ACP sin turno ni mensajes se cierra pasado este rato, para que no se acumulen: los
+// de una delegación (`tag.delegation`) pronto, ya entregado su resultado; los demás tardan más.
+// El chat puede retomarse después (`session/load`).
+const PROC_IDLE_DELEGATED_MS = Number(process.env.ATIC_SIDECAR_PROC_IDLE_DELEGATED_MS) || 20 * 60_000;
+const PROC_IDLE_MS = Number(process.env.ATIC_SIDECAR_PROC_IDLE_MS) || 6 * 60 * 60_000;
 // Lo último emitido, para reenviárselo a un cliente que se reconecta (`since`).
 const RING_MAX = 5000;
 
@@ -349,6 +354,7 @@ function startSession(params, ctx) {
     mode: params.permissionMode ?? null,
     known: new Set(),
     busy: false,
+    lastIo: Date.now(),
     // Mensajes mandados cuyo eco no ha llegado: Claude Code todavía no los toma.
     unconsumed: 0,
     // Terminó un turno con mensajes en la cola de Claude Code: viene otro (`endTurn`).
@@ -430,6 +436,7 @@ function handleMessage(s, m) {
     s.queuedTimer = null;
     s.awaitingTurn = false;
   }
+  s.lastIo = Date.now();
   switch (m.type) {
     case "stream_event": {
       const ev = m.event;
@@ -826,6 +833,7 @@ const methods = {
     // Trabaja desde ya, no desde la primera respuesta: entre medio Claude Code corre sus hooks y
     // espera a la API, y la sesión no se puede cerrar ni retomar.
     s.busy = true;
+    s.lastIo = Date.now();
     s.unconsumed += 1;
     s.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: s.sessionId ?? "" });
     return { ok: true };
@@ -991,6 +999,7 @@ const PROC_TAIL = Number(process.env.ATIC_PROC_HISTORY) || 3000;
 const PROC_TAIL_BYTES = 6_000_000;
 
 function procRemember(p, d, line) {
+  p.lastIo = Date.now();
   const entry = { d, line };
   if (p.head.length < PROC_HEAD) return void p.head.push(entry);
   p.tail.push(entry);
@@ -1134,6 +1143,7 @@ function procSpawn({ key, program, args, cwd, meta, tag, path }, ctx) {
       turns: new Set(),
       codexTurn: false,
       codexStart: null,
+      lastIo: Date.now(),
       alive: true,
       started: false,
       killed: false,
@@ -1267,8 +1277,28 @@ function quit() {
   setTimeout(() => process.exit(0), 300);
 }
 
+// Cierra los agentes ACP que llevan rato sin hacer nada (ver `PROC_IDLE_*`).
+function reapIdleProcs(now = Date.now()) {
+  for (const p of [...procs.values()]) {
+    if (!p.alive || procBusy(p)) continue;
+    const limit = tags.get(p.key)?.tag?.delegation ? PROC_IDLE_DELEGATED_MS : PROC_IDLE_MS;
+    if (now - p.lastIo < limit) continue;
+    dlog(`agente ${p.key} sin actividad hace ${Math.round((now - p.lastIo) / 60_000)} min: se cierra`);
+    procKill(p);
+  }
+  // Las sesiones de Claude de una delegación, igual: ya entregaron su resultado.
+  for (const s of [...sessions.values()]) {
+    if (!tags.get(s.key)?.tag?.delegation) continue;
+    if (s.busy || s.autoTurn || s.awaitingTurn || s.permissions.size > 0 || backgroundRunning(s)) continue;
+    if (now - s.lastIo < PROC_IDLE_DELEGATED_MS) continue;
+    dlog(`sesión ${s.key} de una delegación sin actividad hace ${Math.round((now - s.lastIo) / 60_000)} min: se cierra`);
+    methods.close({ key: s.key });
+  }
+}
+
 // Revisa cada tanto: reemplazarse si lo pidió una pill más nueva, o cerrarse si quedó solo.
 function tick() {
+  reapIdleProcs();
   const busy = working();
   if (retiring && !busy) {
     // Sin el archivo, la próxima petición de la pill levanta el proceso nuevo.

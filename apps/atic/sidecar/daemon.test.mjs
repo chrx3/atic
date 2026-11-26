@@ -202,6 +202,26 @@ test("un agente ACP corre en el daemon: líneas de ida y vuelta, turno en curso 
   }
 });
 
+test("un agente ACP inactivo se cierra solo: el de una delegación pronto, el de un chat más tarde", async () => {
+  const { child, found } = await startDaemon({
+    ATIC_SIDECAR_IDLE_MS: "200",
+    ATIC_SIDECAR_PROC_IDLE_DELEGATED_MS: "400",
+    ATIC_SIDECAR_PROC_IDLE_MS: "60000",
+  });
+  try {
+    const pill = await connect(found, { client: "code", since: 0 });
+    await pill.next();
+    await call(pill, "procSpawn", spawnParams("hija", { tag: { delegation: { parent: "c1" } } }));
+    await call(pill, "procSpawn", spawnParams("chat", { tag: { acp: "opencode", title: "Chat" } }));
+    await until(pill, (m) => m.event === "procExit" && m.key === "hija");
+    const left = await call(pill, "procList", {});
+    assert.deepEqual(left.map((p) => p.key), ["chat"]);
+    await call(pill, "shutdown", { force: true });
+  } finally {
+    child.kill();
+  }
+});
+
 test("procKill avisa procExit y el turno de Codex dura hasta turn/completed", async () => {
   const { child, found } = await startDaemon();
   try {
