@@ -179,7 +179,10 @@ mod tests {
     #[test]
     fn la_copia_lleva_copia_y_numero_si_ya_existe() {
         let dir = Path::new("/tmp/espacio");
-        let taken = |names: &[&str]| move |p: &Path| names.iter().any(|n| p == dir.join(n));
+        let taken = |names: &[&str]| {
+            let owned: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+            move |p: &Path| owned.iter().any(|o| o == p)
+        };
         assert_eq!(duplicate_name(&dir.join("hola.rs"), &taken(&[])), dir.join("hola copia.rs"));
         assert_eq!(duplicate_name(&dir.join("hola.rs"), &taken(&["hola copia.rs"])), dir.join("hola copia 2.rs"));
         assert_eq!(duplicate_name(&dir.join("notas"), &taken(&["notas copia"])), dir.join("notas copia 2"));

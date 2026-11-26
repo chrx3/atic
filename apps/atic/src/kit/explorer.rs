@@ -359,13 +359,14 @@ mod tests {
         let names = |explorer: &mut Explorer| explorer.rows(&[root.clone()]).into_iter().skip(1).map(|r| r.name).collect::<Vec<_>>();
         let mut explorer = Explorer::for_code();
         assert!(!explorer.showing_ignored());
-        assert_eq!(names(&mut explorer), vec!["src"]);
+        // `.gitignore` no se ignora a sí mismo: se ve.
+        assert_eq!(names(&mut explorer), vec!["src", ".gitignore"]);
         explorer.set_show_ignored(true);
         assert!(explorer.showing_ignored());
         // Orden: carpetas primero, luego archivos por nombre.
-        assert_eq!(names(&mut explorer), vec!["gen", "src", "debug.log"]);
+        assert_eq!(names(&mut explorer), vec!["gen", "src", ".gitignore", "debug.log"]);
         explorer.set_show_ignored(false);
-        assert_eq!(names(&mut explorer), vec!["src"]);
+        assert_eq!(names(&mut explorer), vec!["src", ".gitignore"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -387,6 +388,8 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), "x").unwrap();
         let mut explorer = Explorer::for_code();
+        // El sondeo mira lo abierto: `src` tiene que estarlo.
+        explorer.toggle(&root.join("src"), false);
         explorer.rows(&[root.clone()]);
         // Nada cambió: no hay nada que releer.
         assert!(!explorer.poll());

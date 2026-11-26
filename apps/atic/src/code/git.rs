@@ -53,7 +53,9 @@ impl FileChange {
             Section::Conflict
         } else if (self.staged, self.worktree) == ('?', '?') {
             Section::Untracked
-        } else if self.staged != ' ' {
+        } else if self.worktree == ' ' {
+            // Todo lo suyo está preparado. Con algo sin preparar (`MM`) va en «Cambios»,
+            // donde se puede preparar lo que falta.
             Section::Staged
         } else {
             Section::Work
