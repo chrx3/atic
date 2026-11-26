@@ -182,6 +182,35 @@ pub struct ClaudeConfig {
     pub follow_up_steer: bool,
 }
 
+/// Las tres opciones de Ajustes → Conversaciones. Valen para todos los proyectos
+/// (`Configs::conv_global`) salvo los que tengan las suyas (`Configs::conv_project`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConvPrefs {
+    pub compact_idle: bool,
+    pub auto_compact_tokens: u64,
+    pub follow_up_steer: bool,
+}
+
+impl Default for ConvPrefs {
+    fn default() -> Self {
+        let base = ClaudeConfig::default();
+        Self { compact_idle: base.compact_idle, auto_compact_tokens: base.auto_compact_tokens, follow_up_steer: base.follow_up_steer }
+    }
+}
+
+impl ConvPrefs {
+    fn of(config: &ClaudeConfig) -> Self {
+        Self { compact_idle: config.compact_idle, auto_compact_tokens: config.auto_compact_tokens, follow_up_steer: config.follow_up_steer }
+    }
+
+    fn put(&self, config: &mut ClaudeConfig) {
+        config.compact_idle = self.compact_idle;
+        config.auto_compact_tokens = self.auto_compact_tokens;
+        config.follow_up_steer = self.follow_up_steer;
+    }
+}
+
 impl Default for ClaudeConfig {
     fn default() -> Self {
         Self {
@@ -312,6 +341,15 @@ pub struct Configs {
     /// conversación nueva en otro proyecto no vuelve a «Plan» si venía en «Omitir permisos».
     #[serde(default)]
     permission_mode: Option<String>,
+    /// Las opciones de Conversaciones para todos los proyectos…
+    #[serde(default)]
+    conv_global: ConvPrefs,
+    /// …y las de los proyectos que las sobrescriben (sin entrada, rige la global).
+    #[serde(default)]
+    conv_project: HashMap<u64, ConvPrefs>,
+    /// Los valores que cada proyecto tenía antes de existir la global ya se pasaron a `conv_project`.
+    #[serde(default)]
+    conv_migrated: bool,
     /// La letra de toda la ventana (`CodeFont`).
     #[serde(default)]
     pub font: CodeFont,
@@ -495,6 +533,7 @@ impl Configs {
                 // la struct (que deja 0 = «Completo»).
                 Self { chat_width: default_chat_width(), ..Self::default() }
             });
+        configs.migrate_conv();
         // Solo Material 3 Expressive (`appearance::ONLY_EXPRESSIVE`).
         if crate::appearance::ONLY_EXPRESSIVE {
             configs.style = super::style::Style::Expressive;
@@ -551,7 +590,51 @@ impl Configs {
         if let Some(mode) = &self.permission_mode {
             config.permission_mode = mode.clone();
         }
+        self.conv_prefs(workspace).put(&mut config);
         config
+    }
+
+    /// Las opciones de Conversaciones que rigen en el proyecto: las suyas o las globales.
+    fn conv_prefs(&self, workspace: u64) -> ConvPrefs {
+        self.conv_project.get(&workspace).copied().unwrap_or(self.conv_global)
+    }
+
+    /// El proyecto tiene sus propias opciones de Conversaciones (no sigue las globales).
+    pub fn conv_overridden(&self, workspace: u64) -> bool {
+        self.conv_project.contains_key(&workspace)
+    }
+
+    /// Elegir si el proyecto sigue las opciones globales o tiene las suyas (que parten
+    /// copiando las que rigen ahora). Volver a las globales descarta las del proyecto.
+    pub fn set_conv_overridden(&mut self, workspace: u64, own: bool) {
+        if own == self.conv_overridden(workspace) {
+            return;
+        }
+        if own {
+            self.conv_project.insert(workspace, self.conv_global);
+        } else {
+            self.conv_project.remove(&workspace);
+        }
+        self.save();
+    }
+
+    /// «Aplicar a todos los proyectos»: lo que rige en este pasa a ser lo global y los demás
+    /// dejan de tener opciones propias.
+    pub fn apply_conv_to_all(&mut self, workspace: u64) {
+        self.conv_global = self.conv_prefs(workspace);
+        self.conv_project.clear();
+        self.save();
+    }
+
+    /// Antes cada proyecto guardaba estas opciones dentro de su `ClaudeConfig`: los que se
+    /// apartaron de los valores de fábrica conservan los suyos como propios.
+    fn migrate_conv(&mut self) {
+        if self.conv_migrated {
+            return;
+        }
+        self.conv_migrated = true;
+        let custom: Vec<(u64, ConvPrefs)> = self.by_workspace.iter().map(|(id, config)| (*id, ConvPrefs::of(config))).filter(|(_, prefs)| *prefs != ConvPrefs::default()).collect();
+        self.conv_project.extend(custom);
     }
 
     /// El acento propio del espacio en este estilo.
@@ -678,8 +761,16 @@ impl Configs {
         true
     }
 
-    pub fn set(&mut self, workspace: u64, config: ClaudeConfig) {
+    pub fn set(&mut self, workspace: u64, mut config: ClaudeConfig) {
         self.permission_mode = Some(config.permission_mode.clone());
+        // Las opciones de Conversaciones van al proyecto si tiene las suyas, y si no, a las globales.
+        let prefs = ConvPrefs::of(&config);
+        if self.conv_overridden(workspace) {
+            self.conv_project.insert(workspace, prefs);
+        } else {
+            self.conv_global = prefs;
+        }
+        ConvPrefs::default().put(&mut config);
         self.by_workspace.insert(workspace, config);
         self.save();
     }
@@ -703,6 +794,44 @@ pub fn mask_emails(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn las_opciones_de_conversaciones_son_globales_y_un_proyecto_las_sobrescribe() {
+        let mut configs = Configs::default();
+        let mut config = configs.get(1);
+        config.auto_compact_tokens = 300_000;
+        configs.set(1, config);
+        // Sin opciones propias, el cambio es global: lo ven todos los proyectos.
+        assert_eq!(configs.get(2).auto_compact_tokens, 300_000);
+        // Con las suyas, el proyecto se aparta y lo global no se mueve.
+        configs.set_conv_overridden(1, true);
+        let mut config = configs.get(1);
+        config.auto_compact_tokens = 100_000;
+        config.follow_up_steer = false;
+        configs.set(1, config);
+        assert_eq!(configs.get(1).auto_compact_tokens, 100_000);
+        assert!(!configs.get(1).follow_up_steer);
+        assert_eq!(configs.get(2).auto_compact_tokens, 300_000);
+        assert!(configs.get(2).follow_up_steer);
+        // «Aplicar a todos» sube las del proyecto a lo global y borra las propias.
+        configs.apply_conv_to_all(1);
+        assert_eq!(configs.get(2).auto_compact_tokens, 100_000);
+        assert!(!configs.conv_overridden(1));
+        // Volver a lo global descarta las del proyecto.
+        configs.set_conv_overridden(2, true);
+        configs.set_conv_overridden(2, false);
+        assert!(!configs.conv_overridden(2));
+    }
+
+    #[test]
+    fn lo_que_cada_proyecto_tenia_antes_pasa_a_ser_suyo() {
+        let mut configs: Configs = serde_json::from_str(r#"{ "by_workspace": { "1": { "auto_compact_tokens": 300000 }, "2": {} } }"#).unwrap();
+        configs.migrate_conv();
+        assert_eq!(configs.get(1).auto_compact_tokens, 300_000);
+        assert!(configs.conv_overridden(1));
+        assert!(!configs.conv_overridden(2));
+        assert_eq!(configs.get(2).auto_compact_tokens, 0);
+    }
 
     #[test]
     fn el_modo_de_permisos_sigue_en_otro_proyecto() {

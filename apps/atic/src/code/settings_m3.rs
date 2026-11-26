@@ -470,14 +470,58 @@ impl CodeView {
         };
         let auto_compact = {
             let view = view.clone();
-            let current = super::config::AUTO_COMPACT_CHOICES.iter().position(|n| *n == self.config().auto_compact_tokens).unwrap_or(0);
-            let labels: Vec<Segment> = super::config::AUTO_COMPACT_CHOICES.iter().map(|n| if *n == 0 { Segment::label(tr("pill.code.settingsSearch.autoCompactOff")) } else { Segment::label(format!("{}k", n / 1000)) }).collect();
+            // Un umbral puesto a mano que no está entre las opciones se muestra como una más, no como «No».
+            let mut choices = super::config::AUTO_COMPACT_CHOICES.to_vec();
+            let saved = self.config().auto_compact_tokens;
+            if !choices.contains(&saved) {
+                choices.push(saved);
+                choices.sort_unstable();
+            }
+            let current = choices.iter().position(|n| *n == saved).unwrap_or(0);
+            let labels: Vec<Segment> = choices.iter().map(|n| if *n == 0 { Segment::label(tr("pill.code.settingsSearch.autoCompactOff")) } else { Segment::label(format!("{}k", n / 1000)) }).collect();
             SegmentedButtons::new("auto-compact-at", labels, current).on_change(move |index, _, cx| {
-                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.auto_compact_tokens = super::config::AUTO_COMPACT_CHOICES[index], cx));
+                let _ = view.update(cx, |view, cx| view.set_defaults(|c| c.auto_compact_tokens = choices[index], cx));
             })
         };
+        // ¿Para quién valen? Para todos los proyectos o solo para el de ahora (que sobrescribe lo global).
+        let workspace = self.config_workspace();
+        let own = workspace.is_some_and(|id| self.configs.conv_overridden(id));
+        let project_name = match workspace {
+            Some(super::LOOSE) | None => tr("pill.code.settingsSearch.scopeLoose").to_string(),
+            Some(id) => self.workspaces.get(id).map(|w| w.name.clone()).unwrap_or_default(),
+        };
+        let scope = {
+            let view = view.clone();
+            SegmentedButtons::new(
+                "conv-scope",
+                vec![Segment::label(tr("pill.code.settingsSearch.scopeAll")), Segment::label(tr("pill.code.settingsSearch.scopeProject"))],
+                if own { 1 } else { 0 },
+            )
+            .on_change(move |index, _, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    if let Some(id) = view.config_workspace() {
+                        view.configs.set_conv_overridden(id, index == 1);
+                        cx.notify();
+                    }
+                });
+            })
+        };
+        let scope_desc = if own { tf("pill.code.settingsSearch.scopeProjectDesc", &[("project", &project_name)]) } else { tr("pill.code.settingsSearch.scopeAllDesc").to_string() };
+        let mut scope_row = div().flex().flex_col().gap(px(8.)).pb(px(12.)).child(scope);
+        if own {
+            scope_row = scope_row.child(
+                Button::new("conv-apply-all", tr("pill.code.settingsSearch.applyAll")).text().size(ButtonSize::Small).on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    if let Some(id) = view.config_workspace() {
+                        view.configs.apply_conv_to_all(id);
+                        cx.notify();
+                    }
+                })),
+            );
+        }
         let conversations = ListGroup::new()
             .title(tr("pill.code.settingsSearch.conversations"))
+            .custom_row(gpui_m3::SettingRow::new("conv-scope-row", tr("pill.code.settingsSearch.scope")).description(scope_desc))
+            .custom_row(scope_row)
             .custom_row(gpui_m3::SettingRow::new("follow-up-row", tr("pill.code.settingsSearch.followUp")).description(tr("pill.code.settingsSearch.followUpDesc")).control(follow))
             .custom_row(gpui_m3::SettingRow::new("compact-idle-row", tr("pill.code.settingsSearch.compactIdle")).description(tr("pill.code.settingsSearch.compactIdleDesc")).control(compact))
             .custom_row(gpui_m3::SettingRow::new("auto-compact-row", tr("pill.code.settingsSearch.autoCompact")).description(tr("pill.code.settingsSearch.autoCompactDesc")).control(auto_compact));
