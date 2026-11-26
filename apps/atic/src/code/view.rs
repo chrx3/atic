@@ -3762,6 +3762,7 @@ impl CodeView {
             );
         }
         let level = chat.long_level();
+        let key_ahead = key.clone();
         let mut notice = Banner::new(SharedString::from(format!("long-{key}-{level:?}")))
             .icon("gauge")
             .text(level.map(|l| l.text()).unwrap_or_default())
@@ -3780,7 +3781,17 @@ impl CodeView {
                 cx.notify();
             }));
         notice = if matches!(level, Some(super::chat::LongLevel::Soft)) { notice.subtle() } else { notice.warning() };
-        column.child(Presence::new(SharedString::from(format!("long-{}", chat.key)), level.is_some()).exit(Exit::Sink).child(notice))
+        let threshold = self.configs.get(chat.workspace).auto_compact_tokens;
+        let ahead = super::compact_ahead(threshold, chat.context.map(|(used, _)| used), chat.acp.is_none(), super::ends_compacted(&chat.items));
+        let ahead_text = match ahead {
+            Some(super::CompactAhead::AfterTurn) => tf("pill.code.view.compactAfterTurn", &[("tokens", &format!("{}k", threshold / 1000))]),
+            Some(super::CompactAhead::Soon { left }) => tf("pill.code.view.compactSoon", &[("left", &format!("{}k", left.div_ceil(1000))), ("tokens", &format!("{}k", threshold / 1000))]),
+            None => String::new(),
+        };
+        let ahead_banner = Banner::new(SharedString::from(format!("compact-ahead-{key_ahead}-{ahead:?}"))).icon("gauge").text(ahead_text).subtle();
+        column
+            .child(Presence::new(SharedString::from(format!("compact-ahead-{}", chat.key)), ahead.is_some()).exit(Exit::Sink).child(ahead_banner))
+            .child(Presence::new(SharedString::from(format!("long-{}", chat.key)), level.is_some()).exit(Exit::Sink).child(notice))
     }
 
     /// La caja de texto acepta archivos arrastrados desde el Explorador, con

@@ -1691,6 +1691,8 @@
  "pill.code.view.closePanel": "Close panel",
  "pill.code.view.commandsActionsTip": "Commands and actions (/)",
  "pill.code.view.commandsTip": "Commands (Ctrl+K)",
+ "pill.code.view.compactAfterTurn": "Past {tokens} of context: it will compact itself when this turn ends",
+ "pill.code.view.compactSoon": "The next message may compact the conversation: {left} left before the {tokens} auto-compact limit",
  "pill.code.view.compact": "Compact",
  "pill.code.view.compacted": "Context compacted",
  "pill.code.view.connecting": "Connecting…",

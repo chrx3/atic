@@ -612,6 +612,30 @@ fn compact_over_threshold(p: &AutoCompactProbe) -> bool {
     p.threshold > 0 && p.claude && p.live && !p.in_use && p.queued == 0 && !p.closing && !p.ends_compacted && p.used.is_some_and(|used| used >= p.threshold)
 }
 
+/// Cuánto falta para que el umbral de autocompactado se cumpla: desde este porcentaje se avisa.
+const COMPACT_AHEAD_PERCENT: u64 = 90;
+
+/// Qué avisar sobre la próxima compactación automática de una conversación de Claude.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompactAhead {
+    /// Ya pasó el umbral: se compacta al terminar el turno que va.
+    AfterTurn,
+    /// Cerca del umbral: el próximo mensaje podría cruzarlo (faltan `left` tokens).
+    Soon { left: u64 },
+}
+
+fn compact_ahead(threshold: u64, used: Option<u64>, claude: bool, ends_compacted: bool) -> Option<CompactAhead> {
+    let used = used?;
+    if threshold == 0 || !claude {
+        return None;
+    }
+    if used >= threshold {
+        // Recién compactada y todavía arriba del umbral: no se repite hasta el turno siguiente.
+        return (!ends_compacted).then_some(CompactAhead::AfterTurn);
+    }
+    (used * 100 >= threshold * COMPACT_AHEAD_PERCENT).then_some(CompactAhead::Soon { left: threshold - used })
+}
+
 /// El contexto pesa lo bastante como para que compactar valga la pena.
 fn context_is_big(context: Option<(u64, u64)>) -> bool {
     context.is_some_and(|(used, max)| used >= COMPACT_MIN_TOKENS || (max > 0 && used * 100 >= max * COMPACT_MIN_PERCENT))
@@ -5180,6 +5204,21 @@ mod tests {
         chat.live = live;
         chat.busy = busy;
         chat
+    }
+
+    #[test]
+    fn avisa_cuando_el_proximo_mensaje_compactara() {
+        // Sin umbral o con un agente ACP, nada que avisar.
+        assert_eq!(compact_ahead(0, Some(500_000), true, false), None);
+        assert_eq!(compact_ahead(300_000, Some(500_000), false, false), None);
+        assert_eq!(compact_ahead(300_000, None, true, false), None);
+        // Lejos del umbral, tampoco.
+        assert_eq!(compact_ahead(300_000, Some(200_000), true, false), None);
+        // Al 90 % o más, el próximo mensaje podría cruzarlo.
+        assert_eq!(compact_ahead(300_000, Some(270_000), true, false), Some(CompactAhead::Soon { left: 30_000 }));
+        // Pasado el umbral, se compacta al terminar el turno; recién compactada, no se repite.
+        assert_eq!(compact_ahead(300_000, Some(310_000), true, false), Some(CompactAhead::AfterTurn));
+        assert_eq!(compact_ahead(300_000, Some(310_000), true, true), None);
     }
 
     #[test]
