@@ -32,6 +32,9 @@ pub struct Repo {
     pub files: Vec<FileChange>,
     /// Una carpeta del espacio que no es un repositorio git.
     pub is_repo: bool,
+    /// Lo que dijo git cuando falló (`None` si leyó bien o no es un repo).
+    /// Con error, `files` va vacío: no es que esté limpio.
+    pub error: Option<String>,
 }
 
 fn git(dir: &Path) -> Command {
@@ -51,6 +54,19 @@ fn output(command: &mut Command) -> Option<Vec<u8>> {
     output.status.success().then_some(output.stdout)
 }
 
+/// Corre git y trae su salida, o por qué falló (sin git, repo roto, sin permiso).
+/// El panel distingue así un repo limpio de uno que no se pudo leer.
+fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    match git(dir).args(args).output() {
+        Ok(output) if output.status.success() => Ok(output.stdout),
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            Err(if detail.is_empty() { output.status.to_string() } else { detail })
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn line(bytes: Vec<u8>) -> Option<String> {
     let text = String::from_utf8_lossy(&bytes).trim().to_string();
     (!text.is_empty()).then_some(text)
@@ -68,7 +84,7 @@ pub fn status(folders: &[PathBuf]) -> Vec<Repo> {
                     out.push(repo(&root));
                 }
             }
-            None => out.push(Repo { name: short(folder), root: folder.clone(), branch: None, files: Vec::new(), is_repo: false }),
+            None => out.push(Repo { name: short(folder), root: folder.clone(), branch: None, files: Vec::new(), is_repo: false, error: None }),
         }
     }
     out
@@ -81,9 +97,10 @@ fn short(path: &Path) -> String {
 fn repo(root: &Path) -> Repo {
     let name = short(root);
     let branch = output(git(root).args(["rev-parse", "--abbrev-ref", "HEAD"])).and_then(line);
-    let entries = output(git(root).args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
-        .map(|raw| parse_status(&raw))
-        .unwrap_or_default();
+    let status = run(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+    let entries = status.as_ref().map(|raw| parse_status(raw)).unwrap_or_default();
+    // Si el estado falló, los archivos van vacíos pero no está limpio: se avisa.
+    let error = status.err();
     let counts = output(git(root).args(["diff", "--numstat", "-z", "HEAD"]))
         .map(|raw| parse_numstat(&raw))
         .unwrap_or_default();
@@ -105,7 +122,7 @@ fn repo(root: &Path) -> Repo {
             FileChange { path, name, dir, status, added, removed }
         })
         .collect();
-    Repo { name, root: root.to_path_buf(), branch, files, is_repo: true }
+    Repo { name, root: root.to_path_buf(), branch, files, is_repo: true, error }
 }
 
 /// Lo que cambió en `dir` para el celular (`phone.rs`): la rama y, por archivo, su ruta
@@ -222,6 +239,17 @@ mod tests {
     }
 
     #[test]
+    fn el_estado_fallido_se_distinguen_de_un_repo_limpio() {
+        // `git -C` en una carpeta que no existe falla: no es que esté limpio.
+        assert!(run(std::path::Path::new("/definitivamente/no/existe-atic"), &["status", "--porcelain=v1", "-z"]).is_err());
+        let clean = Repo { name: "r".into(), root: PathBuf::from("/r"), branch: Some("main".into()), files: Vec::new(), is_repo: true, error: None };
+        let broken = Repo { error: Some("fatal: repo roto".into()), ..clean.clone() };
+        assert!(clean.error.is_none());
+        assert!(broken.error.is_some());
+        assert_ne!(clean, broken);
+    }
+
+    #[test]
     fn una_carpeta_sin_git_se_dice_igual() {
         let dir = std::env::temp_dir().join(format!("atic-nogit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -230,6 +258,7 @@ mod tests {
         if repos.first().is_some_and(|r| !r.is_repo) {
             assert_eq!(repos[0].root, dir);
             assert!(repos[0].files.is_empty() && repos[0].branch.is_none());
+            assert!(repos[0].error.is_none());
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

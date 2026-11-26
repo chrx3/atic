@@ -4029,7 +4029,7 @@ impl CodeView {
             }
             _ => {
                 let roots: Vec<PathBuf> = self.workspaces.active().map(|w| w.folders.clone()).unwrap_or_default();
-                self.files(&roots, cx).into_any_element()
+                self.files(&roots, window, cx).into_any_element()
             }
         };
         // Entre pestañas (Archivos, Cambios, la terminal…), el «fade through» de M3: la nueva
@@ -4151,9 +4151,9 @@ impl CodeView {
     }
 
     /// El panel Archivos: la búsqueda (con el índice) y el árbol o los resultados.
-    fn files(&mut self, roots: &[PathBuf], cx: &mut Context<Self>) -> impl IntoElement {
+    fn files(&mut self, roots: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.file_search.read(cx).text().trim().to_string();
-        let body = if query.is_empty() { self.file_tree(roots, cx).into_any_element() } else { self.file_results(&query, roots.len() > 1, cx) };
+        let body = if query.is_empty() { self.file_tree(roots, window, cx).into_any_element() } else { self.file_results(&query, roots.len() > 1, cx) };
         div()
             .flex_1()
             .min_h(px(0.))
@@ -4172,11 +4172,16 @@ impl CodeView {
         if found.is_empty() {
             return list.child(div().p(px(10.)).text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.noResults"))).into_any_element();
         }
+        // Con el tope alcanzado, lo dicho: puede haber más archivos que coinciden.
+        let capped = found.len() >= super::files::MAX_RESULTS;
         for (row, file) in found.into_iter().enumerate() {
             let name = file.name().to_string();
             let dir = file.dir(several);
             let path = file.path.clone();
-            let open = cx.listener(move |view, _: &ClickEvent, _, cx| view.open_doc(path.clone(), false, cx));
+            let open = cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.file_cursor = Some(path.clone());
+                view.open_doc(path.clone(), false, cx);
+            });
             let menu_path = file.path.clone();
             let on_menu = cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), false, event.position, window, cx));
             let selected = self.active_file.as_ref().is_some_and(|p| super::same_path(p, &file.path));
@@ -4190,6 +4195,7 @@ impl CodeView {
                         .selected(selected)
                         .guides(false)
                         .tooltip(file.path.display().to_string())
+                        .label_highlights(gpui_m3::match_ranges(&name, query))
                         .trailing(div().max_w(px(160.)).truncate().text_size(px(11.5)).text_color(muted()).child(dir))
                         .on_click(open),
                 ));
@@ -4211,58 +4217,132 @@ impl CodeView {
                     .on_mouse_down(MouseButton::Right, on_menu)
                     .on_click(open)
                     .child(svg().path("icons/file.svg").size(px(14.)).flex_none().text_color(color.unwrap_or_else(muted)))
-                    .child(div().flex_none().text_color(fg()).when(name.starts_with('.'), |el| el.opacity(0.55)).child(name))
+                    .child(div().flex_none().text_color(fg()).when(name.starts_with('.'), |el| el.opacity(0.55)).child(highlighted_name(name, query)))
                     .child(div().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(muted()).child(dir)),
+            );
+        }
+        if capped {
+            list = list.child(
+                div().px(px(10.)).py(px(6.)).text_size(px(12.)).text_color(muted()).child(crate::i18n::tf(
+                    "pill.code.view.searchCapped",
+                    &[("n", &super::files::MAX_RESULTS)],
+                )),
             );
         }
         list.into_any_element()
     }
 
-    fn file_tree(&mut self, roots: &[PathBuf], cx: &mut Context<Self>) -> impl IntoElement {
+    fn file_tree(&mut self, roots: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.explorer.rows(roots);
+        // Las letras de git por ruta (de `self.repos`, ya cargado): solo lectura.
+        let mut status_of: std::collections::HashMap<PathBuf, char> = std::collections::HashMap::new();
+        for repo in &self.repos {
+            for file in &repo.files {
+                status_of.entry(file.path.clone()).or_insert(file.status);
+            }
+        }
+        // Qué carpetas abiertas no muestran nada, para la nota en vez de nada.
+        let bare: Vec<bool> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.dir && row.open && !rows.get(i + 1).is_some_and(|next| next.depth > row.depth)
+            })
+            .collect();
         let mut list = div().id("explorer").flex_1().min_h(px(0.)).overflow_y_scroll().px(px(8.)).pb(px(12.));
+        if rows.is_empty() {
+            list = list.child(
+                div().p(px(10.)).text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.addFolderHint")),
+            );
+        }
         let m3 = expressive();
         for (index, row) in rows.into_iter().enumerate() {
+            let cursor = self.file_cursor.as_ref().is_some_and(|c| super::same_path(c, &row.path));
+            let status = status_of.get(&row.path).copied();
+            // La nota bajo una carpeta abierta que no muestra nada (vacía o sin permiso).
+            let note = bare[index].then(|| dir_note(row.depth, &row.path));
+            // El foco del teclado llega a la fila: su id no cambia si el árbol se reordena.
+            let focus_id: gpui::ElementId = SharedString::from(format!("tree-{}", row.path.display())).into();
             if m3 {
                 // El árbol de M3: sangría con guías, ícono con el color del tipo,
-                // los ocultos atenuados y el archivo abierto resaltado.
-                let path = row.path.clone();
+                // los ocultos atenuados y el archivo abierto resaltado. La letra de
+                // git va al final y el cursor del teclado lleva un borde, no el relleno.
                 let (root, dir) = (row.depth == 0, row.dir);
                 let color = if dir { Some(accent()) } else { kind_color(super::files::kind_of(&row.name)) };
                 let selected = !dir && self.active_file.as_ref().is_some_and(|p| super::same_path(p, &row.path));
                 let menu_path = row.path.clone();
+                let click_path = row.path.clone();
+                let tree = gpui_m3::TreeRow::new(("file", index), row.name.clone())
+                    .depth(row.depth)
+                    .expanded(dir.then_some(row.open))
+                    .icon(match (dir, row.open) {
+                        (true, true) => "folder-open",
+                        (true, false) => "folder",
+                        _ => "file",
+                    })
+                    .when_some(color, |r, c| r.icon_color(c))
+                    .root(root)
+                    .dimmed(row.name.starts_with('.'))
+                    .selected(selected)
+                    .tooltip(row.path.display().to_string())
+                    .when_some(status, |r, st| {
+                        let (fg, bg) = status_badge(st);
+                        r.trailing(
+                            div()
+                                .size(px(20.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(6.))
+                                .bg(bg)
+                                .font_family(mono())
+                                .text_size(px(11.))
+                                .text_color(fg)
+                                .child(st.to_string()),
+                        )
+                    })
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.file_cursor = Some(click_path.clone());
+                        if dir {
+                            view.explorer.toggle(&click_path, root);
+                            cx.notify();
+                        } else {
+                            view.open_doc(click_path.clone(), false, cx);
+                        }
+                    }));
                 list = list.child(
-                    div().on_mouse_down(
+                    tree_keys(
+                        div().id(focus_id.clone()),
+                        &focus_id,
+                        if root { 17. } else { 15. },
+                        row.path.clone(),
+                        dir,
+                        row.open,
+                        root,
+                        roots.to_vec(),
+                        window,
+                        cx,
+                    )
+                    .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), dir, event.position, window, cx)),
                     ).child(
-                    gpui_m3::TreeRow::new(("file", index), row.name.clone())
-                        .depth(row.depth)
-                        .expanded(dir.then_some(row.open))
-                        .icon(match (dir, row.open) {
-                            (true, true) => "folder-open",
-                            (true, false) => "folder",
-                            _ => "file",
-                        })
-                        .when_some(color, |r, c| r.icon_color(c))
-                        .root(root)
-                        .dimmed(row.name.starts_with('.'))
-                        .selected(selected)
-                        .tooltip(row.path.display().to_string())
-                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                            if dir {
-                                view.explorer.toggle(&path, root);
-                                cx.notify();
-                            } else {
-                                view.open_doc(path.clone(), false, cx);
-                            }
-                        })),
+                    div()
+                        .rounded(px(if root { 17. } else { 15. }))
+                        .border_1()
+                        .border_color(if cursor { accent() } else { gpui::transparent_black() })
+                        .child(tree),
                     ),
                 );
+                if let Some(note) = note {
+                    list = list.child(note);
+                }
                 continue;
             }
-            let path = row.path.clone();
             let menu_path = row.path.clone();
+            let click_path = row.path.clone();
+            let key_path = row.path.clone();
             let root = row.depth == 0;
             let dir = row.dir;
             let chevron = if !dir {
@@ -4280,9 +4360,8 @@ impl CodeView {
             // Como la referencia: el ícono lleva el color del tipo y el archivo abierto se resalta.
             let icon_color = if dir { accent() } else { kind_color(super::files::kind_of(&row.name)).unwrap_or_else(muted) };
             let selected = !dir && self.active_file.as_ref().is_some_and(|p| super::same_path(p, &row.path));
-            list = list.child(
-                div()
-                    .id(("file", index))
+            let row_el = div()
+                    .id(focus_id.clone())
                     .tooltip(crate::hover::tip_text(SharedString::from(row.path.display().to_string())))
                     .h(px(30.))
                     .pl(px(6. + row.depth as f32 * 16.))
@@ -4291,6 +4370,8 @@ impl CodeView {
                     .items_center()
                     .gap(px(6.))
                     .rounded(px(8.))
+                    .border_1()
+                    .border_color(if cursor { accent() } else { gpui::transparent_black() })
                     .cursor_pointer()
                     .text_size(px(13.5))
                     .when(selected, |el| el.bg(selected_bg()))
@@ -4300,11 +4381,12 @@ impl CodeView {
                         cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), dir, event.position, window, cx)),
                     )
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.file_cursor = Some(click_path.clone());
                         if dir {
-                            view.explorer.toggle(&path, root);
+                            view.explorer.toggle(&click_path, root);
                             cx.notify();
                         } else {
-                            view.open_doc(path.clone(), false, cx);
+                            view.open_doc(click_path.clone(), false, cx);
                         }
                     }))
                     .child(div().w(px(14.)).flex_none().when_some(chevron, |el, chevron| {
@@ -4320,8 +4402,32 @@ impl CodeView {
                             .when(root, |el| el.font_weight(FontWeight::SEMIBOLD))
                             .when(row.name.starts_with('.'), |el| el.opacity(0.55))
                             .child(row.name),
-                    ),
-            );
+                    )
+                    .when_some(status, |el, st| {
+                        let (fg, bg) = status_badge(st);
+                        el.child(
+                            div()
+                                .flex_none()
+                                .min_w(px(20.))
+                                .h(px(20.))
+                                .px(px(5.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(6.))
+                                .bg(bg)
+                                .font_family(mono())
+                                .text_size(px(11.))
+                                .text_color(fg)
+                                .child(st.to_string()),
+                        )
+                    });
+            // El teclado llega a la fila: Enter o Espacio la activa, ← pliega, → abre
+            // y ↑↓ pasan a la fila vecina.
+            list = list.child(tree_keys(row_el, &focus_id, 8., key_path, dir, row.open, root, roots.to_vec(), window, cx));
+            if let Some(note) = note {
+                list = list.child(note);
+            }
         }
         list
     }
@@ -4335,39 +4441,76 @@ impl CodeView {
             let text = if self.refreshing { crate::i18n::t("pill.code.view.checkingChanges") } else { crate::i18n::t("pill.code.view.noFolders") };
             return list.child(div().p(px(8.)).text_size(px(13.)).text_color(muted()).child(text));
         }
-        // Sin nada que confirmar: «Todo al día», como en la referencia (si alguna carpeta es un repo).
-        if total == 0 && self.repos.iter().any(|r| r.is_repo) {
-            if expressive() {
-                let empty = gpui_m3::EmptyState::new("changes-clear")
-                    .shape(gpui_m3::ShapeName::Cookie9)
-                    .tone(gpui_m3::Tone::Primary)
-                    .size(px(64.))
-                    .icon("check")
-                    .title(crate::i18n::t("pill.code.view.allClear"))
-                    .text(crate::i18n::t("pill.code.view.noUncommitted"));
-                return list.child(div().pt(px(24.)).flex().justify_center().child(empty));
+        if total == 0 {
+            // Git falló: la nota del error en vez de «Todo al día» (vacío no es limpio).
+            if let Some(error) = self.repos.iter().filter_map(|r| r.error.clone()).next() {
+                let text = crate::i18n::tf("pill.code.view.gitError", &[("error", &error)]);
+                if expressive() {
+                    let empty = gpui_m3::EmptyState::new("changes-error")
+                        .shape(gpui_m3::ShapeName::Cookie9)
+                        .tone(gpui_m3::Tone::Tertiary)
+                        .size(px(64.))
+                        .icon("alert")
+                        .title(crate::i18n::t("pill.code.view.gitErrorTitle"))
+                        .text(text.clone());
+                    return list.child(div().pt(px(24.)).flex().justify_center().child(empty));
+                }
+                return list.child(
+                    div()
+                        .pt(px(48.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .size(px(48.))
+                                .mb(px(6.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(removed_bg())
+                                .child(svg().path("icons/circle-x.svg").size(px(22.)).text_color(red())),
+                        )
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::i18n::t("pill.code.view.gitErrorTitle")))
+                        .child(div().px(px(16.)).text_center().text_size(px(13.)).text_color(muted()).child(text)),
+                );
             }
-            return list.child(
-                div()
-                    .pt(px(48.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .size(px(48.))
-                            .mb(px(6.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(added_bg())
-                            .child(svg().path("icons/check.svg").size(px(22.)).text_color(green())),
-                    )
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::i18n::t("pill.code.view.allClear")))
-                    .child(div().text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.noUncommitted"))),
-            );
+            // Sin nada que confirmar: «Todo al día», como en la referencia (si alguna carpeta es un repo).
+            if self.repos.iter().any(|r| r.is_repo) {
+                if expressive() {
+                    let empty = gpui_m3::EmptyState::new("changes-clear")
+                        .shape(gpui_m3::ShapeName::Cookie9)
+                        .tone(gpui_m3::Tone::Primary)
+                        .size(px(64.))
+                        .icon("check")
+                        .title(crate::i18n::t("pill.code.view.allClear"))
+                        .text(crate::i18n::t("pill.code.view.noUncommitted"));
+                    return list.child(div().pt(px(24.)).flex().justify_center().child(empty));
+                }
+                return list.child(
+                    div()
+                        .pt(px(48.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .size(px(48.))
+                                .mb(px(6.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(added_bg())
+                                .child(svg().path("icons/check.svg").size(px(22.)).text_color(green())),
+                        )
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::i18n::t("pill.code.view.allClear")))
+                        .child(div().text_size(px(13.)).text_color(muted()).child(crate::i18n::t("pill.code.view.noUncommitted"))),
+                );
+            }
         }
         if total == 0 {
             for (index, repo) in self.repos.iter().enumerate() {
@@ -4426,16 +4569,29 @@ impl CodeView {
             })
             .child(div().flex_1())
             .when(clean, |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .text_size(px(12.))
-                        .text_color(green())
-                        .child(svg().path("icons/check.svg").size(px(12.)).text_color(green()))
-                        .child(crate::i18n::t("pill.code.view.upToDate")),
-                )
+                if let Some(error) = repo.error.clone() {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_size(px(12.))
+                            .text_color(amber())
+                            .child(svg().path("icons/circle-x.svg").size(px(12.)).text_color(amber()))
+                            .child(crate::i18n::tf("pill.code.view.gitError", &[("error", &error)])),
+                    )
+                } else {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_size(px(12.))
+                            .text_color(green())
+                            .child(svg().path("icons/check.svg").size(px(12.)).text_color(green()))
+                            .child(crate::i18n::t("pill.code.view.upToDate")),
+                    )
+                }
             })
             .when_some(repo.branch.clone(), |el, branch| {
                 el.child(
@@ -4522,7 +4678,7 @@ impl CodeView {
                     .size_full()
                     .overflow_y_scroll()
                     .p(px(10.))
-                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name).show_all_label(super::tools::show_all)),
+                    .child(gpui_m3::DiffView::from_diff(("code-doc-diff-view", doc.id as usize), diff).path(name).show_all_label(super::tools::show_all).fold_label(super::tools::folded)),
             );
         }
         let lines = doc.lines.clone();
@@ -4577,6 +4733,125 @@ fn kind_color(kind: super::files::Kind) -> Option<Hsla> {
     }
 }
 
+/// Una fila del árbol que se alcanza con Tab: Enter o Espacio la activa (abre el
+/// archivo o alterna la carpeta, como el clic), ← pliega, → abre, y ↑↓ pasan el
+/// foco y el cursor a la fila vecina (el orden de Tab). Como las filas de la
+/// barra (`sidebar.rs`).
+fn tree_keys(
+    el: Stateful<Div>,
+    focus_id: &gpui::ElementId,
+    radius: f32,
+    path: PathBuf,
+    dir: bool,
+    open: bool,
+    root: bool,
+    roots: Vec<PathBuf>,
+    window: &mut Window,
+    cx: &mut Context<CodeView>,
+) -> Stateful<Div> {
+    gpui_m3::interaction::keyboard_focus(el, focus_id, gpui::Corners::all(px(radius)), false, window, cx).on_key_down(cx.listener(
+        move |view, event: &gpui::KeyDownEvent, window, cx| {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            let key = event.keystroke.key.as_str();
+            match key {
+                "enter" | "space" if !event.is_held => {
+                    cx.stop_propagation();
+                    view.file_cursor = Some(path.clone());
+                    if dir {
+                        view.explorer.toggle(&path, root);
+                        cx.notify();
+                    } else {
+                        view.open_doc(path.clone(), false, cx);
+                    }
+                }
+                "enter" | "space" => {}
+                "up" | "down" => {
+                    cx.stop_propagation();
+                    // El cursor y el foco pasan a la fila vecina.
+                    let rows = view.explorer.rows(&roots);
+                    let at = rows.iter().position(|r| super::same_path(&r.path, &path));
+                    let next = match (key, at) {
+                        ("up", Some(i)) => i.checked_sub(1),
+                        ("up", None) => rows.len().checked_sub(1),
+                        (_, Some(i)) => Some((i + 1).min(rows.len().saturating_sub(1))),
+                        (_, None) => (!rows.is_empty()).then_some(0),
+                    };
+                    if let Some(n) = next {
+                        view.file_cursor = Some(rows[n].path.clone());
+                        cx.notify();
+                    }
+                    if key == "up" {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                }
+                "left" if dir && open => {
+                    cx.stop_propagation();
+                    view.file_cursor = Some(path.clone());
+                    view.explorer.toggle(&path, root);
+                    cx.notify();
+                }
+                "right" if dir && !open => {
+                    cx.stop_propagation();
+                    view.file_cursor = Some(path.clone());
+                    view.explorer.toggle(&path, root);
+                    cx.notify();
+                }
+                _ => {}
+            }
+        },
+    ))
+}
+
+/// La letra de git de una fila del árbol y sus colores, como en `change_row`:
+/// verde lo agregado (`A`) o nuevo (`N`), rojo lo borrado (`D`) y ámbar el resto.
+fn status_badge(status: char) -> (Hsla, Hsla) {
+    match status {
+        'A' | 'N' => (green(), added_bg()),
+        'D' => (red(), removed_bg()),
+        _ => (amber(), code_bg()),
+    }
+}
+
+/// El nombre de un resultado de la búsqueda con lo que coincide resaltado,
+/// en negrita y el acento (como las @-menciones).
+fn highlighted_name(name: String, query: &str) -> AnyElement {
+    let ranges = gpui_m3::match_ranges(&name, query);
+    if ranges.is_empty() {
+        return name.into_any_element();
+    }
+    let style = gpui::HighlightStyle { color: Some(accent()), font_weight: Some(FontWeight(700.)), ..Default::default() };
+    let ranges: Vec<_> = ranges
+        .into_iter()
+        .filter(|r| r.end <= name.len() && name.is_char_boundary(r.start) && name.is_char_boundary(r.end))
+        .map(|r| (r, style))
+        .collect();
+    gpui::StyledText::new(name).with_highlights(ranges).into_any_element()
+}
+
+/// La nota bajo una carpeta abierta que no muestra nada: vacía o sin permiso
+/// de lectura, en vez de nada.
+fn dir_note(depth: usize, path: &std::path::Path) -> impl IntoElement {
+    let text = match crate::kit::explorer::dir_note(path) {
+        crate::kit::explorer::DirNote::Empty => crate::i18n::t("pill.code.view.emptyFolder"),
+        crate::kit::explorer::DirNote::Denied => crate::i18n::t("pill.code.view.unreadableFolder"),
+    };
+    div()
+        .pl(px(6. + (depth + 1) as f32 * 16.))
+        .pr(px(8.))
+        .py(px(4.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(px(12.5))
+        .text_color(muted())
+        .child(svg().path("icons/folder.svg").size(px(13.)).text_color(faint()))
+        .child(text)
+}
+
 /// El diff del visor: el `git diff` del archivo, o todo agregado si git no lo conoce. Se
 /// guarda el último (la tarjeta se dibuja a cada cuadro) y se rehace cuando el visor
 /// recarga el archivo, que cambia el `Arc` de las líneas.
@@ -4609,9 +4884,10 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
         _ => (amber(), code_bg()),
     };
     let path = file.path.clone();
-    let deleted = file.status == 'D';
+    let menu_path = file.path.clone();
     div()
         .id(("change", id))
+        .tooltip(crate::hover::tip_text(SharedString::from(file.path.display().to_string())))
         .mx(px(6.))
         .h(px(44.))
         .px(px(8.))
@@ -4619,11 +4895,16 @@ fn change_row(id: usize, file: &FileChange, cx: &mut Context<CodeView>) -> impl 
         .items_center()
         .gap(px(10.))
         .rounded(px(8.))
-        .when(!deleted, |el| el.cursor_pointer().hover(|el| el.bg(hover_bg())))
+        .cursor_pointer()
+        .hover(|el| el.bg(hover_bg()))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| view.open_file_menu(menu_path.clone(), false, event.position, window, cx)),
+        )
+        // También los borrados abren su diff contra HEAD (el visor lo trae de git);
+        // la nota `fileGone` queda para lo inexistente sin diff.
         .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-            if !deleted {
-                view.open_doc(path.clone(), true, cx);
-            }
+            view.open_doc(path.clone(), true, cx);
         }))
         .child(
             div()
@@ -4702,6 +4983,7 @@ pub(super) fn tool_input(tool: &ToolCall) -> AnyElement {
         for (n, edit) in diffs.iter().enumerate() {
             let view = gpui_m3::DiffView::new(SharedString::from(format!("{}-diff-{n}", tool.id)), &edit.old, &edit.new)
                 .show_all_label(super::tools::show_all)
+                .fold_label(super::tools::folded)
                 .when(tool.name == "Write", |view| view.max_rows(RESULT_LINES));
             column = column
                 .when(total > 1, |el| el.child(div().text_size(px(11.5)).text_color(muted()).child(tf("pill.code.view.changeOf", &[("n", &(n + 1)), ("total", &total)]))))

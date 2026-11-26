@@ -18,7 +18,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::CursorShape;
 use gpui::{point, px, size, App, Bounds, Font, FontStyle, FontWeight, Pixels, TextRun, Window};
 
-use console::Console;
+use console::{Console, TermSelection};
 
 const PAD: f32 = 8.0;
 pub(crate) const GRID_PAD: f32 = PAD;
@@ -83,12 +83,13 @@ pub(crate) fn powershell() -> String {
 
 /// Las filas visibles de una consola con la paleta dada, para la terminal de
 /// Atic Code.
-pub(crate) fn grid_of(console: &Console, fonts: &[Font; 4], palette: &console::Palette) -> Grid {
+pub(crate) fn grid_of(console: &Console, fonts: &[Font; 4], palette: &console::Palette, selection: Option<TermSelection>) -> Grid {
     let term = console.term.lock();
     let content = term.renderable_content();
     let colors = content.colors;
     let rows = term.grid().screen_lines();
     let cols = term.grid().columns();
+    let history = term.grid().history_size();
     let offset = content.display_offset as i32;
     let mut out: Vec<Row> = (0..rows).map(|_| Row::default()).collect();
     for indexed in content.display_iter {
@@ -143,14 +144,36 @@ pub(crate) fn grid_of(console: &Console, fonts: &[Font; 4], palette: &console::P
         .then(|| {
             let row = content.cursor.point.line.0 + offset;
             (row >= 0 && (row as usize) < rows)
-                .then_some((row as usize, content.cursor.point.column.0.min(cols - 1)))
+                .then_some((row as usize, content.cursor.point.column.0.min(cols - 1), content.cursor.shape))
         })
         .flatten();
+    // Lo marcado, en filas visibles: (columna inicial, fin exclusivo). Sigue al
+    // contenido con la historia (ver `TermSelection::ordered`); el cursor solo
+    // no pinta nada.
+    let mut marked: Vec<Option<(usize, usize)>> = vec![None; rows];
+    if let Some(sel) = selection.filter(|sel| !sel.is_caret()) {
+        let (start, end) = sel.ordered(history);
+        let top = -(history as i32);
+        if start.line <= rows as i32 - 1 && end.line >= top {
+            for (row, slot) in marked.iter_mut().enumerate() {
+                let line = row as i32 - offset;
+                if line < start.line.max(top) || line > end.line.min(rows as i32 - 1) {
+                    continue;
+                }
+                let from = if line == start.line { start.col } else { 0 }.min(cols);
+                let to = if line == end.line { end.col.saturating_add(1) } else { cols }.min(cols);
+                if from < to {
+                    *slot = Some((from, to));
+                }
+            }
+        }
+    }
     drop(term);
     Grid {
         rows: out,
         cursor,
         cols,
+        selection: marked,
     }
 }
 
@@ -210,17 +233,20 @@ pub(crate) fn fonts_of(base: Font) -> [Font; 4] {
 
 pub(crate) struct Grid {
     pub(crate) rows: Vec<Row>,
-    pub(crate) cursor: Option<(usize, usize)>,
+    pub(crate) cursor: Option<(usize, usize, CursorShape)>,
     pub(crate) cols: usize,
+    /// Lo marcado por fila visible: (columna inicial, fin exclusivo).
+    pub(crate) selection: Vec<Option<(usize, usize)>>,
 }
 
 /// Cómo se dibuja la grilla: el margen, el color del cursor y el del contorno
-/// del cursor cuando la consola no tiene el foco.
+/// del cursor cuando la consola no tiene el foco, y el de la selección.
 #[derive(Clone, Copy)]
 pub(crate) struct GridLook {
     pub(crate) pad: f32,
     pub(crate) cursor: u32,
     pub(crate) idle: u32,
+    pub(crate) selection: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -251,6 +277,13 @@ pub(crate) fn paint_grid(
             window.paint_quad(gpui::fill(
                 Bounds::new(point(px(origin.0 + col as f32 * cw), px(y)), size(px(len as f32 * cw), px(lh))),
                 console::term(color),
+            ));
+        }
+        // Lo marcado va bajo el texto, para que se lea en los dos temas.
+        if let Some(Some((from, to))) = grid.selection.get(index) {
+            window.paint_quad(gpui::fill(
+                Bounds::new(point(px(origin.0 + *from as f32 * cw), px(y)), size(px((*to - *from) as f32 * cw), px(lh))),
+                console::term(look.selection).opacity(0.35),
             ));
         }
         if row.text.trim_end().is_empty() {
@@ -299,15 +332,39 @@ pub(crate) fn paint_grid(
             ));
         }
     }
-    if let Some((row, col)) = grid.cursor {
-        let bounds = Bounds::new(
-            point(px(origin.0 + col.min(grid.cols) as f32 * cw), px(origin.1 + row as f32 * lh)),
-            size(px(cw), px(lh)),
-        );
-        if focused {
-            window.paint_quad(gpui::fill(bounds, console::term(look.cursor).opacity(0.75)));
-        } else {
-            window.paint_quad(gpui::outline(bounds, console::term(look.idle), gpui::BorderStyle::Solid));
+    if let Some((row, col, shape)) = grid.cursor {
+        let x = origin.0 + col.min(grid.cols) as f32 * cw;
+        let y = origin.1 + row as f32 * lh;
+        match (focused, shape) {
+            // La barra y el subrayado que pide el programa (vim, la caja…),
+            // no siempre un bloque.
+            (true, CursorShape::Beam) => {
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(px(x), px(y)), size(px((cw * 0.22).max(1.5)), px(lh))),
+                    console::term(look.cursor).opacity(0.85),
+                ));
+            }
+            (true, CursorShape::Underline) => {
+                let h = (lh * 0.18).max(2.);
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(px(x), px(y + lh - h)), size(px(cw), px(h))),
+                    console::term(look.cursor).opacity(0.85),
+                ));
+            }
+            (true, CursorShape::Block) => {
+                window.paint_quad(gpui::fill(
+                    Bounds::new(point(px(x), px(y)), size(px(cw), px(lh))),
+                    console::term(look.cursor).opacity(0.75),
+                ));
+            }
+            // Sin foco, o un contorno hueco: el contorno de siempre.
+            _ => {
+                window.paint_quad(gpui::outline(
+                    Bounds::new(point(px(x), px(y)), size(px(cw), px(lh))),
+                    console::term(look.idle),
+                    gpui::BorderStyle::Solid,
+                ));
+            }
         }
     }
 }

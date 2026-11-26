@@ -79,26 +79,41 @@ impl Doc {
 
     pub fn reload(&mut self) {
         self.note = None;
-        match std::fs::metadata(&self.path) {
-            Err(_) => self.note = Some(crate::i18n::t("pill.kit.fileGone").into()),
-            Ok(meta) if meta.len() > MAX_BYTES => self.note = Some(crate::i18n::t("pill.kit.fileTooBig").into()),
-            Ok(_) => match std::fs::read(&self.path) {
-                Err(error) => self.note = Some(crate::i18n::tf("pill.kit.readFailed", &[("error", &error)])),
-                Ok(bytes) if bytes.iter().take(8192).any(|b| *b == 0) => {
-                    self.note = Some(crate::i18n::t("pill.kit.fileBinary").into())
+        // Si el archivo no está pero git trae su diff (borrado), se ve el diff:
+        // la nota `fileGone` queda solo para lo inexistente sin diff.
+        let missing = match std::fs::metadata(&self.path) {
+            Err(_) => true,
+            Ok(meta) if meta.len() > MAX_BYTES => {
+                self.note = Some(crate::i18n::t("pill.kit.fileTooBig").into());
+                false
+            }
+            Ok(_) => {
+                match std::fs::read(&self.path) {
+                    Err(error) => self.note = Some(crate::i18n::tf("pill.kit.readFailed", &[("error", &error)])),
+                    Ok(bytes) if bytes.iter().take(8192).any(|b| *b == 0) => {
+                        self.note = Some(crate::i18n::t("pill.kit.fileBinary").into())
+                    }
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        self.lines = Arc::new(text.lines().map(clean).collect());
+                    }
                 }
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    self.lines = Arc::new(text.lines().map(clean).collect());
-                }
-            },
-        }
+                false
+            }
+        };
         let (lines, patch) = match diff(&self.path, &self.lines) {
             Some((lines, patch)) => (Some(Arc::new(lines)), patch.map(Arc::new)),
             None => (None, None),
         };
         self.diff = lines;
         self.patch = patch;
+        if missing {
+            // Borrado con diff contra HEAD: se ve el diff; sin diff, lo inexistente.
+            self.lines = Arc::default();
+            if self.diff.is_none() {
+                self.note = Some(crate::i18n::t("pill.kit.fileGone").into());
+            }
+        }
         if self.diff.is_none() {
             self.show_diff = false;
         }

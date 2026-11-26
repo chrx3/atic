@@ -795,6 +795,9 @@ pub struct CodeView {
     tabs: editor::Tabs,
     /// El último archivo abierto: queda resaltado en el árbol.
     active_file: Option<PathBuf>,
+    /// El cursor del teclado en el árbol de Archivos: se mueve con ↑↓ y se ve
+    /// distinto del archivo abierto (que es `active_file`).
+    file_cursor: Option<PathBuf>,
     composer: Entity<TextArea>,
     /// La lista de @-menciones abierta (y lo último que mostró, para su salida).
     mention: Option<mention::Mention>,
@@ -1561,6 +1564,7 @@ impl CodeView {
             doc: None,
             tabs: Default::default(),
             active_file: None,
+            file_cursor: None,
             composer,
             mention: None,
             mention_last: Default::default(),
@@ -4975,8 +4979,12 @@ impl CodeView {
     }
 
     /// Abre un archivo: en el editor, o su diff en el visor si se pide y git lo tiene.
+    /// Si git falló en su repositorio, avisa con un aviso en vez de caer al editor en silencio.
     fn open_doc(&mut self, path: PathBuf, show_diff: bool, cx: &mut Context<Self>) {
         if show_diff {
+            if let Some(error) = self.git_error_for(&path) {
+                self.show_toast(tf("pill.code.view.gitDiffFailed", &[("error", &error)]), cx);
+            }
             self.next_doc += 1;
             let doc = Doc::load(self.next_doc, &path, true);
             if doc.show_diff {
@@ -4988,6 +4996,15 @@ impl CodeView {
             }
         }
         self.open_file(path, cx);
+    }
+
+    /// Por qué git no leyó el repositorio que contiene a `path`, si falló.
+    fn git_error_for(&self, path: &Path) -> Option<String> {
+        self.repos
+            .iter()
+            .filter(|r| r.is_repo && r.error.is_some() && path.starts_with(&r.root))
+            .max_by_key(|r| r.root.as_os_str().len())
+            .and_then(|r| r.error.clone())
     }
 
     /// Las carpetas contra las que se leen las rutas que escribe Claude: las del espacio de

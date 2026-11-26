@@ -38,6 +38,22 @@ fn is_hidden(name: &str, hide_build: bool) -> bool {
     name == ".git" || (hide_build && BUILD_DIRS.contains(&name))
 }
 
+/// Por qué una carpeta abierta no muestra nada: no tiene nada visible o no se
+/// pudo leer. El panel muestra una nota en vez de nada.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirNote {
+    Empty,
+    Denied,
+}
+
+/// Lo que le pasa a `dir`: si se lee, va vacía (o con todo oculto); si no, sin permiso.
+pub fn dir_note(dir: &Path) -> DirNote {
+    match std::fs::read_dir(dir) {
+        Ok(_) => DirNote::Empty,
+        Err(_) => DirNote::Denied,
+    }
+}
+
 #[derive(Default)]
 pub struct Explorer {
     /// Oculta también `node_modules`, `target` y `dist` (el árbol de Atic Code).
@@ -136,6 +152,16 @@ mod tests {
         assert_eq!(names(explorer.rows(&[root.clone()])), vec![top.clone(), "  src".into(), "  b.txt".into()]);
         explorer.toggle(&root.join("src"), false);
         assert_eq!(names(explorer.rows(&[root.clone()])), vec![top, "  src".into(), "    main.rs".into(), "  b.txt".into()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn la_nota_dice_si_la_carpeta_esta_vacia_o_no_se_lee() {
+        let root = std::env::temp_dir().join(format!("atic-explorer-note-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("vacia")).unwrap();
+        assert_eq!(dir_note(&root.join("vacia")), DirNote::Empty);
+        assert_eq!(dir_note(&root.join("no-existe")), DirNote::Denied);
         let _ = std::fs::remove_dir_all(&root);
     }
 

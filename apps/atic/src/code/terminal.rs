@@ -34,7 +34,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::kit::console::{self, Console, GridSize, Launch, Palette};
+use crate::kit::console::{self, Console, GridSize, Launch, Palette, SelPoint, TermSelection};
 use crate::kit::{self, Cell, GridLook};
 
 use super::devices_view::{DevicesEvent, DevicesView};
@@ -122,16 +122,48 @@ struct TermTab {
     token: Option<String>,
     /// El CLI del agente que corre (`claude`, `codex`…), si es uno.
     agent: Option<&'static str>,
-    /// El que puso el usuario: tiene prioridad sobre el del shell.
+    /// El que puso el usuario: tiene prioridad sobre el título del PTY.
     name: Option<String>,
+    /// Lo marcado con el mouse, si hay algo (`None`: nada).
+    selection: Option<TermSelection>,
     /// Ya se escribió «[proceso terminado]».
     noted_exit: bool,
 }
 
 impl TermTab {
+    /// El nombre de la pestaña: el del usuario, el título que puso el programa
+    /// (la carpeta en zsh, el comando en Claude Code…) o el shell.
     fn label(&self) -> String {
-        self.name.clone().unwrap_or_else(|| self.shell.clone())
+        if let Some(name) = self.name.clone() {
+            return name;
+        }
+        if let Some(title) = self.console.title() {
+            // El programa puede mandar varias líneas; la pestaña lleva la primera.
+            let first = title.lines().next().unwrap_or(&title);
+            if let Some(name) = clean_name(first) {
+                return name;
+            }
+        }
+        self.shell.clone()
     }
+}
+
+/// Cómo se extiende la selección al arrastrar: letra a letra, de a palabras
+/// (doble clic) o líneas enteras (triple clic).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectMode {
+    Char,
+    Word,
+    Line,
+}
+
+/// Arrastrando una selección: la pestaña, cómo se extiende y la celda donde
+/// empezó (con la historia de entonces, para seguir al contenido).
+struct SelectDrag {
+    tab: u64,
+    mode: SelectMode,
+    origin: SelPoint,
+    history: usize,
 }
 
 /// Con qué se armó la grilla guardada: si algo de esto cambia, se vuelve a armar.
@@ -142,6 +174,7 @@ struct GridKey {
     palette: Palette,
     offset: usize,
     fonts: [gpui::Font; 4],
+    selection: Option<TermSelection>,
 }
 
 pub struct Terminals {
@@ -185,6 +218,10 @@ pub struct Terminals {
     quota_loading: bool,
     /// El menú de los agentes está abierto, donde se hizo clic.
     agent_menu: Option<Point<Pixels>>,
+    /// El menú del clic derecho sobre la consola, donde se abrió.
+    term_menu: Option<Point<Pixels>>,
+    /// Arrastrando una selección con el mouse, si hay arrastre.
+    selecting: Option<SelectDrag>,
     /// La vista previa web: una pestaña más (`preview::TAB_ID`), si se abrió.
     preview: Option<Preview>,
     /// De qué conversación es la vista previa y las apartadas de las demás.
@@ -326,6 +363,30 @@ fn grid_size(bounds: Bounds<Pixels>, cell: Cell) -> GridSize {
     GridSize {
         cols: (w / cell.w).floor().max(2.) as usize,
         rows: (h / cell.h).floor().max(2.) as usize,
+    }
+}
+
+/// La celda bajo `at` (coordenadas de la ventana) en la grilla de `bounds`,
+/// como la pinta `kit::paint_grid` (margen y 2 px de arriba).
+fn point_to_cell(bounds: Bounds<Pixels>, cell: Cell, at: Point<Pixels>) -> (usize, usize) {
+    let col = ((f32::from(at.x - bounds.origin.x) - kit::GRID_PAD).max(0.) / cell.w) as usize;
+    let row = ((f32::from(at.y - bounds.origin.y) - 2.).max(0.) / cell.h) as usize;
+    (col, row)
+}
+
+/// Las columnas que cubre `mode` en la fila `line` bajo `col` (fin exclusivo):
+/// la palabra (doble clic) o la fila entera (triple clic). `None` sin palabra.
+fn expand_cols(tab: &TermTab, line: i32, col: usize, mode: SelectMode) -> Option<(usize, usize)> {
+    match mode {
+        SelectMode::Char => None,
+        SelectMode::Word => {
+            let row = tab.console.row_text(line);
+            let at = row.cols.get(col).copied().unwrap_or(usize::MAX).min(row.text.chars().count());
+            let (start, end) = console::word_bounds(&row.text, at);
+            let (from, to) = console::chars_to_cols(&row.cols, start, end);
+            (from < to).then_some((from, to))
+        }
+        SelectMode::Line => Some((0, tab.console.size.cols)),
     }
 }
 
@@ -475,6 +536,8 @@ impl Terminals {
             quotas: HashMap::new(),
             quota_loading: false,
             agent_menu: None,
+            term_menu: None,
+            selecting: None,
             preview: None,
             preview_owners: preview::Owners::default(),
             preview_bounds: Rc::new(std::cell::Cell::new(None)),
@@ -679,7 +742,7 @@ impl Terminals {
     /// La vista previa en cada cuadro: a la vista, tapada o escondida; oculta un buen
     /// rato, se suelta.
     fn sync_preview(&mut self, on_screen: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let covered = self.covered || self.agent_menu.is_some();
+        let covered = self.covered || self.agent_menu.is_some() || self.term_menu.is_some();
         let bounds = self.preview_bounds.get();
         if self.preview.is_none() {
             return;
@@ -905,7 +968,8 @@ impl Terminals {
 
     /// Pega en la pestaña a la vista, como lo haría el portapapeles.
     fn paste_text(&mut self, text: &str) {
-        if let Some(tab) = self.active_tab() {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.selection = None;
             tab.console.scroll(i32::MIN / 2);
             tab.console.paste(text);
         }
@@ -1016,6 +1080,7 @@ impl Terminals {
             token,
             agent,
             name: name.and_then(|n| clean_name(&n)),
+            selection: None,
             noted_exit: false,
         });
         self.active = Some(id);
@@ -1046,6 +1111,8 @@ impl Terminals {
 
     fn hide(&mut self, cx: &mut Context<Self>) {
         self.shown = false;
+        self.term_menu = None;
+        self.selecting = None;
         cx.emit(TerminalEvent::Hidden);
         cx.notify();
     }
@@ -1065,6 +1132,8 @@ impl Terminals {
         if self.shown {
             self.shown = false;
             self.agent_menu = None;
+            self.term_menu = None;
+            self.selecting = None;
             cx.notify();
         }
     }
@@ -1166,13 +1235,17 @@ impl Terminals {
         self.active.and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
     }
 
+    fn active_tab_mut(&mut self) -> Option<&mut TermTab> {
+        self.active.and_then(|id| self.tabs.iter_mut().find(|tab| tab.id == id))
+    }
+
     /// La grilla de la pestaña activa, `offset` líneas arriba en la historia. Se rehace solo si
     /// la consola tuvo salida desde la última vez o cambió cómo se ve (pestaña, tamaño, colores,
-    /// letra, historia): la terminal va dentro de la sección del chat y se dibuja en cada cuadro
+    /// letra, historia, selección): la terminal va dentro de la sección del chat y se dibuja en cada cuadro
     /// de ella, y rehacerla en cada uno tomaba el candado de la consola que necesita el PTY.
     fn active_grid(&mut self, palette: &Palette, offset: usize) -> Option<Rc<kit::Grid>> {
         let tab = self.active.and_then(|id| self.tabs.iter().find(|tab| tab.id == id))?;
-        let key = GridKey { tab: tab.id, size: tab.console.size, palette: *palette, offset, fonts: self.fonts.clone() };
+        let key = GridKey { tab: tab.id, size: tab.console.size, palette: *palette, offset, fonts: self.fonts.clone(), selection: tab.selection };
         // Primero el aviso y después la grilla: lo que llegue mientras se arma vuelve a avisar.
         let dirty = tab.console.take_dirty();
         if let Some((cached, grid)) = &self.grid_cache {
@@ -1180,7 +1253,7 @@ impl Terminals {
                 return Some(grid.clone());
             }
         }
-        let grid = Rc::new(kit::grid_of(&tab.console, &self.fonts, palette));
+        let grid = Rc::new(kit::grid_of(&tab.console, &self.fonts, palette, tab.selection));
         self.grid_cache = Some((key, grid.clone()));
         Some(grid)
     }
@@ -1207,8 +1280,10 @@ impl Terminals {
         if text.is_empty() {
             return;
         }
-        if let Some(tab) = self.active_tab() {
-            // Escribir vuelve al final si se estaba mirando el historial.
+        if let Some(tab) = self.active_tab_mut() {
+            // Escribir vuelve al final si se estaba mirando el historial, y
+            // desmarca lo que hubiera.
+            tab.selection = None;
             tab.console.scroll(i32::MIN / 2);
             tab.console.write(text.as_bytes().to_vec());
         }
@@ -1241,15 +1316,181 @@ impl Terminals {
             cx.stop_propagation();
             return;
         }
-        let Some(tab) = self.active_tab() else {
+        // Copiar, seleccionar todo y limpiar, como Terminal.app: en macOS con
+        // Comando (Ctrl queda para el shell); en Windows/Linux con Ctrl+Mayús.
+        if crate::keymap::primary_held(m) && !m.alt && (cfg!(target_os = "macos") || m.shift) {
+            match ks.key.as_str() {
+                "c" => {
+                    if self.copy_selection(cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
+                    // Sin nada marcado, Ctrl+C va al programa.
+                    #[cfg(target_os = "macos")]
+                    if let Some(tab) = self.active_tab() {
+                        tab.console.scroll(i32::MIN / 2);
+                        tab.console.write(vec![0x03]);
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
+                "a" => {
+                    self.select_all(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "k" => {
+                    self.clear_screen(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let Some(tab) = self.active_tab_mut() else {
             return;
         };
         let app_cursor = tab.console.term.lock().mode().contains(TermMode::APP_CURSOR);
         if let Some(bytes) = console::key_bytes(ks, app_cursor) {
+            tab.selection = None;
             tab.console.scroll(i32::MIN / 2);
             tab.console.write(bytes);
             cx.stop_propagation();
         }
+    }
+
+    /// Lo marcado de la pestaña a la vista, si es algo (no solo el cursor).
+    fn copyable_selection(&self) -> Option<String> {
+        let tab = self.active_tab()?;
+        let sel = tab.selection.filter(|sel| !sel.is_caret())?;
+        tab.console.selected_text(&sel).filter(|text| !text.is_empty())
+    }
+
+    /// Copia lo marcado al portapapeles y lo desmarca. `false` sin nada marcado.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.copyable_selection() else {
+            return false;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        if let Some(tab) = self.active_tab_mut() {
+            tab.selection = None;
+        }
+        cx.notify();
+        true
+    }
+
+    /// Marca todo lo visible y la historia.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let (_, history, screen) = tab.console.scroll_state();
+        let cols = tab.console.size.cols;
+        tab.selection = Some(TermSelection {
+            anchor: SelPoint { line: -(history as i32), col: 0 },
+            focus: SelPoint { line: screen as i32 - 1, col: cols.saturating_sub(1) },
+            history,
+        });
+        cx.notify();
+    }
+
+    /// Limpia la pantalla y la historia, como «limpiar» de Terminal.app (Cmd+K).
+    fn clear_screen(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.selection = None;
+            tab.console.clear_screen();
+        }
+        cx.notify();
+    }
+
+    /// Un clic en la consola: empieza (o extiende, con Mayús) la selección. Una
+    /// app de pantalla completa que pidió el mouse (vim, htop) se queda con
+    /// sus clics; con Mayús se marca igual (sus clics no se reportan).
+    fn begin_selection(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bounds) = self.body.get() else {
+            return;
+        };
+        let cell = self.cell(window);
+        let (col, row) = point_to_cell(bounds, cell, event.position);
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        let rows = tab.console.size.rows;
+        let cols = tab.console.size.cols;
+        let row = row.min(rows.saturating_sub(1));
+        let col = col.min(cols.saturating_sub(1));
+        if tab.console.term.lock().mode().intersects(TermMode::MOUSE_MODE) && !event.modifiers.shift {
+            tab.selection = None;
+            cx.notify();
+            return;
+        }
+        let (offset, history, _) = tab.console.scroll_state();
+        let line = row as i32 - offset as i32;
+        let at = SelPoint { line, col };
+        let mode = match event.click_count {
+            3.. => SelectMode::Line,
+            2 => SelectMode::Word,
+            _ => SelectMode::Char,
+        };
+        // Mayús+clic extiende desde el ancla, en su lugar actual.
+        let origin = match (event.modifiers.shift, tab.selection) {
+            (true, Some(sel)) => sel.ordered(history).0,
+            _ => at,
+        };
+        let (anchor, focus) = Self::selection_ends(tab, mode, origin, at);
+        let id = tab.id;
+        tab.selection = Some(TermSelection { anchor, focus, history });
+        self.selecting = Some(SelectDrag { tab: id, mode, origin, history });
+        cx.notify();
+    }
+
+    /// Los extremos de la selección al marcar de `origin` a `at`: letra a
+    /// letra, o expandidos por palabra o a la línea entera.
+    fn selection_ends(tab: &TermTab, mode: SelectMode, origin: SelPoint, at: SelPoint) -> (SelPoint, SelPoint) {
+        let cols = tab.console.size.cols;
+        match mode {
+            SelectMode::Char => (origin, at),
+            SelectMode::Word => {
+                let (start, start_end) = expand_cols(tab, origin.line, origin.col, mode).unwrap_or((origin.col, origin.col + 1));
+                let (end_start, end) = expand_cols(tab, at.line, at.col, mode).unwrap_or((at.col, at.col + 1));
+                if (at.line, at.col) >= (origin.line, origin.col) {
+                    (SelPoint { line: origin.line, col: start.min(cols.saturating_sub(1)) }, SelPoint { line: at.line, col: end.saturating_sub(1).min(cols.saturating_sub(1)) })
+                } else {
+                    (SelPoint { line: origin.line, col: start_end.saturating_sub(1).min(cols.saturating_sub(1)) }, SelPoint { line: at.line, col: end_start.min(cols.saturating_sub(1)) })
+                }
+            }
+            SelectMode::Line => {
+                let top = origin.line.min(at.line);
+                let bottom = origin.line.max(at.line);
+                (SelPoint { line: top, col: 0 }, SelPoint { line: bottom, col: cols.saturating_sub(1) })
+            }
+        }
+    }
+
+    /// El arrastre sigue al mouse: mueve el foco, expandiendo por palabra o
+    /// línea según cómo empezó (doble o triple clic).
+    fn extend_selection(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let (Some(drag), Some(bounds), Some(cell)) = (self.selecting.as_ref(), self.body.get(), self.cell) else {
+            return;
+        };
+        let (tab_id, mode, origin, drag_history) = (drag.tab, drag.mode, drag.origin, drag.history);
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
+            self.selecting = None;
+            return;
+        };
+        let rows = tab.console.size.rows;
+        let cols = tab.console.size.cols;
+        let (col, row) = point_to_cell(bounds, cell, at);
+        let row = row.min(rows.saturating_sub(1));
+        let col = col.min(cols.saturating_sub(1));
+        let (offset, history, _) = tab.console.scroll_state();
+        let at = SelPoint { line: row as i32 - offset as i32, col };
+        // El ancla sigue al contenido si llegó salida nueva en el arrastre.
+        let shift = history as i64 - drag_history as i64;
+        let origin = SelPoint { line: origin.line - shift as i32, col: origin.col.min(cols.saturating_sub(1)) };
+        let (anchor, focus) = Self::selection_ends(tab, mode, origin, at);
+        tab.selection = Some(TermSelection { anchor, focus, history });
+        cx.notify();
     }
 
     /// Ctrl+V: archivos copiados en el Explorador van por su ruta; una imagen se guarda
@@ -1503,6 +1744,63 @@ impl Terminals {
         )
     }
 
+    /// El menú del clic derecho sobre la consola: copiar lo marcado, pegar,
+    /// seleccionar todo y limpiar la pantalla.
+    pub(super) fn term_menu_layer(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let at = self.term_menu?;
+        let copying = self.copyable_selection().is_some();
+        let menu = gpui_m3::Menu::new("term-menu").width(220.).stagger(false)
+            .item(
+                gpui_m3::MenuItem::new("term-copy", crate::i18n::t("pill.code.terminal.copy"))
+                    .icon("copy")
+                    .disabled(!copying)
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        this.term_menu = None;
+                        this.copy_selection(cx);
+                    })),
+            )
+            .item(
+                gpui_m3::MenuItem::new("term-paste", crate::i18n::t("pill.code.terminal.paste"))
+                    .icon("clip")
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        this.term_menu = None;
+                        this.paste_clipboard(cx);
+                    })),
+            )
+            .item(
+                gpui_m3::MenuItem::new("term-select-all", crate::i18n::t("pill.code.terminal.selectAll"))
+                    .icon("box")
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        this.term_menu = None;
+                        this.select_all(cx);
+                    })),
+            )
+            .separator()
+            .item(
+                gpui_m3::MenuItem::new("term-clear", crate::i18n::t("pill.code.terminal.clearScreen"))
+                    .icon("eraser")
+                    .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                        this.term_menu = None;
+                        this.clear_screen(cx);
+                    })),
+            );
+        Some(
+            gpui::deferred(
+                gpui::anchored().position(at).anchor(gpui::Corner::TopLeft).snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                            this.term_menu = None;
+                            cx.notify();
+                        }))
+                        .child(menu),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
+    }
+
     /// La cuota del agente de la pestaña a la vista: lo que le queda de la ventana más
     /// gastada; el globito trae todas y un clic la vuelve a pedir.
     fn quota_button(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -1594,6 +1892,9 @@ impl Render for Terminals {
             pad: kit::GRID_PAD,
             cursor: style::rgb_of(t.accent),
             idle: style::rgb_of(t.faint),
+            // La terminal siempre es oscura: el acento translúcido se lee en
+            // los dos temas, con el texto encima.
+            selection: style::rgb_of(t.accent),
         };
         let window_h = f32::from(window.viewport_size().height);
         // A la derecha es una pestaña más del panel derecho (`panel.rs`): llena su cuerpo y
@@ -1603,6 +1904,8 @@ impl Render for Terminals {
         let font_size = self.font_size;
         let body = self.body.clone();
         let this = cx.weak_entity();
+        let dragging = self.selecting.is_some();
+        let drag_this = this.clone();
         // Abajo, el divisor de arriba cambia el alto; arrastrar hacia el chat agranda el panel.
         let resize = gpui_m3::ResizeHandle::height("term-resize", px(height))
             .min(px(MIN_HEIGHT))
@@ -1670,9 +1973,20 @@ impl Render for Terminals {
                     .min_h(px(0.))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
                             this.focus.focus(window);
+                            this.term_menu = None;
+                            this.begin_selection(event, window, cx);
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.focus.focus(window);
+                            this.selecting = None;
+                            this.term_menu = Some(event.position);
                             cx.notify();
+                            cx.stop_propagation();
                         }),
                     )
                     .on_scroll_wheel(cx.listener(Self::scroll))
@@ -1702,6 +2016,34 @@ impl Render for Terminals {
                                         if let Some(grid) = &grid {
                                             kit::paint_grid(grid.as_ref(), bounds, cell, 1.0, font_size, focused, look, window, cx);
                                         }
+                                        // Arrastrando la selección: sigue al mouse aunque salga
+                                        // del cuerpo (fase de captura, como la barra de
+                                        // desplazamiento).
+                                        if dragging {
+                                            let move_this = drag_this.clone();
+                                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                                if phase != DispatchPhase::Capture {
+                                                    return;
+                                                }
+                                                let _ = move_this.update(cx, |this, cx| {
+                                                    if event.pressed_button != Some(MouseButton::Left) {
+                                                        this.selecting = None;
+                                                    } else {
+                                                        this.extend_selection(event.position, cx);
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            });
+                                            let up_this = drag_this.clone();
+                                            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                                                if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                                                    let _ = up_this.update(cx, |this, cx| {
+                                                        this.selecting = None;
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            });
+                                        }
                                     },
                                 )
                                 .size_full(),
@@ -1711,6 +2053,7 @@ impl Render for Terminals {
                     .when(focused, |el| el.child(kit::input::layer(this.clone(), self.focus.clone())))
                     .into_any_element()
             })
+            .children(self.term_menu_layer(cx))
     }
 }
 
@@ -1988,6 +2331,16 @@ mod tests {
         #[cfg(not(windows))]
         assert_eq!(shell_name("/bin/zsh"), "zsh");
         assert_eq!(shell_name("powershell.exe"), "powershell");
+    }
+
+    #[test]
+    fn el_clic_cae_en_su_celda() {
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(100.)));
+        let cell = Cell { w: 10., h: 20. };
+        // Con el margen con que se pinta la grilla (8 a la izquierda, 2 arriba).
+        assert_eq!(point_to_cell(bounds, cell, point(px(10. + 8. + 25.), px(20. + 2. + 45.))), (2, 2));
+        // Por arriba o a la izquierda, la primera celda.
+        assert_eq!(point_to_cell(bounds, cell, point(px(0.), px(0.))), (0, 0));
     }
 
     #[test]

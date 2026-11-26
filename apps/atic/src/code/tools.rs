@@ -151,6 +151,11 @@ pub(super) fn show_all(hidden: HiddenContent) -> SharedString {
     }
 }
 
+/// El texto de los tramos plegados del diff («⋯ N líneas sin cambios»).
+pub(super) fn folded(n: usize) -> SharedString {
+    tf("pill.code.tools.foldedLines", &[("n", &n)]).into()
+}
+
 /// ¿Esta herramienta puede plegarse en una tanda? Solo las terminadas, y no las que tienen
 /// presencia propia en la conversación: subagentes (también los de Atic, `atic_delegate`),
 /// plan, preguntas, tareas y artefactos.

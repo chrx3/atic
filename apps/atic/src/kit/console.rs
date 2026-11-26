@@ -15,7 +15,9 @@ use std::time::Instant;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::sync::FairMutex;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
@@ -258,6 +260,64 @@ impl Console {
         }
     }
 
+    /// El título que puso el programa (OSC 0/2) para la pestaña, si hay uno.
+    pub fn title(&self) -> Option<String> {
+        self.shared.title.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// La fila `line` (en el espacio de alacritty: negativa en la historia)
+    /// como texto de terminal para seleccionar.
+    pub fn row_text(&self, line: i32) -> RowText {
+        let term = self.term.lock();
+        let grid = term.grid();
+        let line = line.clamp(-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+        let cols = grid.columns();
+        let mut text = String::with_capacity(cols);
+        let mut map = Vec::with_capacity(cols);
+        let mut count = 0usize;
+        for col in 0..cols {
+            let cell = &grid[Line(line)][Column(col)];
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                // La otra mitad del ancho doble: apunta al mismo carácter.
+                map.push(count.saturating_sub(1));
+                continue;
+            }
+            let c = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' { ' ' } else { cell.c };
+            map.push(count);
+            text.push(c);
+            count += 1;
+        }
+        RowText { text, cols: map }
+    }
+
+    /// El texto marcado, o `None` si es solo el cursor.
+    pub fn selected_text(&self, sel: &TermSelection) -> Option<String> {
+        if sel.is_caret() {
+            return None;
+        }
+        let history = self.term.lock().grid().history_size();
+        let (start, end) = sel.ordered(history);
+        let top = -(history as i32);
+        let bottom = self.size.rows as i32 - 1;
+        let start_line = start.line.clamp(top, bottom);
+        let end_line = end.line.clamp(top, bottom);
+        if start_line > end_line {
+            return None;
+        }
+        // Si el inicio o el fin quedaron sobre historia perdida, la fila
+        // recortada cubre desde el principio o hasta el final.
+        let start_col = if start.line < top { 0 } else { start.col };
+        let end_col = if end.line > bottom { usize::MAX } else { end.col };
+        let rows: Vec<RowText> = (start_line..=end_line).map(|line| self.row_text(line)).collect();
+        Some(selection_text(&rows, 0, start_col, (end_line - start_line) as usize, end_col))
+    }
+
+    /// Limpia la pantalla y la historia (Cmd+K), como «limpiar» de Terminal.app.
+    pub fn clear_screen(&self) {
+        self.term.lock().grid_mut().reset::<Color>();
+        self.shared.dirty.store(true, Ordering::Release);
+    }
+
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Relaxed)
     }
@@ -301,6 +361,154 @@ pub fn wheel_bytes(mode: TermMode, lines: i32, col: usize, row: usize) -> Option
         return Some(key.repeat(times));
     }
     None
+}
+
+// --- Selección -------------------------------------------------------------
+
+// Para marcar y copiar con el mouse: la terminal no trae estado de selección,
+// así que vive aquí y la pinta `kit`.
+
+/// Un punto de la selección en el espacio de alacritty: la línea (negativa en
+/// la historia) y la columna.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelPoint {
+    pub line: i32,
+    pub col: usize,
+}
+
+/// Lo marcado de una consola: ancla y foco, con el tamaño de la historia
+/// cuando se tomaron (la salida nueva empuja el contenido a líneas más
+/// negativas).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermSelection {
+    pub anchor: SelPoint,
+    pub focus: SelPoint,
+    pub history: usize,
+}
+
+impl TermSelection {
+    /// Si es solo el cursor, sin nada marcado.
+    pub fn is_caret(&self) -> bool {
+        self.anchor == self.focus
+    }
+
+    /// Los extremos ordenados, ya movidos con la historia actual.
+    pub fn ordered(&self, history_now: usize) -> (SelPoint, SelPoint) {
+        let shift = history_now as i64 - self.history as i64;
+        let mut start = self.anchor;
+        let mut end = self.focus;
+        start.line -= shift as i32;
+        end.line -= shift as i32;
+        if (end.line, end.col) < (start.line, start.col) {
+            std::mem::swap(&mut start, &mut end);
+        }
+        (start, end)
+    }
+}
+
+/// Una fila leída de la grilla para seleccionar: el texto (una celda por
+/// columna, los vacíos como espacios) y, por columna, el nº de carácter (un
+/// ancho doble ocupa dos columnas con el mismo nº).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowText {
+    pub text: String,
+    pub cols: Vec<usize>,
+}
+
+/// Si el carácter parte palabras al hacer doble clic.
+fn is_word_char(c: char) -> bool {
+    !c.is_whitespace()
+        && !matches!(
+            c,
+            '"' | '\''
+                | '`'
+                | '|'
+                | ':'
+                | ';'
+                | ','
+                | '.'
+                | '!'
+                | '?'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '/'
+                | '\\'
+                | '@'
+                | '#'
+                | '$'
+                | '%'
+                | '^'
+                | '&'
+                | '*'
+                | '+'
+                | '='
+                | '~'
+        )
+}
+
+/// Los bordes de la palabra bajo el carácter `at` (índice de carácter): de
+/// `start` a `end`, sin incluir este. Sobre un separador no hay palabra.
+pub fn word_bounds(text: &str, at: usize) -> (usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    if at >= chars.len() || !is_word_char(chars[at]) {
+        let at = at.min(chars.len());
+        return (at, at);
+    }
+    let mut start = at;
+    while start > 0 && is_word_char(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = at + 1;
+    while end < chars.len() && is_word_char(chars[end]) {
+        end += 1;
+    }
+    (start, end)
+}
+
+/// De caracteres a columnas de terminal (fin exclusivo): las que apuntan a
+/// `start..end`. Sin ninguna, la columna tras el texto.
+pub fn chars_to_cols(map: &[usize], start: usize, end: usize) -> (usize, usize) {
+    let mut span: Option<(usize, usize)> = None;
+    for (col, &ch) in map.iter().enumerate() {
+        if ch >= start && ch < end {
+            span = Some((span.map_or(col, |(first, _)| first), col));
+        }
+    }
+    match span {
+        Some((first, last)) => (first, last + 1),
+        None => (map.len(), map.len()),
+    }
+}
+
+/// El texto a copiar de filas ya leídas: la primera desde `start_col` y la
+/// última hasta `end_col` (ambas inclusive, en columnas de terminal), las de
+/// en medio enteras; cada fila sin los espacios del final, unidas con `\n`.
+pub fn selection_text(rows: &[RowText], start_row: usize, start_col: usize, end_row: usize, end_col: usize) -> String {
+    if rows.is_empty() || start_row > end_row || end_row >= rows.len() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate().take(end_row + 1).skip(start_row) {
+        if i > start_row {
+            out.push('\n');
+        }
+        let chars: Vec<char> = row.text.chars().collect();
+        let from = if i == start_row { row.cols.get(start_col).copied().unwrap_or(chars.len()) } else { 0 };
+        let to = if i == end_row { row.cols.get(end_col).map(|&c| c + 1).unwrap_or(chars.len()) } else { chars.len() };
+        let (from, to) = (from.min(chars.len()), to.min(chars.len()));
+        if from < to {
+            out.extend(chars[from..to].iter());
+        }
+        let trimmed = out.trim_end_matches(' ').len();
+        out.truncate(trimmed);
+    }
+    out
 }
 
 impl Drop for Console {
@@ -591,6 +799,61 @@ mod tests {
         assert_eq!(key_bytes(&ks("alt-b->b"), false), Some(b"\x1bb".to_vec()));
         // Ctrl+Alt+C en un teclado sin AltGr no trae carácter: no escribe nada.
         assert_eq!(key_bytes(&ks("ctrl-alt-c"), false), None);
+    }
+
+    #[test]
+    fn la_seleccion_sigue_al_contenido() {
+        let at = |line: i32, col: usize| SelPoint { line, col };
+        let sel = TermSelection { anchor: at(5, 2), focus: at(3, 8), history: 10 };
+        // Ordena los extremos (el foco iba primero).
+        assert_eq!(sel.ordered(10), (at(3, 8), at(5, 2)));
+        // Con dos líneas nuevas, el contenido está dos líneas más arriba.
+        assert_eq!(sel.ordered(12), (at(1, 8), at(3, 2)));
+        assert!(!sel.is_caret());
+        assert!(TermSelection { anchor: at(1, 1), focus: at(1, 1), history: 0 }.is_caret());
+    }
+
+    #[test]
+    fn el_doble_clic_toma_la_palabra() {
+        assert_eq!(word_bounds("hola mundo", 1), (0, 4));
+        assert_eq!(word_bounds("hola mundo", 5), (5, 10));
+        // Sobre un separador no hay palabra.
+        assert_eq!(word_bounds("hola mundo", 4), (4, 4));
+        assert_eq!(word_bounds("foo/bar", 4), (4, 7));
+        assert_eq!(word_bounds("  x  ", 2), (2, 3));
+        assert_eq!(word_bounds("", 0), (0, 0));
+        assert_eq!(word_bounds("hola", 9), (4, 4));
+        // Las tildes no parten la palabra.
+        assert_eq!(word_bounds("mañana", 2), (0, 6));
+    }
+
+    #[test]
+    fn de_caracteres_a_columnas() {
+        // «a日b»: la columna ancha ocupa dos celdas con el mismo nº.
+        let map = vec![0, 1, 1, 2];
+        assert_eq!(chars_to_cols(&map, 1, 2), (1, 3));
+        assert_eq!(chars_to_cols(&map, 0, 1), (0, 1));
+        assert_eq!(chars_to_cols(&map, 2, 3), (3, 4));
+        // Sin columnas, la que sigue al texto.
+        assert_eq!(chars_to_cols(&map, 5, 5), (4, 4));
+        assert_eq!(chars_to_cols(&[], 0, 1), (0, 0));
+    }
+
+    #[test]
+    fn el_texto_copiado_recorta_y_une() {
+        let row = |text: &str| {
+            let len = text.chars().count();
+            RowText { text: text.into(), cols: (0..len).collect() }
+        };
+        let rows = vec![row("$ echo hola   "), row("hola"), row("  ")];
+        assert_eq!(selection_text(&rows, 0, 2, 1, 3), "echo hola\nhola");
+        // Solo espacios al final: nada que copiar.
+        assert_eq!(selection_text(&rows, 0, 11, 0, 13), "");
+        // La fila de solo espacios aporta una línea vacía.
+        assert_eq!(selection_text(&rows, 1, 0, 2, 1), "hola\n");
+        // Fuera de rango: vacío.
+        assert_eq!(selection_text(&rows, 2, 0, 5, 0), "");
+        assert_eq!(selection_text(&[], 0, 0, 0, 0), "");
     }
 
     #[test]

@@ -64,30 +64,16 @@ fn relative(path: &Path, root: &Path) -> String {
     path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default()
 }
 
-/// Los que contienen `query` en su ruta: primero los que la tienen en el
-/// nombre y, entre iguales, las rutas más cortas (como el panel de la referencia).
+/// Los que coinciden con `query`, con el ranking difuso de las @-menciones
+/// (`rank_mentions` de gpui-m3: el nombre que empieza con ella, luego el que la
+/// contiene, la ruta y la subsecuencia; entre iguales, las rutas más cortas).
+/// Como el panel de la referencia.
 pub fn search<'a>(files: &'a [Indexed], query: &str, limit: usize) -> Vec<&'a Indexed> {
-    let needle = query.trim().to_lowercase();
+    let needle = query.trim();
     if needle.is_empty() {
         return Vec::new();
     }
-    let mut found: Vec<(bool, usize, &Indexed)> = files
-        .iter()
-        .filter(|f| contains_lower(&f.rel, &needle))
-        .map(|f| (!contains_lower(f.name(), &needle), f.rel.len(), f))
-        .collect();
-    found.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    found.into_iter().take(limit).map(|(_, _, f)| f).collect()
-}
-
-/// Si `haystack` contiene `needle` (ya en minúsculas) sin importar mayúsculas.
-/// Corre por cada archivo en cada render del panel: con ASCII no copia nada.
-fn contains_lower(haystack: &str, needle: &str) -> bool {
-    if haystack.is_ascii() && needle.is_ascii() {
-        let (hay, needle) = (haystack.as_bytes(), needle.as_bytes());
-        return needle.is_empty() || hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle));
-    }
-    haystack.to_lowercase().contains(needle)
+    gpui_m3::rank_mentions(files.iter(), needle, limit, |f| f.rel.as_str())
 }
 
 /// El archivo al que apunta un `código` en línea del chat (`src/x.rs`, `x.rs:42`,
@@ -209,6 +195,15 @@ mod tests {
         assert_eq!(search(&accents, "REUN", 10).len(), 1);
         assert_eq!(files[1].dir(true), "r/src/code");
         assert_eq!(files[2].name(), "view.rs");
+    }
+
+    #[test]
+    fn la_busqueda_acepta_subsecuencias_como_las_menciones() {
+        let file = |rel: &str| Indexed { path: PathBuf::from(rel), rel: rel.to_string(), root: "r".into() };
+        let files = vec![file("src/code/composer.tsx"), file("src/main.rs")];
+        let found: Vec<&str> = search(&files, "cmpsr", 10).into_iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(found, vec!["src/code/composer.tsx"]);
+        assert!(search(&files, "zzz", 10).is_empty());
     }
 
     #[test]
